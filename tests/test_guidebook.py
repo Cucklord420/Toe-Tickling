@@ -234,6 +234,26 @@ class GuidebookTests(unittest.TestCase):
         path.write_text(path.read_text() + "\n# fixture\npull_request_target:\n")
         self.assertIn("trigger", self.cli("check", ok=False).stderr)
 
+    def test_inline_privileged_ci_event_is_rejected(self):
+        extra = self.repo / ".github/workflows/inline.yaml"
+        extra.write_text("name: inline\non: [push, pull_request_target]\n"
+                         "permissions:\n  contents: read\n"
+                         "jobs:\n  run:\n    runs-on: ubuntu-latest\n"
+                         "    steps:\n      - uses: actions/checkout@"
+                         + "fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09\n"
+                         "        with:\n          persist-credentials: false\n")
+        self.assertIn("trigger", self.cli("check", ok=False).stderr)
+
+    def test_unsubscripted_secrets_context_is_rejected(self):
+        extra = self.repo / ".github/workflows/secret.yaml"
+        extra.write_text("name: secret\non: push\npermissions:\n  contents: read\n"
+                         "jobs:\n  run:\n    runs-on: ubuntu-latest\n"
+                         "    steps:\n      - uses: actions/checkout@"
+                         + "fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09\n"
+                         "        with:\n          persist-credentials: false\n"
+                         "      - run: echo '$" + "{{ toJSON(secrets) }}'\n")
+        self.assertIn("secret access", self.cli("check", ok=False).stderr)
+
     def test_preview_does_not_write(self):
         (self.target / "AGENTS.md").write_text("Existing project rules.\n")
         before = self.snapshot(self.target)
