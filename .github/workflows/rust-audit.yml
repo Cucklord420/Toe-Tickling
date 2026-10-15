@@ -1,0 +1,40 @@
+name: Rust guidebook self-audit
+
+on:
+  push:
+    paths:
+      - 'rust/audit/**'
+      - 'rules/**'
+      - 'profile/PUBLIC.md'
+      - 'GUIDEBOOK.md'
+      - 'guidebook-lock.json'
+      - 'AGENTS.md'
+      - 'CLAUDE.md'
+      - 'GEMINI.md'
+      - '.github/copilot-instructions.md'
+      - '.cursor/rules/justin-guidebook.mdc'
+      - '.github/workflows/rust-audit.yml'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust-audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # pinned
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.85.1 --profile minimal
+      - name: Unit tests
+        run: cargo +1.85.1 test --locked --offline --manifest-path rust/audit/Cargo.toml
+      - name: Audit published guidebook with Rust
+        run: cargo +1.85.1 run --locked --offline --manifest-path rust/audit/Cargo.toml -- check .
+      - name: Run existing reference checks
+        run: |
+          python3 scripts/guidebook.py check
+          python3 -m unittest discover -s tests -q
