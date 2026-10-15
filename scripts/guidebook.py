@@ -216,6 +216,8 @@ def file_list(root: Path) -> list[Path]:
     files = []
     for path in paths:
         rel = path.relative_to(root)
+        if rel.parts[:3] == ("rust", "audit", "target"):
+            continue  # Compiler artifacts are local output, not public source.
         if any(part in SKIP for part in rel.parts):
             continue
         if path.is_symlink():
