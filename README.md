@@ -21,6 +21,12 @@ For a model without browsing, attach or paste `GUIDEBOOK.md`. [The reusable prom
 - Entry points for AGENTS.md readers, Claude Code, Copilot, Gemini CLI, and Cursor; safe installation that preserves existing project instructions.
 - A dependency-free builder/validator, regression tests, and least-privileged CI. These checks verify repository integrity; they cannot prove a model obeys prose.
 
+## Living policy and staged Rust migration
+
+The guide is deliberately **non-static**: [continuous-evolution rules](rules/65-continuous-evolution.md) mandate read-time preflight, audits during high-risk work, final revision checks, dated evidence, regression learning, multi-agent concurrency protection, and bounded maintenance as tools change. This is a required source of the generated full guide, not a free-floating suggestion.
+
+[Continuous maintenance workflow](docs/CONTINUOUS_IMPROVEMENT.md) and [generalized cross-repository audit](docs/CROSS_REPO_AUDIT.md) describe how to evolve it without importing private content. A [read-only Rust audit](docs/RUST_MIGRATION.md) is being ported incrementally; Python remains authoritative until verified parity.
+
 ## Use it in a project
 
 From a checkout of this guidebook, preview the additions:

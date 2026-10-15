@@ -112,6 +112,17 @@ class GuidebookTests(unittest.TestCase):
         path.write_text(path.read_text().replace("**AUD-003**", "**RENAMED-003**"))
         self.assertIn("audit", self.cli("build", ok=False).stderr)
 
+    def test_evolution_source_cannot_be_silently_omitted(self):
+        data = json.loads((self.repo / "policy.json").read_text())
+        self.alter_policy(sources=[source for source in data["sources"]
+                                   if source != "rules/65-continuous-evolution.md"])
+        self.assertIn("source", self.cli("build", ok=False).stderr)
+
+    def test_mandatory_evolution_rule_cannot_be_removed(self):
+        path = self.repo / "rules/65-continuous-evolution.md"
+        path.write_text(path.read_text().replace("**EVO-003**", "**REMOVED-003**"))
+        self.assertIn("continuous-evolution", self.cli("build", ok=False).stderr)
+
     def test_all_adapters_include_mandatory_instruction_audit(self):
         for relative in ("AGENTS.md", "CLAUDE.md", "GEMINI.md",
                          ".github/copilot-instructions.md", ".cursor/rules/justin-guidebook.mdc"):

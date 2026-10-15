@@ -58,6 +58,10 @@ fn ids(text: &str) -> Result<BTreeSet<String>, String> {
         let id = format!("AUD-{n:03}");
         if !found.contains(&id) { return Err(format!("missing audit rule: {id}")); }
     }
+    for n in 1..=28 {
+        let id = format!("EVO-{n:03}");
+        if !found.contains(&id) { return Err(format!("missing evolution rule: {id}")); }
+    }
     Ok(found)
 }
 
@@ -88,7 +92,7 @@ fn audit(root: &Path) -> Result<(usize, usize), String> {
     }
     for required in ["rules/00-authority.md", "rules/05-execution-contract.md",
                      "rules/40-security.md", "rules/60-instruction-audits.md",
-                     "profile/PUBLIC.md"] {
+                     "rules/65-continuous-evolution.md", "profile/PUBLIC.md"] {
         if !seen.contains(required) {
             return Err(format!("required source absent: {required}"));
         }
