@@ -140,9 +140,11 @@ fn main() -> ExitCode {
 mod tests {
     use super::*;
     fn valid() -> String {
-        (1..=20).map(|i| format!("**AUD-{i:03}** audit\n")).collect()
+        let audits = (1..=20).map(|i| format!("**AUD-{i:03}** audit\n")).collect::<String>();
+        let evolution = (1..=28).map(|i| format!("**EVO-{i:03}** evolution\n")).collect::<String>();
+        audits + &evolution
     }
-    #[test] fn all_audits_present() { assert_eq!(ids(&valid()).unwrap().len(), 20); }
+    #[test] fn all_audits_present() { assert_eq!(ids(&valid()).unwrap().len(), 48); }
     #[test] fn missing_audits_fail() { assert!(ids("**AUTH-001**").is_err()); }
     #[test] fn no_rules_fail() { assert!(ids("nothing here").is_err()); }
     #[test] fn duplicate_ids_fail() {
@@ -150,13 +152,13 @@ mod tests {
             .unwrap_err().contains("duplicate"));
     }
     #[test] fn ordinary_bold_ignored() {
-        assert_eq!(ids(&(valid()+"**warning**")).unwrap().len(), 20);
+        assert_eq!(ids(&(valid()+"**warning**")).unwrap().len(), 48);
     }
     #[test] fn extra_rules_work() {
-        assert_eq!(ids(&(valid()+"**ENG-014**")).unwrap().len(), 21);
+        assert_eq!(ids(&(valid()+"**ENG-014**")).unwrap().len(), 49);
     }
     #[test] fn malformed_numeric_rule_ignored() {
-        assert_eq!(ids(&(valid()+"**ENG-0000**")).unwrap().len(), 20);
+        assert_eq!(ids(&(valid()+"**ENG-0000**")).unwrap().len(), 48);
     }
     #[test] fn valid_source_marker() {
         assert_eq!(modules("Header\n<!-- Source: rules/test.md -->\n\n").unwrap()[0].at,7);
