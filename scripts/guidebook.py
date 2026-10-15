@@ -205,7 +205,8 @@ def build(root: Path) -> int:
 def file_list(root: Path) -> list[Path]:
     git_root = subprocess.run(["git", "-C", str(root), "rev-parse", "--show-toplevel"],
                               capture_output=True, text=True, timeout=10)
-    if git_root.returncode == 0 and Path(git_root.stdout.strip()).resolve() == root.resolve():
+    is_git_root = git_root.returncode == 0 and Path(git_root.stdout.strip()).resolve() == root.resolve()
+    if is_git_root:
         listed = subprocess.run(
             ["git", "-C", str(root), "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
             capture_output=True, check=True, timeout=10)
@@ -217,7 +218,9 @@ def file_list(root: Path) -> list[Path]:
     for path in paths:
         rel = path.relative_to(root)
         if rel.parts[:3] == ("rust", "audit", "target"):
-            continue  # Compiler artifacts are local output, not public source.
+            if is_git_root:
+                raise PolicyError(f"Tracked or non-ignored Rust build output: {rel}")
+            continue  # Ignore local compiler output only outside a Git tree.
         if any(part in SKIP for part in rel.parts):
             continue
         if path.is_symlink():

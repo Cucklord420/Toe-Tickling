@@ -61,7 +61,7 @@ The full guide is deliberately detailed for LLMs. The short adapters are loading
 
 The public profile includes Justin's name, general NYC area, timezone, and non-sensitive preferences. It deliberately excludes private records and precise personal details. Justin supplies private task context locally at his discretion; the blank [private template](profile/PRIVATE.example.md) is optional.
 
-**TCO: $0 required software/subscription cost over one or three years** for this repository and its dependency-free local checks. Standard GitHub-hosted Actions runners are free for public repositories under GitHub's current terms; this workflow uses one standard Linux runner and no paid service or stored build artifact. Optional model/API use, local hardware/electricity, and future hosting choices are separate and usage-dependent. This is not a promise that every future project has zero cost.
+**TCO: $0 required software/subscription cost over one or three years** for this repository and its dependency-free local checks. Standard GitHub-hosted Actions runners are free for public repositories under GitHub's current terms; the Python and Rust validation workflows use standard read-only Linux runners and no paid service or stored build artifact. Optional model/API use, local hardware/electricity, and future hosting choices are separate and usage-dependent. This is not a promise that every future project has zero cost.
 
 Sources: GitHub — 10-15-2026 — https://docs.github.com/en/actions/concepts/billing-and-usage. Date is a review date for this undated page.
 

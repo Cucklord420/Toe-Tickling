@@ -17,6 +17,6 @@ For later phases, port operations individually with real fixtures. Compare gener
 
 ## Evidence and limits
 
-CI should run this Rust executable and its unit tests alongside the original Python suite. No provider-specific behavioral compliance is established. A hash or source-byte match does not prove semantic correctness. This branch was authored in an environment without rustc/cargo, so native compilation requires GitHub Actions verification before merging.
+CI should run this Rust executable and its unit tests alongside the original Python suite. No provider-specific behavioral compliance is established. A hash or source-byte match does not prove semantic correctness. Authoring environment lacked rustc/cargo. GitHub Actions on PR #2 (10-15-2026) installed Rust 1.85.1, compiled the executable, passed all 13 Rust unit tests, and successfully checked 11 guidebook modules and 153 rules. Its Python reference suite passed 49 tests on that PR head. These results apply to that specific revision; later edits require fresh CI.
 
 Zero dependencies, no required software subscription. Incremental software TCO: $0 excluding developer time, optional CI usage and local compute/energy.
