@@ -166,6 +166,14 @@ class GuidebookTests(unittest.TestCase):
         (self.repo / "PRIVATE.local.md").write_text("Private fixture, never published.\n")
         self.cli("check")
 
+    def test_rust_target_binaries_are_ignored_during_public_scan(self):
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True,
+                       capture_output=True, timeout=10)
+        output = self.repo / "rust/audit/target/debug/guidebook-audit"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"\\x7fELF\\xff\\xfe\\x00")
+        self.cli("check")
+
     def test_forced_tracked_private_file_is_rejected(self):
         subprocess.run(["git", "init", "-q", str(self.repo)], check=True,
                        capture_output=True, timeout=10)
