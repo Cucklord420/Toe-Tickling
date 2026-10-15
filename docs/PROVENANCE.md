@@ -24,7 +24,7 @@ Financial and EV rules are scoped profiles, not a universal instruction to give 
 
 | Source value | Meaning |
 | --- | --- |
-| `user-current` | The current request for a living, audited, self-checking guide and tested adoption. |
+| `user-current` | The current request for a living, audited, self-checking guide and mandatory Rust implementation. |
 | `public-existing` | Existing public operating rules or directly matching established requirements. |
 | `private-reviewed` | Sanitized scoped requirement derived from reviewed private guidance; raw source remains private. |
 | `synthesis` | A proposed practical mechanism combining reviewed intent and engineering judgment; not a verbatim historical user rule. |
@@ -45,3 +45,5 @@ A useful initial release can be structurally complete for its stated scope while
 ## Other-agent integration checkpoint
 
 A later fetch during this work found `0bdc6fed00c35cec4ff3bf756da9d1f9dbb0c3a9` on main. That published revision supplied 125 stable rules, task playbooks, public profile, model adapters, source references, and a Python builder/adopter with tests. Those modules were reviewed and integrated; the current user correction explicitly supersedes their Python maintenance exception. The full combined guide is built and validated in Rust. Initial Python audit/validation reports are preserved as historical records under `docs/archive/`; their pass counts do not apply to the Rust replacement. Current observed results belong in `docs/VALIDATION.md`.
+
+Another pre-delivery fetch found main at `796ee24`, policy 1.1.1, adding EVO-001 through EVO-028, ENG-015 through ENG-019, and a tracked-build-artifact guard. These changes were reviewed and retained in policy 1.2.0; active Python migration exceptions were corrected to the current mandatory Rust instruction. The independent Rust audit was adapted to the combined bundle rather than discarded. Open PR #6 was also inspected for distinct security and rights-scope findings; inspection is not a claim that its historical 100-pass results validate this implementation.

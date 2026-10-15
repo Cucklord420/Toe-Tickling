@@ -1,6 +1,6 @@
 use std::{fs, path::Path, process::Command};
 use tempfile::TempDir;
-use toe_tickling::security::check;
+use toe_tickling::security::{check, checked_root};
 
 const WORKFLOW: &str = "name: audit\npermissions:\n  contents: read\njobs:\n  audit:\n    runs-on: ubuntu-latest\n    timeout-minutes: 10\n    steps:\n      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\n        with:\n          persist-credentials: false\n      - run: cargo test --locked\n";
 
@@ -369,6 +369,26 @@ fn public_symlink_files_directories_and_root_ancestors_are_rejected() {
 
 #[cfg(unix)]
 #[test]
+fn dot_and_parent_segments_cannot_hide_a_root_symlink_prefix() {
+    use std::os::unix::fs::symlink;
+    let directory = fixture();
+    check(directory.path()).unwrap();
+    assert_eq!(checked_root(directory.path()).unwrap(), directory.path());
+    let parent = tempfile::tempdir().unwrap();
+    let alias = parent.path().join("alias");
+    symlink(directory.path(), &alias).unwrap();
+    for root in [
+        alias.join("."),
+        alias.join(".").join("."),
+        alias.join("..").join(directory.path().file_name().unwrap()),
+    ] {
+        assert!(checked_root(&root).unwrap_err().contains("symlink"));
+        assert!(check(&root).unwrap_err().contains("symlink"));
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn ignored_symlinks_stay_private_but_public_links_cannot_follow_them() {
     use std::os::unix::fs::symlink;
     let directory = fixture();
@@ -378,8 +398,14 @@ fn ignored_symlinks_stay_private_but_public_links_cannot_follow_them() {
     write(outside.path(), "note.md", "Fictional local context");
     symlink(outside.path(), directory.path().join("local")).unwrap();
     check(directory.path()).unwrap();
-    write(directory.path(), "links.md", "[local](local/note.md)\n");
-    assert!(check(directory.path()).unwrap_err().contains("symlink"));
+    for target in ["local/note.md", "local/./note.md", "local/../README.md"] {
+        write(
+            directory.path(),
+            "links.md",
+            &format!("[local]({target})\n"),
+        );
+        assert!(check(directory.path()).unwrap_err().contains("symlink"));
+    }
 }
 
 #[test]

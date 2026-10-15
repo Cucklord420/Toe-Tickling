@@ -1,3 +1,5 @@
+> Historical record from an earlier implementation. Superseded by the current Rust policy and validation. Commands and language exceptions below are historical evidence, not current instructions.
+
 # Initial instruction audit
 
 Policy version: 1.0.0. Audit date: 10-15-2026. Scope: the complete guidebook source modules, generated model entry points, public profile, documentation, license, maintenance/installation code, regression tests, and CI definition.

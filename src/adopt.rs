@@ -99,8 +99,14 @@ fn metadata(path: &Path) -> Result<Option<fs::Metadata>> {
 }
 
 fn no_symlink_ancestors(path: &Path) -> Result<()> {
-    for ancestor in path.ancestors() {
-        if let Some(value) = metadata(ancestor)? {
+    // Inspect lexical prefixes so an `alias/.` suffix cannot hide a link.
+    let mut ancestor = PathBuf::new();
+    for component in path.components() {
+        ancestor.push(component);
+        if matches!(component, Component::Prefix(_)) {
+            continue;
+        }
+        if let Some(value) = metadata(&ancestor)? {
             if value.file_type().is_symlink() {
                 return Err(format!(
                     "Refusing a target with a symlink ancestor: {}",
@@ -266,7 +272,7 @@ fn managed(old: &str, body: &str, begin: &str, end: &str) -> Result<String> {
 }
 
 pub fn plan(root: &Path, target: &Path) -> Result<AdoptionPlan> {
-    let root = fs::canonicalize(root).map_err(|e| format!("Guidebook root: {e}"))?;
+    let root = crate::security::checked_root(root)?;
     let target = validate_target(&root, target)?;
     let git_identity = GitIdentity::read(&target)?;
     crate::check_repo(&root, time::OffsetDateTime::now_utc().date())?;

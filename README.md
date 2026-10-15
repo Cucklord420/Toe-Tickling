@@ -2,7 +2,7 @@
 
 A practical operating law for the LLMs and agents I use: inspect the actual situation, follow my applicable instructions, do the work, check yourself, and report the truth. Nothing in life stays static. Neither does this guide.
 
-The guide must evolve with technology, evidence, and my decisions. Strong rules need clear scope, observable checks, and a correction process. Calling the guide gospel does not make unsupported claims true or give an agent permissions it does not have.
+The guide must evolve with technology, evidence, and my decisions. Strong rules need clear scope, observable checks, and a correction process. Each model must load the guide, apply its scoped requirements, and verify results within the authority and permissions it actually has.
 
 ## Read and apply
 
@@ -24,7 +24,7 @@ Rust toolchain pinned in `rust-toolchain.toml`; locked Cargo dependencies:
 cargo run --locked -- build
 cargo run --locked -- render --check
 cargo run --locked -- check
-cargo test --locked
+cargo test --workspace --locked
 cargo run --locked -- new-audit --task "Describe the task" --output /absolute/private/path/audit.json
 cargo run --locked -- check --audit /absolute/private/path/audit.json
 ```

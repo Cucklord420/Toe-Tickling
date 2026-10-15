@@ -23,8 +23,10 @@ jobs:
       - name: Format
         run: cargo fmt --all -- --check
       - name: Lint
-        run: cargo clippy --locked --all-targets -- -D warnings
+        run: cargo clippy --workspace --locked --all-targets -- -D warnings
       - name: Regression tests
-        run: cargo test --locked
+        run: cargo test --workspace --locked
       - name: Structural policy and freshness audit
         run: cargo run --locked -- check
+      - name: Independent Rust source-byte audit
+        run: cargo run --locked -p guidebook-audit -- check .

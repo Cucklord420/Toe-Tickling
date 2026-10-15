@@ -1,9 +1,9 @@
 {
-  "policy_version": "1.1.0",
+  "policy_version": "1.2.0",
   "source_repo": "https://github.com/Cucklord420/Toe-Tickling",
-  "source_sha256": "a427b6268b9c9cb9d0472c7a766c5a11c32cf9d9cf8441b1e301c57dd87a1f6a",
-  "guidebook_sha256": "3715b0c81906a3348fce5b78642113750fc2a6d35d07408d1573d16c4c9f06bb",
-  "rule_count": 125,
+  "source_sha256": "f0abe7db91f87d38c55236e452fccb8a4a38afa8e762ad8fc81bebe86df6261e",
+  "guidebook_sha256": "30bfd8de7afc6dc0e0aa7170385baa1c485bb327f5f3169b3777a2c4c998d520",
+  "rule_count": 158,
   "verification_rule_count": 45,
   "sources": [
     "rules/00-authority.md",
@@ -14,6 +14,7 @@
     "rules/40-security.md",
     "rules/50-workflows.md",
     "rules/60-instruction-audits.md",
+    "rules/65-continuous-evolution.md",
     "rules/70-task-playbooks.md",
     "profile/PUBLIC.md",
     "RULEBOOK.md",

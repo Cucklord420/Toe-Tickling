@@ -10,7 +10,7 @@ Read AGENTS.md and the complete intake sequence first. Preserve the existing AGP
 2. Change existing three-digit standing rules in `rules/` and selected public defaults in `profile/PUBLIC.md`; change two-digit scoped verification rules in `policy/rules.json`. Preserve both binding rule families and the ordered source list in `policy.json`. Use the evolution procedure for replacement, dates, provenance, and exceptions.
 3. Update relevant operating guidance and behavior cases. Use Rust tests for meaningful validator, renderer, and CLI failure modes. Do not add tests that merely paraphrase policy prose.
 4. Run `cargo run --locked -- build` to regenerate RULEBOOK.md, the complete GUIDEBOOK.md, prompts, adapters, and digest lock; inspect the generated changes, then deliberately run `cargo run --locked -- refresh-manifest` after reviewing intake-document changes. Hash refresh is a mutation, never an automatic part of a check.
-5. Run `cargo fmt --all -- --check`, `cargo clippy --locked --all-targets -- -D warnings`, `cargo test --locked`, and `cargo run --locked -- check`. Review the exact diff and file list for secrets, private text, generated artifacts, unsupported claims, and licensing.
+5. Run `cargo fmt --all -- --check`, `cargo clippy --workspace --locked --all-targets -- -D warnings`, `cargo test --workspace --locked`, and `cargo run --locked -- check`. Review the exact diff and file list for secrets, private text, generated artifacts, unsupported claims, and licensing.
 6. Recheck upstream movement, reconcile conflicts, and rerun affected checks. Commit one coherent result and report actual push/PR/CI state. Do not merge or change repository visibility without applicable authorization.
 
 ## Tool design constraints

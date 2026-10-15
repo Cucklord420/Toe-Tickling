@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "policy_version": "1.1.0",
+  "policy_version": "1.2.0",
   "updated": "10-15-2026",
   "owner": "Cucklord420",
   "repository": "Toe-Tickling",
@@ -16,6 +16,7 @@
     "rules/40-security.md",
     "rules/50-workflows.md",
     "rules/60-instruction-audits.md",
+    "rules/65-continuous-evolution.md",
     "rules/70-task-playbooks.md",
     "profile/PUBLIC.md",
     "RULEBOOK.md",

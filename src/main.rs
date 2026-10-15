@@ -21,7 +21,7 @@ fn run() -> Result<()> {
     } else {
         env::current_dir().map_err(|e| e.to_string())?
     };
-    let root = selected.canonicalize().map_err(|e| e.to_string())?;
+    let root = toe_tickling::security::checked_root(&selected)?;
     if args.is_empty() || args == ["--help"] {
         println!(
             "Use the checkout as current directory or pass --root PATH:\n  cargo run --locked -- build\n  cargo run --locked -- check [--audit /private/receipt.json]\n  cargo run --locked -- render [--check]\n  cargo run --locked -- refresh-manifest\n  cargo run --locked -- new-audit --task 'Task description' --output /private/receipt.json\n  cargo run --locked -- adopt /path/to/project [--apply]\n\nChecks validate declarations and bytes, not truth or actual model behavior."
@@ -79,7 +79,8 @@ fn run() -> Result<()> {
                 );
             }
             println!(
-                "Repository structural checks passed ({} rules).",
+                "Repository structural checks passed ({} standing rules + {} verification rules).",
+                toe_tickling::guide::module_ids(&root)?.len(),
                 policy.rules.len()
             );
         }

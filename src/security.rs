@@ -16,8 +16,13 @@ fn fail(message: &str, relative: &Path) -> String {
 
 /// Reject symlinks before canonicalization can hide an ancestor link.
 fn no_symlink_ancestors(path: &Path) -> Result<()> {
-    for ancestor in path.ancestors() {
-        match fs::symlink_metadata(ancestor) {
+    // Inspect each lexical prefix before following a later `.` or `..`.
+    // Walking ancestors backwards can omit the very symlink hidden by `alias/.`.
+    // Native components retain Windows prefixes and root semantics.
+    let mut prefix = PathBuf::new();
+    for component in path.components() {
+        prefix.push(component.as_os_str());
+        match fs::symlink_metadata(&prefix) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
                 return Err("Refusing a public path with a symlink ancestor".into());
             }
@@ -27,6 +32,19 @@ fn no_symlink_ancestors(path: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Resolve a root only after rejecting symlinks in its original lexical path.
+pub fn checked_root(root: &Path) -> Result<PathBuf> {
+    let absolute = if root.is_absolute() {
+        root.to_owned()
+    } else {
+        std::env::current_dir()
+            .map_err(|_| "Cannot determine current directory")?
+            .join(root)
+    };
+    no_symlink_ancestors(&absolute)?;
+    fs::canonicalize(absolute).map_err(|_| "Cannot resolve public-tree root".into())
 }
 
 fn skipped(relative: &Path) -> bool {
@@ -420,15 +438,7 @@ fn workflow(root: &Path, relative: &Path, secret_context: &Regex) -> Result<()> 
 /// Audit public paths, Rust-only sources, selected privacy patterns, links and CI.
 /// This is a structural guard, not a guarantee that all sensitive data is detected.
 pub fn check(root: &Path) -> Result<()> {
-    let absolute = if root.is_absolute() {
-        root.to_owned()
-    } else {
-        std::env::current_dir()
-            .map_err(|_| "Cannot determine current directory")?
-            .join(root)
-    };
-    no_symlink_ancestors(&absolute)?;
-    let root = fs::canonicalize(absolute).map_err(|_| "Cannot resolve public-tree root")?;
+    let root = checked_root(root)?;
     let secrets = Regex::new(
         r"\b(?:gh[pousr]_|github_pat_|sk-(?:proj-|svcacct-)?|glpat-|xox[baprs]-)[A-Za-z0-9_-]{20,}|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----",
     ).map_err(|_| "Invalid credential scanner expression")?;

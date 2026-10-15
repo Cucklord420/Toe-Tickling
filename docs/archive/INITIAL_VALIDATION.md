@@ -1,3 +1,5 @@
+> Historical record from an earlier implementation. Superseded by the current Rust policy and validation. Commands and language exceptions below are historical evidence, not current instructions.
+
 # Validation scope
 
 Measured on 10-15-2026 using Python 3.12.14, Git, and Linux x86_64. This is not a claim that prose can enforce model behavior.

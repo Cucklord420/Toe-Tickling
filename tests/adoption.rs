@@ -550,8 +550,22 @@ fn symlink_targets_ancestors_and_managed_paths_are_rejected() {
     let f = Fixture::new();
     let alias = f._work.path().join("alias");
     symlink(&f.target, &alias).unwrap();
+    let source_alias = f._work.path().join("source alias");
+    symlink(&f.source, &source_alias).unwrap();
+    for source in [&source_alias, &source_alias.join(".")] {
+        assert!(
+            adopt::plan(source, &f.target)
+                .unwrap_err()
+                .contains("symlink")
+        );
+    }
     assert!(
         adopt::plan(&f.source, &alias)
+            .unwrap_err()
+            .contains("symlink")
+    );
+    assert!(
+        adopt::plan(&f.source, &alias.join("."))
             .unwrap_err()
             .contains("symlink")
     );

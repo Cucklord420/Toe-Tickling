@@ -18,6 +18,7 @@ pub const SOURCES: &[&str] = &[
     "rules/40-security.md",
     "rules/50-workflows.md",
     "rules/60-instruction-audits.md",
+    "rules/65-continuous-evolution.md",
     "rules/70-task-playbooks.md",
     "profile/PUBLIC.md",
     "RULEBOOK.md",
@@ -103,7 +104,7 @@ fn policy(root: &Path) -> Result<BundlePolicy> {
 }
 pub fn bootstrap(guide: &str) -> String {
     format!(
-        "Justin's standing guidebook applies to all work for him. Before substantive work, read the complete `{guide}` with file tools. A link alone is not loaded policy. At a new session, retrieve the current reviewed guide from https://github.com/Cucklord420/Toe-Tickling when available, resolve its branch/commit, and record the revision; use a verified local snapshot honestly offline.\n\nApply current explicit user instructions and applicable project requirements within the actual platform hierarchy. Preserve existing instructions and private data. All newly authored executable code, automation, tooling, scripts, and tests MUST be Rust. There is no Python or convenience-language exception. Declarative configuration and documentation retain appropriate formats. Preserve inherited code and licenses until an authorized verified migration.\n\nMANDATORY: audit the instructions themselves under AUD-001 through AUD-020 and the scoped verification rules. Perform preflight, reading checkpoints, action gates, and final compliance checks. Audit again after policy/tool changes or failures. Do not invent access, memory, tests, background work, or completion.\n"
+        "Justin's standing guidebook applies to all work for him. Before substantive work, read the complete `{guide}` with file tools. A link alone is not loaded policy. At a new session, retrieve the current reviewed guide from https://github.com/Cucklord420/Toe-Tickling when available, resolve its branch/commit, and record the revision; use a verified local snapshot honestly offline.\n\nApply current explicit user instructions and applicable project requirements within the actual platform hierarchy. Preserve existing instructions and private data. All newly authored executable code, automation, tooling, scripts, and tests MUST be Rust. There is no Python or convenience-language exception. Declarative configuration and documentation retain appropriate formats. Preserve inherited code and licenses until an authorized verified migration.\n\nMANDATORY: audit the instructions themselves under AUD-001 through AUD-020 and the scoped verification rules. Perform preflight, reading checkpoints, action gates, and final compliance checks. Audit again after policy/tool changes or failures. Verify actual existing files and exact paths before use and read back created artifacts; never invent file references, access, memory, tests, background work, or completion.\n"
     )
 }
 pub fn adapters(guide: &str) -> BTreeMap<String, String> {
@@ -131,7 +132,7 @@ pub fn adapters(guide: &str) -> BTreeMap<String, String> {
 }
 pub fn module_ids(root: &Path) -> Result<BTreeSet<String>> {
     let p = policy(root)?;
-    let pattern = Regex::new(r"\*\*([A-Z]+-\d{3})\*\*").map_err(|e| e.to_string())?;
+    let pattern = Regex::new(r"(?m)^- \*\*([A-Z]+-\d{3})\*\*").map_err(|e| e.to_string())?;
     let mut ids = BTreeSet::new();
     for source in p.sources {
         let content = fs::read_to_string(safe_path(root, &source)?).map_err(|e| e.to_string())?;
@@ -151,10 +152,11 @@ fn validate_module_ids(ids: &BTreeSet<String>) -> Result<()> {
         ("EXEC", 12),
         ("COM", 10),
         ("RES", 12),
-        ("ENG", 14),
+        ("ENG", 19),
         ("SEC", 8),
         ("OPS", 10),
         ("AUD", 20),
+        ("EVO", 28),
         ("PLAY", 20),
         ("PREF", 10),
     ] {
@@ -174,7 +176,7 @@ pub fn outputs(root: &Path) -> Result<BTreeMap<String, String>> {
     let mut digest = Sha256::new();
     let mut modules = Vec::new();
     let mut ids = BTreeSet::new();
-    let pattern = Regex::new(r"\*\*([A-Z]+-\d{3})\*\*").map_err(|e| e.to_string())?;
+    let pattern = Regex::new(r"(?m)^- \*\*([A-Z]+-\d{3})\*\*").map_err(|e| e.to_string())?;
     for source in &p.sources {
         let content =
             fs::read_to_string(safe_path(root, source)?).map_err(|e| format!("{source}: {e}"))?;
@@ -195,7 +197,7 @@ pub fn outputs(root: &Path) -> Result<BTreeMap<String, String>> {
     }
     validate_module_ids(&ids)?;
     require(
-        ids.len() >= 125,
+        ids.len() >= 158,
         "Existing rule-family coverage was reduced; explicitly review the change",
     )?;
     let source_sha256 = format!("{:x}", digest.finalize());
@@ -232,7 +234,14 @@ pub fn build(root: &Path) -> Result<usize> {
     let policy = crate::load_policy(root)?;
     crate::validate_policy(&policy, time::OffsetDateTime::now_utc().date())?;
     let rendered = crate::render(&policy);
-    fs::write(safe_path(root, "RULEBOOK.md")?, rendered).map_err(|e| e.to_string())?;
+    let mut temporary = tempfile::NamedTempFile::new_in(root).map_err(|e| e.to_string())?;
+    use std::io::Write;
+    temporary
+        .write_all(rendered.as_bytes())
+        .map_err(|e| e.to_string())?;
+    temporary
+        .persist(safe_path(root, "RULEBOOK.md")?)
+        .map_err(|e| e.to_string())?;
     let outputs = outputs(root)?;
     for path in outputs.keys() {
         safe_path(root, path)?;

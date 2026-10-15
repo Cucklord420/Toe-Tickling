@@ -85,7 +85,7 @@ fn baseline_and_declared_receipt_pass() {
     let dir = fixture();
     let policy = check_repo(dir.path(), now().date()).unwrap();
     let audit = complete(dir.path());
-    assert_eq!(audit.checks.len(), 170);
+    assert_eq!(audit.checks.len(), 203);
     validate_audit(dir.path(), &policy, &audit, now()).unwrap();
 }
 #[test]
@@ -366,4 +366,68 @@ fn build_cannot_silently_refresh_reading_receipts() {
     write_json(&dir.path().join("policy/rules.json"), &policy).unwrap();
     guide::build(dir.path()).unwrap();
     assert!(check_repo(dir.path(), now().date()).is_err());
+}
+
+#[test]
+fn a_bold_prose_reference_cannot_replace_a_rule_declaration() {
+    let dir = fixture();
+    let path = dir.path().join("rules/60-instruction-audits.md");
+    let text = fs::read_to_string(&path)
+        .unwrap()
+        .replace("- **AUD-001**", "Example **AUD-001**");
+    fs::write(path, text).unwrap();
+    assert!(guide::build(dir.path()).is_err());
+}
+
+#[test]
+fn adoption_cli_runs_from_an_unrelated_directory_and_path_with_spaces() {
+    let source = fixture();
+    let unrelated = tempfile::tempdir().unwrap();
+    let target = tempfile::Builder::new()
+        .prefix("project with spaces ")
+        .tempdir()
+        .unwrap();
+    assert!(
+        Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(target.path())
+            .status()
+            .unwrap()
+            .success()
+    );
+    let run = |apply: bool| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_toe-tickling"));
+        command
+            .current_dir(unrelated.path())
+            .arg("--root")
+            .arg(source.path())
+            .arg("adopt")
+            .arg(target.path());
+        if apply {
+            command.arg("--apply");
+        }
+        command.output().unwrap()
+    };
+    assert!(run(false).status.success());
+    assert!(!target.path().join("AGENTS.md").exists());
+    let applied = run(true);
+    assert!(
+        applied.status.success(),
+        "{}",
+        String::from_utf8_lossy(&applied.stderr)
+    );
+    assert_eq!(
+        fs::read(target.path().join(".ai-guidebook/GUIDEBOOK.md")).unwrap(),
+        fs::read(source.path().join("GUIDEBOOK.md")).unwrap()
+    );
+    let repeated = run(true);
+    assert!(repeated.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&repeated.stdout).unwrap();
+    assert_eq!(report["changed"], serde_json::json!([]));
+    let head = Command::new("git")
+        .args(["rev-parse", "--verify", "HEAD"])
+        .current_dir(target.path())
+        .output()
+        .unwrap();
+    assert!(!head.status.success(), "Adoption must not create commits");
 }
