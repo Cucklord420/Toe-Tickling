@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "policy_version": "1.1.1",
+  "policy_version": "1.2.0",
   "updated": "10-15-2026",
   "owner": "Cucklord420",
   "repository": "Toe-Tickling",
@@ -18,7 +18,10 @@
     "rules/60-instruction-audits.md",
     "rules/65-continuous-evolution.md",
     "rules/70-task-playbooks.md",
-    "profile/PUBLIC.md"
+    "profile/PUBLIC.md",
+    "RULEBOOK.md",
+    "docs/SELF_CHECKS.md",
+    "docs/EVOLUTION.md"
   ],
-  "maintenance_language_exception": "Python standard library for portable document generation, validation and instruction installation; new application logic remains Rust-first."
+  "implementation_language": "Rust"
 }

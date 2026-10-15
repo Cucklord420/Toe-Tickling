@@ -1,23 +1,15 @@
 # Changelog
 
-## 1.1.1 — 10-15-2026
+## 0.1.0 — 10-15-2026
 
-- Prohibited fabricated filenames, file paths, launchers, imports, downloads, or claims of creating undelivered artifacts.
-- Added five mandatory ENG-015 through ENG-019 rules requiring actual source-tree inspection, creation readback, file-reference integrity, repair of missing references, and truthful file status.
-- Added generator guards and two regression tests; regenerated the guidebook, digest lock, and model-specific adapters.
+- Established a living rule register and generated readable guide with scoped requirements and observable self checks.
+- Added intake, action, execution, completion, and policy-evolution audits; adoption guidance and semantic failure scenarios.
+- Made Rust mandatory across projects for all newly authored executable code and tests, superseding the earlier suitability preference. Added Rust-only tooling and regression tests. Documentation and policy data remain Markdown and JSON.
+- Added source coverage and privacy boundaries. Initial review inventoried 13 repositories; selected sources were inspected, not the entire historical corpus.
+- Preserved the existing license and isolated changes from other workers. Model adoption, production deployment, and continuous monitoring are separate unperformed work.
 
-## 1.1.0 — 10-15-2026
+## 1.2.0 integration — 10-15-2026
 
-- Added 28 continuous-evolution rules (EVO-001–EVO-028) to the canonical source and regenerated complete guide, version and digest lock.
-- Required preflight, checkpoint, release, failure-triggered, semantic and independent behavioral audit layers, with finite completion gates.
-- Added multi-agent branch isolation, technology-change review, source provenance, private/public boundaries and cross-project safety principles.
-- Added a dependency-free read-only Rust audit and independent CI job as the first stage of a tested Rust migration. Python remains the reference builder/installer.
-- Added Python regression guards for mandatory evolution rules and migration and review documentation; remote CI results must be separately verified.
-
-## 1.0.0 — 10-15-2026
-
-- Established Justin's public standing guidebook for assistants, repositories, projects, research, and automations.
-- Consolidated explicit communication, research, purchasing/TCO, Rust-first, copyleft, completion, privacy, and memory preferences.
-- Added launcher/package verification lessons, a limited public profile, private-context template, platform entry points, a safe installer, and integrity checks.
-- Documented the difference between written policy, installed context, durable memory, CI checks, and actual model compliance.
-- Added a mandatory execution contract, exhaustive task playbooks, 20 instruction-audit rules, semantic audit probes, and checks preventing silent removal of the audit source/rules.
+- Reviewed and integrated the other agent's published `0bdc6fe` guidebook: retained the existing three-digit rule IDs, playbooks, public profile, model adapters, source references, and historical audit records.
+- Replaced the Python maintenance/adoption implementation and Python tests with Rust, removing the maintenance-language exception and strengthening both ENG-001 and ENG-01 to the current mandatory Rust instruction.
+- Preserved later EVO-001 through EVO-028 and ENG-015 through ENG-019, bringing the module policy to 158 stable IDs. Added 45 scoped verification rules, reading-hash receipts, policy freshness checks, negative regression coverage, and a combined generated GUIDEBOOK.md. Historical Python validation results remain labeled historical and do not validate this revision.

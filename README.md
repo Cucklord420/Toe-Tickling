@@ -1,70 +1,51 @@
-# Justin's AI Guidebook
+# Toe-Tickling: the living rule book
 
-The public constitution for work performed for Justin: one source of standing rules for every model, repository, project, research task, and automation.
+A practical operating law for the LLMs and agents I use: inspect the actual situation, follow my applicable instructions, do the work, check yourself, and report the truth. Nothing in life stays static. Neither does this guide.
 
-**Models start with [GUIDEBOOK.md](GUIDEBOOK.md).** It is a complete, standalone document containing the policy and deliberately limited public profile. Read it before doing work, then apply the current request and relevant project instructions. The source modules are under `rules/` and `profile/PUBLIC.md`; the single-file version is generated and checked for drift.
+The guide must evolve with technology, evidence, and my decisions. Strong rules need clear scope, observable checks, and a correction process. Each model must load the guide, apply its scoped requirements, and verify results within the authority and permissions it actually has.
 
-## Point any model here
+## Read and apply
 
-> Read https://github.com/Cucklord420/Toe-Tickling/blob/main/GUIDEBOOK.md in full and use it as my standing guidebook for this task and future work where your platform can retain it. Apply my current instructions and the project's specific requirements. Keep private details local and ask for them only if essential. Do not claim you loaded, remembered, tested, or completed anything unless you actually did.
+Begin with [AGENTS.md](AGENTS.md). Read the [rule book](RULEBOOK.md) and its linked operating procedures. The compact retrieval entry point is [llms.txt](llms.txt). Rules have stable IDs, scope, provenance classes, review dates, and checks in [the canonical register](policy/rules.json).
 
-Raw entry point: https://raw.githubusercontent.com/Cucklord420/Toe-Tickling/main/GUIDEBOOK.md
+- [Self checks](docs/SELF_CHECKS.md): intake, execution, recovery, final review, and evidence receipts.
+- [Evolution](docs/EVOLUTION.md): changing requirements, conflict resolution, review cadence, and concurrent agents.
+- [Adoption](docs/ADOPTION.md): configuring different agents and proving behavior.
+- [Scenarios](docs/SCENARIOS.md): adversarial and failure-path acceptance cases.
+- [Provenance](docs/PROVENANCE.md): what was inspected and what remains unknown.
+- [Contributing](CONTRIBUTING.md): maintainers' change and verification procedure.
+- [Changelog](CHANGELOG.md): versioned changes and scope limits.
 
-For a model without browsing, attach or paste `GUIDEBOOK.md`. [The reusable prompt](prompts/USE_WITH_ANY_MODEL.md) and [standing-memory text](prompts/STANDING_MEMORY.md) are also included. A public URL alone cannot change another model's memory or permissions.
+## Check locally
 
-## What's included
+Rust toolchain pinned in `rust-toolchain.toml`; locked Cargo dependencies:
 
-- Direct communication, source verification, current availability, arithmetic, TCO, and complete task delivery.
-- Rust-first engineering, copyleft, real launcher/package testing, honest CI evidence, safe migrations, and data protection.
-- A mandatory LLM execution contract, detailed task playbooks, and instruction audits at task start, before final delivery, and after material policy/tool changes or failures.
-- Privacy boundaries, autonomous work within authorization, durable context, real automations, and limited day-to-day preferences.
-- Entry points for AGENTS.md readers, Claude Code, Copilot, Gemini CLI, and Cursor; safe installation that preserves existing project instructions.
-- A dependency-free builder/validator, regression tests, and least-privileged CI. These checks verify repository integrity; they cannot prove a model obeys prose.
-
-## Living policy and staged Rust migration
-
-The guide is deliberately **non-static**: [continuous-evolution rules](rules/65-continuous-evolution.md) mandate read-time preflight, audits during high-risk work, final revision checks, dated evidence, regression learning, multi-agent concurrency protection, and bounded maintenance as tools change. This is a required source of the generated full guide, not a free-floating suggestion.
-
-[Continuous maintenance workflow](docs/CONTINUOUS_IMPROVEMENT.md) and [generalized cross-repository audit](docs/CROSS_REPO_AUDIT.md) describe how to evolve it without importing private content. A [read-only Rust audit](docs/RUST_MIGRATION.md) is being ported incrementally; Python remains authoritative until verified parity.
-
-## Use it in a project
-
-From a checkout of this guidebook, preview the additions:
-
-```sh
-python3 scripts/guidebook.py adopt /absolute/path/to/project
+```bash
+cargo run --locked -- build
+cargo run --locked -- render --check
+cargo run --locked -- check
+cargo test --workspace --locked
+cargo run --locked -- new-audit --task "Describe the task" --output /absolute/private/path/audit.json
+cargo run --locked -- check --audit /absolute/private/path/audit.json
 ```
 
-Apply the same reviewed additions:
+The last command intentionally fails until the record has real evidence and resolved checks. Keep real audit records private. The checker validates required documents, render consistency, rule metadata, local links, review deadlines, and declared receipts. It cannot prove that a model read honestly, that a citation is true, or that a live system works.
 
-```sh
-python3 scripts/guidebook.py adopt /absolute/path/to/project --apply
-```
+## Current delivery boundary
 
-The tool adds a managed section to `AGENTS.md`, a local guidebook snapshot and digest lock, and private-file ignore rules. It creates model adapters only when absent, preserving existing ones and reporting them for manual integration. It does not commit, push, change account settings, fetch code, or run a model. See [adoption and platform setup](docs/ADOPTION.md).
+Read [GUIDEBOOK.md](GUIDEBOOK.md) in full for the complete integrated standing policy and public profile. The original [modular sources](policy.json) and the 45-rule verification register complement one another.
 
-## Maintain and verify
-
-Python 3.10 or later and Git are sufficient; no paid services or third-party Python packages are required.
-
-```sh
-python3 scripts/guidebook.py build
-python3 scripts/guidebook.py check
-python3 -m unittest discover -s tests -v
-```
-
-Edit the source modules, update `policy.json`/`CHANGELOG.md` when policy changes, and rebuild. Generated artifacts must remain byte-identical to the sources. [CONTRIBUTING.md](CONTRIBUTING.md) explains the change process; [provenance](docs/PROVENANCE.md), [decisions](docs/DECISIONS.md), [validation](docs/VALIDATION.md), [the instruction audit](docs/INSTRUCTION_AUDIT.md), and [sources](docs/SOURCES.md) explain what the repository does and what has actually been checked.
-
-The full guide is deliberately detailed for LLMs. The short adapters are loading instructions, not substitutes for the complete policy. The audit covers internal contradictions, missing requirements, stale technology assumptions, false certainty, privacy/authority boundaries, real entry points, and evidence quality. It requires reviewable findings and rechecks after fixes; self-certification alone cannot establish compliance.
-
-## Public/private boundary and cost
-
-The public profile includes Justin's name, general NYC area, timezone, and non-sensitive preferences. It deliberately excludes private records and precise personal details. Justin supplies private task context locally at his discretion; the blank [private template](profile/PRIVATE.example.md) is optional.
-
-**TCO: $0 required software/subscription cost over one or three years** for this repository and its dependency-free local checks. Standard GitHub-hosted Actions runners are free for public repositories under GitHub's current terms; the Python and Rust validation workflows use standard read-only Linux runners and no paid service or stored build artifact. Optional model/API use, local hardware/electricity, and future hosting choices are separate and usage-dependent. This is not a promise that every future project has zero cost.
-
-Sources: GitHub — 10-15-2026 — https://docs.github.com/en/actions/concepts/billing-and-usage. Date is a review date for this undated page.
+The initial review inventoried all 13 accessible repositories and inspected selected instructions, project records, and historical conversations. It did not read every historical message or private release asset. At the initial snapshot, this repository contained only its README and license; no other agent's published branch or pull request was visible. See provenance for exact coverage limits and follow-up work. No model deployment or cross-repository rollout is implied.
 
 ## License
 
-[AGPL-3.0-only](LICENSE). Copyright 2026 Justin (GitHub: Cucklord420). This guidebook's license covers its contents and tools; adopting its preferences does not relicense an existing project or expand GPL obligations to unrelated work. Preserve inherited licenses. See [NOTICE.md](NOTICE.md).
+Original additions follow the existing [AGPL-3.0-only license](LICENSE). See [license scope](LICENSE-SCOPE.md). Private source material remains private and is not republished or relicensed by this guide.
+
+## Adopt in another Git project
+
+```bash
+cargo run --locked -- adopt /absolute/path/to/project
+cargo run --locked -- adopt /absolute/path/to/project --apply
+```
+
+Preview is the default. Apply only under the target project's authorization. The Rust installer preserves existing instructions and adapters, validates snapshot digests, and rejects unsafe or tampered targets. It does not commit, push, change account settings, or prove that a model obeyed the installed text. Use `--root /path/to/Toe-Tickling` when invoking the compiled CLI from another directory.
