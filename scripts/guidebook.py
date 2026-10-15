@@ -264,9 +264,10 @@ def check(root: Path) -> dict:
             raise PolicyError(f"Unexpected or overriding CI permissions block: {name}")
         if re.search(r"(?m)^\s*[a-zA-Z_-]+:\s*write(?:\s*#.*)?$", workflow):
             raise PolicyError(f"CI write permission prohibited: {name}")
-        if re.search(r"(?m)^\s*(?:pull_request_target|workflow_run)\s*:", workflow):
+        active = "\n".join(line.split("#", 1)[0] for line in workflow.splitlines())
+        if re.search(r"\b(?:pull_request_target|workflow_run)\b", active):
             raise PolicyError(f"Privileged CI trigger needs separate review: {name}")
-        if "secrets." in workflow or "secrets[" in workflow:
+        if re.search(r"\bsecrets\b", active):
             raise PolicyError(f"CI secret access needs separate review: {name}")
         if "persist-credentials: false" not in workflow:
             raise PolicyError(f"CI must not persist checkout credentials: {name}")
