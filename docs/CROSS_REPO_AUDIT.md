@@ -15,4 +15,4 @@ The following requirements recur in applicable project instruction files and hav
 
 Private material and repository identities were deliberately excluded. Applicable specialized instructions should remain local to those projects, and current explicit user requests continue to govern their scope. Future reviews should incrementally expand verified coverage without leaking source details.
 
-Open risks: provider-specific instruction-loading behavior has not been measured across every AI environment; archives and historical private rules were not exhaustively reconciled; Rust compilation and CI statuses must be checked for the proposed revision.
+Open risks: provider-specific instruction-loading behavior has not been measured across every AI environment; archives and historical private rules were not exhaustively reconciled; the staged Rust checker compiled and passed its 13 tests and guidebook check on PR #2 (10-15-2026), but Rust is not a complete port and new revisions still need their own checks.
