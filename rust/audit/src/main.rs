@@ -42,8 +42,10 @@ fn modules(guide: &str) -> Result<Vec<Module>, String> {
 
 fn ids(text: &str) -> Result<BTreeSet<String>, String> {
     let mut found = BTreeSet::new();
-    for (index, token) in text.split("**").enumerate() {
-        if index % 2 == 0 { continue; }
+    for line in text.lines() {
+        let Some(body) = line.strip_prefix("- **") else { continue; };
+        let Some((token, suffix)) = body.split_once("**") else { continue; };
+        if !suffix.starts_with(char::is_whitespace) { continue; }
         let Some((family, number)) = token.split_once('-') else { continue; };
         if family.is_empty() || !family.bytes().all(|c| c.is_ascii_uppercase())
             || number.len() != 3 || !number.bytes().all(|c| c.is_ascii_digit()) {
@@ -140,25 +142,33 @@ fn main() -> ExitCode {
 mod tests {
     use super::*;
     fn valid() -> String {
-        let audits = (1..=20).map(|i| format!("**AUD-{i:03}** audit\n")).collect::<String>();
-        let evolution = (1..=28).map(|i| format!("**EVO-{i:03}** evolution\n")).collect::<String>();
+        let audits = (1..=20).map(|i| format!("- **AUD-{i:03}** audit\n")).collect::<String>();
+        let evolution = (1..=28).map(|i| format!("- **EVO-{i:03}** evolution\n")).collect::<String>();
         audits + &evolution
     }
     #[test] fn all_audits_present() { assert_eq!(ids(&valid()).unwrap().len(), 48); }
     #[test] fn missing_audits_fail() { assert!(ids("**AUTH-001**").is_err()); }
     #[test] fn no_rules_fail() { assert!(ids("nothing here").is_err()); }
     #[test] fn duplicate_ids_fail() {
-        assert!(ids(&(valid()+"**AUTH-001** a\n**AUTH-001** b\n"))
+        assert!(ids(&(valid()+"- **AUTH-001** a\n- **AUTH-001** b\n"))
             .unwrap_err().contains("duplicate"));
     }
     #[test] fn ordinary_bold_ignored() {
         assert_eq!(ids(&(valid()+"**warning**")).unwrap().len(), 48);
     }
     #[test] fn extra_rules_work() {
-        assert_eq!(ids(&(valid()+"**ENG-014**")).unwrap().len(), 49);
+        assert_eq!(ids(&(valid()+"- **ENG-014** rule\n")).unwrap().len(), 49);
+    }
+    #[test] fn inline_bold_rule_mention_ignored() {
+        assert_eq!(ids(&(valid() + "A prose reference to **ENG-014** is not a rule.\n"))
+            .unwrap().len(), 48);
+    }
+    #[test] fn non_bullet_audit_rule_not_counted() {
+        let text = valid().replacen("- **AUD-001** audit", "  **AUD-001** audit", 1);
+        assert!(ids(&text).is_err());
     }
     #[test] fn malformed_numeric_rule_ignored() {
-        assert_eq!(ids(&(valid()+"**ENG-0000**")).unwrap().len(), 48);
+        assert_eq!(ids(&(valid()+"- **ENG-0000** invalid\n")).unwrap().len(), 48);
     }
     #[test] fn valid_source_marker() {
         assert_eq!(modules("Header\n<!-- Source: rules/test.md -->\n\n").unwrap()[0].at,7);
