@@ -28,11 +28,14 @@ def run_suite(round_number):
         [sys.executable, "-m", "unittest", "discover", "-s",
          str(ROOT / "tests"), "-p", "test*.py", "-v"],
         [os.environ.get("GUIDEBOOK_RUST_BINARY", str(ROOT / "rust/audit/target/debug/guidebook-audit")), "check", str(ROOT)],
+        ["cargo", "+1.85.1", "test", "--locked", "--offline",
+         "--manifest-path", str(ROOT / "rust/audit/Cargo.toml")],
     ]
     record = {"round": round_number, "hash_seed": round_number, "steps": []}
     for cmd in checks:
         command_name = ("check" if cmd[-1] == "check" else
-                        "unittest" if "-m" in cmd else "rust")
+                        "unittest" if "-m" in cmd else
+                        "rust_tests" if "--manifest-path" in cmd else "rust")
         try:
             proc = subprocess.run(
                 cmd, cwd=ROOT.parent, capture_output=True, text=True,
@@ -43,6 +46,10 @@ def run_suite(round_number):
                 match = TEST_PATTERN.search(proc.stderr + "\n" + proc.stdout)
                 result["tests_executed"] = int(match.group(1)) if match else 0
                 result["passed"] &= "OK" in proc.stderr and result["tests_executed"] > 0
+            if command_name == "rust_tests":
+                match = re.search(r"test result: ok\. (\d+) passed;", proc.stdout)
+                result["tests_executed"] = int(match.group(1)) if match else 0
+                result["passed"] &= result["tests_executed"] > 0
             if not result["passed"]:
                 result["output_tail"] = (proc.stdout + "\n" + proc.stderr)[-2500:]
         except subprocess.TimeoutExpired:
@@ -71,7 +78,11 @@ def main():
             for step in record["steps"]:
                 if not step["passed"]:
                     print(json.dumps(step, sort_keys=True), flush=True)
+    current_commit = subprocess.run(
+        ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+        capture_output=True, text=True, check=False, timeout=10)
     summary = {
+        "commit_sha": current_commit.stdout.strip() if current_commit.returncode == 0 else None,
         "requested_rounds": args.rounds,
         "completed_rounds": len(records),
         "successful_rounds": sum(int(record["passed"]) for record in records),
@@ -83,6 +94,11 @@ def main():
                                       for step in record["steps"]),
         "rust_audits_passed": sum(int(step["passed"]) for record in records
                                  for step in record["steps"] if step["command"] == "rust"),
+        "rust_unittest_suites_passed": sum(int(step["passed"]) for record in records
+                                         for step in record["steps"] if step["command"] == "rust_tests"),
+        "rust_unittest_cases_executed": sum(step.get("tests_executed", 0)
+                                            for record in records for step in record["steps"]
+                                            if step["command"] == "rust_tests"),
         "elapsed_seconds": round(time.monotonic() - started, 3),
         "script_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "rounds": records,
