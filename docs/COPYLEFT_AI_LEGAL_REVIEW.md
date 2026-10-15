@@ -13,6 +13,12 @@ Review date: 10-15-2026 (America/New_York). Jurisdictional focus: United States.
 7. **No prohibition on commercial usage.** OSI open-source criteria permit commercial use and redistribution. Copyleft protects recipients' rights on covered works in particular circumstances; it does not prohibit corporations from using licensed work.
 8. **License cannot grant unowned rights.** The repository should not purport to grant permission for independently copyrighted third-party material. Review inbound contributions, quotations, dependency obligations, generated code whose origin is uncertain, and artwork/media separately before committing or releasing.
 
+## Court-level confirmation and its limits
+
+The U.S. Court of Appeals for the D.C. Circuit affirmed the Copyright Office's denial of registration for an entirely machine-authored work on **03-18-2025** in *Thaler v. Perlmutter*. The U.S. Supreme Court's official docket (No. 25-449) records that review was **denied on 03-02-2026**. A denial of certiorari is **not** a Supreme Court ruling on the legal merits; the lower-court decision remains in place. The case did not settle the factual degree of human contribution needed to copyright every particular AI-assisted computer program or document.
+
+Primary source: Supreme Court of the United States — 03-02-2026 — https://www.supremecourt.gov/docket/docketfiles/html/public/25-449.html
+
 ## Project-specific implementation and legal boundary
 
 - Keep `LICENSE` byte-for-byte unchanged as `AGPL-3.0-only`, keep SPDX notices in applicable original code, and preserve attribution and upstream rights.
