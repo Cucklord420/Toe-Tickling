@@ -27,15 +27,18 @@ def run_suite(round_number):
         [sys.executable, str(ROOT / "scripts/guidebook.py"), "check"],
         [sys.executable, "-m", "unittest", "discover", "-s",
          str(ROOT / "tests"), "-p", "test*.py", "-v"],
+        [str(ROOT / "rust/audit/target/debug/guidebook-audit"), "check", str(ROOT)],
     ]
     record = {"round": round_number, "hash_seed": round_number, "steps": []}
     for cmd in checks:
+        command_name = ("check" if cmd[-1] == "check" else
+                        "unittest" if "-m" in cmd else "rust")
         try:
             proc = subprocess.run(
                 cmd, cwd=ROOT.parent, capture_output=True, text=True,
                 timeout=90, env=env, check=False)
-            result = {"command": "check" if cmd[-1] == "check" else "unittest",
-                      "exit_code": proc.returncode, "passed": proc.returncode == 0}
+            result = {"command": command_name, "exit_code": proc.returncode,
+                      "passed": proc.returncode == 0}
             if result["command"] == "unittest":
                 match = TEST_PATTERN.search(proc.stderr + "\n" + proc.stdout)
                 result["tests_executed"] = int(match.group(1)) if match else 0
@@ -43,7 +46,7 @@ def run_suite(round_number):
             if not result["passed"]:
                 result["output_tail"] = (proc.stdout + "\n" + proc.stderr)[-2500:]
         except subprocess.TimeoutExpired:
-            result = {"command": "check" if cmd[-1] == "check" else "unittest",
+            result = {"command": command_name,
                       "exit_code": None, "passed": False, "timeout": True}
         record["steps"].append(result)
     record["passed"] = all(step["passed"] for step in record["steps"])
@@ -78,6 +81,8 @@ def main():
                                      for step in record["steps"] if step["command"] == "unittest"),
         "unittest_cases_executed": sum(step.get("tests_executed", 0) for record in records
                                       for step in record["steps"]),
+        "rust_audits_passed": sum(int(step["passed"]) for record in records
+                                 for step in record["steps"] if step["command"] == "rust"),
         "elapsed_seconds": round(time.monotonic() - started, 3),
         "script_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "rounds": records,
