@@ -180,6 +180,17 @@ class GuidebookTests(unittest.TestCase):
         output.write_bytes(b"\x7fELF\xff\xfe\x00")
         self.cli("check")
 
+    def test_forced_tracked_rust_build_output_is_rejected(self):
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True,
+                       capture_output=True, timeout=10)
+        output = self.repo / "rust/audit/target/debug/guidebook-audit"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"\x7fELF\xff\xfe\x00")
+        subprocess.run(["git", "-C", str(self.repo), "add", "-f",
+                        "rust/audit/target/debug/guidebook-audit"],
+                       check=True, capture_output=True, timeout=10)
+        self.assertIn("Tracked or non-ignored", self.cli("check", ok=False).stderr)
+
     def test_forced_tracked_private_file_is_rejected(self):
         subprocess.run(["git", "init", "-q", str(self.repo)], check=True,
                        capture_output=True, timeout=10)
