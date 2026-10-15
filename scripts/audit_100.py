@@ -27,7 +27,7 @@ def run_suite(round_number):
         [sys.executable, str(ROOT / "scripts/guidebook.py"), "check"],
         [sys.executable, "-m", "unittest", "discover", "-s",
          str(ROOT / "tests"), "-p", "test*.py", "-v"],
-        [str(ROOT / "rust/audit/target/debug/guidebook-audit"), "check", str(ROOT)],
+        [os.environ.get("GUIDEBOOK_RUST_BINARY", str(ROOT / "rust/audit/target/debug/guidebook-audit")), "check", str(ROOT)],
     ]
     record = {"round": round_number, "hash_seed": round_number, "steps": []}
     for cmd in checks:
