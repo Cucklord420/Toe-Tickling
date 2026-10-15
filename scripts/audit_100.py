@@ -91,7 +91,7 @@ def main():
         "unittest_suites_passed": sum(int(step["passed"]) for record in records
                                      for step in record["steps"] if step["command"] == "unittest"),
         "unittest_cases_executed": sum(step.get("tests_executed", 0) for record in records
-                                      for step in record["steps"]),
+                                      for step in record["steps"] if step["command"] == "unittest"),
         "rust_audits_passed": sum(int(step["passed"]) for record in records
                                  for step in record["steps"] if step["command"] == "rust"),
         "rust_unittest_suites_passed": sum(int(step["passed"]) for record in records
