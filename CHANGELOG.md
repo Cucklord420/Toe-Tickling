@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.1 — 10-15-2026
+
+- Prohibited fabricated filenames, file paths, launchers, imports, downloads, or claims of creating undelivered artifacts.
+- Added five mandatory ENG-015 through ENG-019 rules requiring actual source-tree inspection, creation readback, file-reference integrity, repair of missing references, and truthful file status.
+- Added generator guards and two regression tests; regenerated the guidebook, digest lock, and model-specific adapters.
+
 ## 1.1.0 — 10-15-2026
 
 - Added 28 continuous-evolution rules (EVO-001–EVO-028) to the canonical source and regenerated complete guide, version and digest lock.
