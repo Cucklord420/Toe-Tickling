@@ -21,7 +21,7 @@ class GuidebookTests(unittest.TestCase):
         self.work = Path(self.tmp.name)
         self.repo = self.work / "guidebook source with spaces"
         shutil.copytree(SOURCE, self.repo, ignore=shutil.ignore_patterns(
-            ".git", "__pycache__", ".pytest_cache"))
+            ".git", "__pycache__", ".pytest_cache", "target"))
         self.target = self.work / "existing project with spaces"
         self.target.mkdir()
         subprocess.run(["git", "init", "-q", str(self.target)], check=True,
@@ -167,11 +167,17 @@ class GuidebookTests(unittest.TestCase):
         self.cli("check")
 
     def test_rust_target_binaries_are_ignored_during_public_scan(self):
+        output = self.repo / "rust/audit/target/debug/guidebook-audit"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"\x7fELF\xff\xfe\x00")
+        self.cli("check")
+
+    def test_git_ignored_rust_binary_is_not_public_content(self):
         subprocess.run(["git", "init", "-q", str(self.repo)], check=True,
                        capture_output=True, timeout=10)
         output = self.repo / "rust/audit/target/debug/guidebook-audit"
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_bytes(b"\\x7fELF\\xff\\xfe\\x00")
+        output.write_bytes(b"\x7fELF\xff\xfe\x00")
         self.cli("check")
 
     def test_forced_tracked_private_file_is_rejected(self):
