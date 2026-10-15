@@ -123,6 +123,19 @@ class GuidebookTests(unittest.TestCase):
         path.write_text(path.read_text().replace("**EVO-003**", "**REMOVED-003**"))
         self.assertIn("continuous-evolution", self.cli("build", ok=False).stderr)
 
+    def test_mandatory_real_file_rule_cannot_be_removed(self):
+        path = self.repo / "rules/30-engineering.md"
+        path.write_text(path.read_text().replace("**ENG-016**", "**REMOVED-016**"))
+        self.assertIn("real-file verification", self.cli("build", ok=False).stderr)
+
+    def test_model_adapters_reject_imaginary_file_claims(self):
+        for relative in ("AGENTS.md", "CLAUDE.md", "GEMINI.md",
+                         ".github/copilot-instructions.md",
+                         ".cursor/rules/justin-guidebook.mdc"):
+            content = (self.repo / relative).read_text()
+            self.assertIn("Never invent files, filenames, paths, launchers, or downloads", content)
+            self.assertIn("successful write and readback", content)
+
     def test_all_adapters_include_mandatory_instruction_audit(self):
         for relative in ("AGENTS.md", "CLAUDE.md", "GEMINI.md",
                          ".github/copilot-instructions.md", ".cursor/rules/justin-guidebook.mdc"):
