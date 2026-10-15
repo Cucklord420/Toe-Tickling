@@ -12,3 +12,6 @@ private/
 *.local.log
 *.pem
 *.key
+
+# Local Rust compiler output; never scan or publish build artifacts
+/rust/audit/target/

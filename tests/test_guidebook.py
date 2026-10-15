@@ -21,7 +21,7 @@ class GuidebookTests(unittest.TestCase):
         self.work = Path(self.tmp.name)
         self.repo = self.work / "guidebook source with spaces"
         shutil.copytree(SOURCE, self.repo, ignore=shutil.ignore_patterns(
-            ".git", "__pycache__", ".pytest_cache"))
+            ".git", "__pycache__", ".pytest_cache", "target"))
         self.target = self.work / "existing project with spaces"
         self.target.mkdir()
         subprocess.run(["git", "init", "-q", str(self.target)], check=True,
@@ -112,6 +112,17 @@ class GuidebookTests(unittest.TestCase):
         path.write_text(path.read_text().replace("**AUD-003**", "**RENAMED-003**"))
         self.assertIn("audit", self.cli("build", ok=False).stderr)
 
+    def test_evolution_source_cannot_be_silently_omitted(self):
+        data = json.loads((self.repo / "policy.json").read_text())
+        self.alter_policy(sources=[source for source in data["sources"]
+                                   if source != "rules/65-continuous-evolution.md"])
+        self.assertIn("source", self.cli("build", ok=False).stderr)
+
+    def test_mandatory_evolution_rule_cannot_be_removed(self):
+        path = self.repo / "rules/65-continuous-evolution.md"
+        path.write_text(path.read_text().replace("**EVO-003**", "**REMOVED-003**"))
+        self.assertIn("continuous-evolution", self.cli("build", ok=False).stderr)
+
     def test_all_adapters_include_mandatory_instruction_audit(self):
         for relative in ("AGENTS.md", "CLAUDE.md", "GEMINI.md",
                          ".github/copilot-instructions.md", ".cursor/rules/justin-guidebook.mdc"):
@@ -153,6 +164,20 @@ class GuidebookTests(unittest.TestCase):
         subprocess.run(["git", "init", "-q", str(self.repo)], check=True,
                        capture_output=True, timeout=10)
         (self.repo / "PRIVATE.local.md").write_text("Private fixture, never published.\n")
+        self.cli("check")
+
+    def test_rust_target_binaries_are_ignored_during_public_scan(self):
+        output = self.repo / "rust/audit/target/debug/guidebook-audit"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"\x7fELF\xff\xfe\x00")
+        self.cli("check")
+
+    def test_git_ignored_rust_binary_is_not_public_content(self):
+        subprocess.run(["git", "init", "-q", str(self.repo)], check=True,
+                       capture_output=True, timeout=10)
+        output = self.repo / "rust/audit/target/debug/guidebook-audit"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"\x7fELF\xff\xfe\x00")
         self.cli("check")
 
     def test_forced_tracked_private_file_is_rejected(self):

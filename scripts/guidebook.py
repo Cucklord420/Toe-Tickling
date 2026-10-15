@@ -22,8 +22,10 @@ IGNORE_BEGIN = "# JUSTIN-GUIDEBOOK-PRIVATE:BEGIN"
 IGNORE_END = "# JUSTIN-GUIDEBOOK-PRIVATE:END"
 SKIP = {".git", "__pycache__", ".pytest_cache"}
 REQUIRED_SOURCES = {"rules/00-authority.md", "rules/05-execution-contract.md",
-                    "rules/40-security.md", "rules/60-instruction-audits.md", "profile/PUBLIC.md"}
+                    "rules/40-security.md", "rules/60-instruction-audits.md",
+                    "rules/65-continuous-evolution.md", "profile/PUBLIC.md"}
 REQUIRED_AUDIT_IDS = {f"AUD-{number:03d}" for number in range(1, 21)}
+REQUIRED_EVOLUTION_IDS = {f"EVO-{number:03d}" for number in range(1, 29)}
 
 
 class PolicyError(ValueError):
@@ -121,6 +123,8 @@ def render(root: Path) -> dict[str, str]:
         raise PolicyError("Rule IDs must be present and unique")
     if REQUIRED_AUDIT_IDS - set(ids):
         raise PolicyError("Mandatory instruction-audit rules are missing")
+    if REQUIRED_EVOLUTION_IDS - set(ids):
+        raise PolicyError("Mandatory continuous-evolution rules are missing")
     source_hash = digest.hexdigest()
     heading = (
         "# Justin's complete AI guidebook\n\n"
@@ -212,6 +216,8 @@ def file_list(root: Path) -> list[Path]:
     files = []
     for path in paths:
         rel = path.relative_to(root)
+        if rel.parts[:3] == ("rust", "audit", "target"):
+            continue  # Compiler artifacts are local output, not public source.
         if any(part in SKIP for part in rel.parts):
             continue
         if path.is_symlink():
