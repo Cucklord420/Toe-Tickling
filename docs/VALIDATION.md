@@ -1,4 +1,13 @@
-# Validation scope
+# Validation history
+
+**Historical baseline:** The measurements below are for guidebook v1.0.0 at commit `0bdc6fed00c35cec4ff3bf756da9d1f9dbb0c3a9`, not an assertion about later policy versions. The 125-rule count, 45 Python tests and recorded SHA-256 hashes are intentionally retained as historical evidence.
+
+## Later v1.1.1 verification (10-15-2026)
+
+Canonical main v1.1.1 baseline: `796ee24f9d0042e0c5883b42f4185bfaf4bedc81` (158 rules). The separate legal/security audit branch and its Python/Rust/100-pass evidence are tracked at [pull request #6](https://github.com/Cucklord420/Toe-Tickling/pull/6). Consult the exact head commit and its Actions status; do not infer that this dated record certifies future revisions. Automated validation is not independent proof of copyright ownership or an external model obeying policy.
+
+## Original v1.0.0 observations
+
 
 Measured on 10-15-2026 using Python 3.12.14, Git, and Linux x86_64. This is not a claim that prose can enforce model behavior.
 
