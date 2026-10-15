@@ -1,0 +1,476 @@
+//! Public-tree checks. Diagnostics identify the file, never the matched private value.
+use regex::Regex;
+use serde_yaml_ng::{Mapping, Value};
+use std::{
+    collections::BTreeSet,
+    fs,
+    path::{Component, Path, PathBuf},
+    process::Command,
+};
+
+use crate::Result;
+
+fn fail(message: &str, relative: &Path) -> String {
+    format!("{message}: {}", relative.display())
+}
+
+/// Reject symlinks before canonicalization can hide an ancestor link.
+fn no_symlink_ancestors(path: &Path) -> Result<()> {
+    for ancestor in path.ancestors() {
+        match fs::symlink_metadata(ancestor) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err("Refusing a public path with a symlink ancestor".into());
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err("Cannot inspect public path ancestry".into()),
+        }
+    }
+    Ok(())
+}
+
+fn skipped(relative: &Path) -> bool {
+    relative
+        .components()
+        .any(|part| part.as_os_str() == ".git" || part.as_os_str() == "target")
+}
+
+fn private_path(relative: &Path) -> bool {
+    relative.components().any(|part| {
+        matches!(
+            part.as_os_str()
+                .to_str()
+                .map(str::to_ascii_lowercase)
+                .as_deref(),
+            Some("private" | ".private" | ".local")
+        )
+    }) || relative
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            matches!(name, "PRIVATE.local.md" | "CLAUDE.local.md")
+                || (name.starts_with(".env") && name != ".env.example")
+        })
+}
+
+fn checked_path(root: &Path, relative: &Path) -> Result<PathBuf> {
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
+        || relative.to_string_lossy().contains('\\')
+    {
+        return Err("Unsafe path returned by public-tree enumeration".into());
+    }
+    let path = root.join(relative);
+    no_symlink_ancestors(&path)?;
+    Ok(path)
+}
+
+fn walk(root: &Path, here: &Path, files: &mut BTreeSet<PathBuf>) -> Result<()> {
+    for entry in fs::read_dir(here).map_err(|_| "Cannot enumerate public tree")? {
+        let entry = entry.map_err(|_| "Cannot inspect public-tree entry")?;
+        let relative = entry
+            .path()
+            .strip_prefix(root)
+            .map_err(|_| "Public-tree path leaves root")?
+            .to_owned();
+        if skipped(&relative) {
+            continue;
+        }
+        let path = checked_path(root, &relative)?;
+        let kind = entry
+            .file_type()
+            .map_err(|_| "Cannot inspect public-tree type")?;
+        if kind.is_dir() {
+            if private_path(&relative) {
+                return Err(fail("Private path in public tree", &relative));
+            }
+            walk(root, &path, files)?;
+        } else if kind.is_file() {
+            files.insert(relative);
+        } else {
+            return Err(fail("Public path must be a regular file", &relative));
+        }
+    }
+    Ok(())
+}
+
+/// Match Git's public candidate set: tracked files plus unignored new files.
+/// Ignored, untracked local context must not be opened or exposed by the scan.
+fn file_list(root: &Path) -> Result<BTreeSet<PathBuf>> {
+    let git_root = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(root)
+        .output();
+    let is_git_root = match git_root {
+        Ok(output) if output.status.success() => {
+            let directory =
+                String::from_utf8(output.stdout).map_err(|_| "Git root is not valid UTF-8")?;
+            fs::canonicalize(directory.trim_end_matches(['\r', '\n']))
+                .map_err(|_| "Cannot resolve Git root")?
+                == root
+        }
+        _ if root.join(".git").exists() => {
+            return Err("Cannot enumerate the Git public tree".into());
+        }
+        _ => false,
+    };
+    let mut files = BTreeSet::new();
+    if !is_git_root {
+        walk(root, root, &mut files)?;
+        return Ok(files);
+    }
+    let output = Command::new("git")
+        .args([
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ])
+        .current_dir(root)
+        .output()
+        .map_err(|_| "Cannot list Git public-tree files")?;
+    if !output.status.success() {
+        return Err("Git public-tree enumeration failed".into());
+    }
+    for name in output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|name| !name.is_empty())
+    {
+        let name = std::str::from_utf8(name).map_err(|_| "Public file name is not valid UTF-8")?;
+        let relative = PathBuf::from(name);
+        // Unlike ignored local output, a Git candidate can enter the public tree.
+        // Reject it before the ordinary target/ exclusion or any file reads.
+        if relative
+            .components()
+            .any(|part| part.as_os_str() == "target")
+        {
+            return Err(fail("Tracked or non-ignored Rust build output", &relative));
+        }
+        if skipped(&relative) {
+            continue;
+        }
+        let path = checked_path(root, &relative)?;
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.is_file() => {
+                files.insert(relative);
+            }
+            // A tracked deletion is not public working-tree content to read.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => return Err(fail("Public path must be a regular file", &relative)),
+        }
+    }
+    Ok(files)
+}
+
+fn rust_or_data(relative: &Path) -> bool {
+    relative
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|extension| {
+            [
+                "rs", "md", "mdc", "json", "toml", "lock", "yml", "yaml", "txt",
+            ]
+            .contains(&extension)
+        })
+        || relative
+            .file_name()
+            .and_then(|value| value.to_str())
+            .is_some_and(|name| {
+                ["LICENSE", ".gitignore", ".gitattributes", ".env.example"].contains(&name)
+            })
+}
+
+fn percent_decode(value: &str) -> Result<String> {
+    let mut decoded = Vec::with_capacity(value.len());
+    let mut source = value.as_bytes().iter().copied();
+    while let Some(byte) = source.next() {
+        if byte == b'%' {
+            let high = source.next().and_then(|byte| (byte as char).to_digit(16));
+            let low = source.next().and_then(|byte| (byte as char).to_digit(16));
+            match (high, low) {
+                (Some(high), Some(low)) => decoded.push((high * 16 + low) as u8),
+                _ => return Err("Invalid percent encoding in local Markdown link".into()),
+            }
+        } else {
+            decoded.push(byte);
+        }
+    }
+    String::from_utf8(decoded).map_err(|_| "Local Markdown link is not valid UTF-8".into())
+}
+
+fn local_links(root: &Path, relative: &Path, text: &str, links: &Regex) -> Result<()> {
+    for matched in links.captures_iter(text) {
+        let target = matched.get(1).or_else(|| matched.get(2)).unwrap().as_str();
+        let scheme = target.split_once(':').is_some_and(|(scheme, _)| {
+            scheme.starts_with(|character: char| character.is_ascii_alphabetic())
+                && scheme.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.')
+                })
+        });
+        if scheme || target.starts_with('#') || target.starts_with("//") {
+            continue;
+        }
+        // Split URI delimiters before decoding: an encoded # belongs to a filename.
+        let raw = target.split(['?', '#']).next().unwrap_or("");
+        if raw.is_empty() {
+            continue;
+        }
+        let decoded = percent_decode(raw)
+            .map_err(|_| fail("Invalid local Markdown link encoding", relative))?;
+        let link = Path::new(&decoded);
+        if link.is_absolute() || decoded.contains(['\\', '\0']) {
+            return Err(fail("Broken or escaping local Markdown link", relative));
+        }
+        let joined = root.join(relative).parent().unwrap_or(root).join(link);
+        no_symlink_ancestors(&joined)?;
+        let canonical = fs::canonicalize(joined)
+            .map_err(|_| fail("Broken or escaping local Markdown link", relative))?;
+        if !canonical.starts_with(root) {
+            return Err(fail("Broken or escaping local Markdown link", relative));
+        }
+    }
+    Ok(())
+}
+
+fn field<'a>(mapping: &'a Mapping, key: &str) -> Option<&'a Value> {
+    mapping.get(Value::String(key.into()))
+}
+
+fn no_yaml_merges(value: &Value) -> bool {
+    match value {
+        Value::Mapping(mapping) => {
+            !mapping.contains_key(Value::String("<<".into()))
+                && mapping.values().all(no_yaml_merges)
+        }
+        Value::Sequence(sequence) => sequence.iter().all(no_yaml_merges),
+        Value::Tagged(_) => false,
+        _ => true,
+    }
+}
+
+fn readonly_permissions(value: Option<&Value>) -> bool {
+    value
+        .and_then(Value::as_mapping)
+        .is_some_and(|permissions| {
+            field(permissions, "contents").and_then(Value::as_str) == Some("read")
+                && permissions
+                    .values()
+                    .all(|value| matches!(value.as_str(), Some("read" | "none")))
+        })
+}
+
+fn pinned_action(action: &str) -> bool {
+    action.split_once('@').is_some_and(|(name, pin)| {
+        !name.is_empty()
+            && !name.chars().any(char::is_whitespace)
+            && pin.len() == 40
+            && pin
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
+}
+
+fn rust_command(command: &str) -> bool {
+    let command = command.trim();
+    !command.is_empty()
+        && !command.contains(['\r', '\n'])
+        && command
+            .split_whitespace()
+            .next()
+            .is_some_and(|program| matches!(program, "cargo" | "rustup"))
+        && command.chars().all(|character| {
+            character.is_ascii_alphanumeric()
+                || matches!(
+                    character,
+                    ' ' | '\t' | '-' | '_' | '.' | '/' | ':' | '=' | '+' | ','
+                )
+        })
+}
+
+fn supported_shell(mapping: &Mapping) -> bool {
+    field(mapping, "shell").is_none_or(|shell| {
+        matches!(
+            shell.as_str(),
+            Some("bash" | "sh" | "pwsh" | "powershell" | "cmd")
+        )
+    })
+}
+
+fn supported_default_shell(mapping: &Mapping) -> bool {
+    field(mapping, "defaults")
+        .and_then(Value::as_mapping)
+        .and_then(|defaults| field(defaults, "run"))
+        .and_then(Value::as_mapping)
+        .is_none_or(supported_shell)
+}
+
+fn privileged_trigger(events: &Value) -> bool {
+    let forbidden = |event: &str| matches!(event, "pull_request_target" | "workflow_run");
+    match events {
+        Value::String(event) => forbidden(event),
+        Value::Sequence(events) => events.iter().any(privileged_trigger),
+        Value::Mapping(events) => events
+            .keys()
+            .any(|event| event.as_str().is_some_and(forbidden)),
+        _ => false,
+    }
+}
+
+fn secret_access(value: &Value, context: &Regex) -> bool {
+    match value {
+        Value::Mapping(mapping) => {
+            mapping.keys().any(|key| key.as_str() == Some("secrets"))
+                || mapping.values().any(|value| secret_access(value, context))
+        }
+        Value::Sequence(sequence) => sequence.iter().any(|value| secret_access(value, context)),
+        Value::String(text) => context.is_match(text),
+        _ => false,
+    }
+}
+
+fn workflow(root: &Path, relative: &Path, secret_context: &Regex) -> Result<()> {
+    let path = checked_path(root, relative)?;
+    let bytes = fs::read(path).map_err(|_| fail("Missing CI workflow", relative))?;
+    let document: Value =
+        serde_yaml_ng::from_slice(&bytes).map_err(|_| "Invalid CI workflow YAML")?;
+    if !no_yaml_merges(&document) {
+        return Err("CI workflow must use explicit mappings without YAML merges or tags".into());
+    }
+    if secret_access(&document, secret_context) {
+        return Err("CI secret access or forwarding requires separate review".into());
+    }
+    let document = document
+        .as_mapping()
+        .ok_or("CI workflow must be a mapping")?;
+    if field(document, "on").is_some_and(privileged_trigger) {
+        return Err("Privileged CI triggers require separate review".into());
+    }
+    if !readonly_permissions(field(document, "permissions")) {
+        return Err("CI must have explicit read-only contents permissions".into());
+    }
+    if !supported_default_shell(document) {
+        return Err("CI command shells must not select another implementation language".into());
+    }
+    let jobs = field(document, "jobs")
+        .and_then(Value::as_mapping)
+        .ok_or("CI jobs are missing")?;
+    let mut checkout = false;
+    for job in jobs.values() {
+        let job = job.as_mapping().ok_or("Invalid CI job")?;
+        if !supported_default_shell(job) {
+            return Err("CI command shells must not select another implementation language".into());
+        }
+        if field(job, "permissions").is_some() && !readonly_permissions(field(job, "permissions")) {
+            return Err("CI job permissions must preserve read-only contents access".into());
+        }
+        if let Some(action) = field(job, "uses")
+            && !action.as_str().is_some_and(pinned_action)
+        {
+            return Err("External CI actions must use full commit pins".into());
+        }
+        if let Some(steps) = field(job, "steps") {
+            if !field(job, "timeout-minutes")
+                .and_then(Value::as_u64)
+                .is_some_and(|minutes| (1..=10).contains(&minutes))
+            {
+                return Err("CI jobs must set timeout-minutes between 1 and 10".into());
+            }
+            let steps = steps.as_sequence().ok_or("CI steps must be a sequence")?;
+            for step in steps {
+                let step = step.as_mapping().ok_or("Invalid CI step")?;
+                if let Some(command) = field(step, "run")
+                    && (!command.as_str().is_some_and(rust_command) || !supported_shell(step))
+                {
+                    return Err("CI run steps must be single Rust tooling invocations".into());
+                }
+                if let Some(action) = field(step, "uses") {
+                    let action = action.as_str().ok_or("CI action must be a string")?;
+                    if !pinned_action(action) {
+                        return Err("External CI actions must use full commit pins".into());
+                    }
+                    if action
+                        .split('@')
+                        .next()
+                        .is_some_and(|name| name.eq_ignore_ascii_case("actions/checkout"))
+                    {
+                        checkout = true;
+                        let setting = field(step, "with")
+                            .and_then(Value::as_mapping)
+                            .and_then(|mapping| field(mapping, "persist-credentials"));
+                        if !matches!(setting, Some(Value::Bool(false)))
+                            && setting.and_then(Value::as_str) != Some("false")
+                        {
+                            return Err("CI checkout must set persist-credentials: false".into());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if !checkout && relative == Path::new(".github/workflows/validate.yml") {
+        return Err("CI must include a pinned checkout with persisted credentials disabled".into());
+    }
+    Ok(())
+}
+
+/// Audit public paths, Rust-only sources, selected privacy patterns, links and CI.
+/// This is a structural guard, not a guarantee that all sensitive data is detected.
+pub fn check(root: &Path) -> Result<()> {
+    let absolute = if root.is_absolute() {
+        root.to_owned()
+    } else {
+        std::env::current_dir()
+            .map_err(|_| "Cannot determine current directory")?
+            .join(root)
+    };
+    no_symlink_ancestors(&absolute)?;
+    let root = fs::canonicalize(absolute).map_err(|_| "Cannot resolve public-tree root")?;
+    let secrets = Regex::new(
+        r"\b(?:gh[pousr]_|github_pat_|sk-(?:proj-|svcacct-)?|glpat-|xox[baprs]-)[A-Za-z0-9_-]{20,}|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----",
+    ).map_err(|_| "Invalid credential scanner expression")?;
+    let emails = Regex::new(r"[\w.+-]+@([\w-]+(?:\.[\w-]+)+)")
+        .map_err(|_| "Invalid contact scanner expression")?;
+    let links = Regex::new(r#"\[[^\]\n]*\]\(\s*(?:<([^>\n]+)>|([^\s)]+))(?:\s+"[^"\n]*")?\s*\)"#)
+        .map_err(|_| "Invalid Markdown scanner expression")?;
+    let secret_context = Regex::new(r"\$\{\{[^}]*\bsecrets\b")
+        .map_err(|_| "Invalid CI secret context expression")?;
+    let mut workflows = BTreeSet::from([PathBuf::from(".github/workflows/validate.yml")]);
+    for relative in file_list(&root)? {
+        if private_path(&relative) {
+            return Err(fail("Private path in public tree", &relative));
+        }
+        if !rust_or_data(&relative) {
+            return Err(fail("Executable source must be Rust", &relative));
+        }
+        let text = fs::read_to_string(checked_path(&root, &relative)?)
+            .map_err(|_| fail("Public file must be readable UTF-8", &relative))?;
+        let contact = emails.captures_iter(&text).any(|matched| {
+            let domain = matched[1].to_ascii_lowercase();
+            domain != "example.invalid" && !domain.ends_with(".example.invalid")
+        });
+        if secrets.is_match(&text) || contact {
+            return Err(fail("Potential private credential/contact", &relative));
+        }
+        if relative
+            .extension()
+            .is_some_and(|extension| extension == "md")
+        {
+            local_links(&root, &relative, &text, &links)?;
+        }
+        if relative.parent() == Some(Path::new(".github/workflows"))
+            && relative
+                .extension()
+                .is_some_and(|extension| extension == "yml" || extension == "yaml")
+        {
+            workflows.insert(relative);
+        }
+    }
+    for relative in workflows {
+        workflow(&root, &relative, &secret_context)?;
+    }
+    Ok(())
+}

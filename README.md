@@ -21,6 +21,7 @@ Begin with [AGENTS.md](AGENTS.md). Read the [rule book](RULEBOOK.md) and its lin
 Rust toolchain pinned in `rust-toolchain.toml`; locked Cargo dependencies:
 
 ```bash
+cargo run --locked -- build
 cargo run --locked -- render --check
 cargo run --locked -- check
 cargo test --locked
@@ -32,8 +33,19 @@ The last command intentionally fails until the record has real evidence and reso
 
 ## Current delivery boundary
 
+Read [GUIDEBOOK.md](GUIDEBOOK.md) in full for the complete integrated standing policy and public profile. The original [modular sources](policy.json) and the 45-rule verification register complement one another.
+
 The initial review inventoried all 13 accessible repositories and inspected selected instructions, project records, and historical conversations. It did not read every historical message or private release asset. At the initial snapshot, this repository contained only its README and license; no other agent's published branch or pull request was visible. See provenance for exact coverage limits and follow-up work. No model deployment or cross-repository rollout is implied.
 
 ## License
 
 Original additions follow the existing [AGPL-3.0-only license](LICENSE). See [license scope](LICENSE-SCOPE.md). Private source material remains private and is not republished or relicensed by this guide.
+
+## Adopt in another Git project
+
+```bash
+cargo run --locked -- adopt /absolute/path/to/project
+cargo run --locked -- adopt /absolute/path/to/project --apply
+```
+
+Preview is the default. Apply only under the target project's authorization. The Rust installer preserves existing instructions and adapters, validates snapshot digests, and rejects unsafe or tampered targets. It does not commit, push, change account settings, or prove that a model obeyed the installed text. Use `--root /path/to/Toe-Tickling` when invoking the compiled CLI from another directory.

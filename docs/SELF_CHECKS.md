@@ -42,7 +42,7 @@ Before claiming completion:
 
 ## Receipt format and tools
 
-Generate a record outside the checkout using ``cargo run --locked -- new-audit``. It contains document hashes and placeholder notes; these are **not proof of reading**. Fill notes after reading. It starts with every check and acceptance condition blocked. Add real commands, observations, artifacts, or source references to the `evidence` map. Use stable evidence IDs in checks and acceptance conditions. Avoid secrets and unnecessary personal details even in local records.
+Generate a record outside the checkout using `cargo run --locked -- new-audit`. It contains document hashes and placeholder notes; these are **not proof of reading**. Fill notes after reading. It starts with every check and acceptance condition blocked. Add real commands, observations, artifacts, or source references to the `evidence` map. Use stable evidence IDs in checks and acceptance conditions. Avoid secrets and unnecessary personal details even in local records.
 
 Required fields are schema version, task, outcome, UTC recording timestamp, repository revision, reading receipts, evidence, rule checks, and acceptance conditions. `outcome` is `in-progress`, `complete`, or `blocked`. All active rule IDs must appear exactly once. A complete receipt must have no unresolved rule checks and every acceptance condition must pass. Not-applicable needs a concrete reason. A blocked record preserves partial progress but does not pass the completion gate.
 

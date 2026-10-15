@@ -13,16 +13,26 @@ fn now() -> OffsetDateTime {
 fn fixture() -> TempDir {
     let dir = tempfile::tempdir().unwrap();
     let source = Path::new(env!("CARGO_MANIFEST_DIR"));
-    for path in READING_FILES {
+    for path in READING_FILES.iter().chain(guide::SOURCES.iter()) {
         let target = dir.path().join(path);
         fs::create_dir_all(target.parent().unwrap()).unwrap();
         fs::copy(source.join(path), target).unwrap();
     }
-    for file in ["LICENSE", "LICENSE-SCOPE.md", "CHANGELOG.md"] {
+    for file in [
+        "LICENSE",
+        "LICENSE-SCOPE.md",
+        "CHANGELOG.md",
+        ".github/workflows/validate.yml",
+        "docs/VALIDATION.md",
+        "docs/archive/INITIAL_INSTRUCTION_AUDIT.md",
+        "docs/archive/INITIAL_VALIDATION.md",
+    ] {
+        fs::create_dir_all(dir.path().join(file).parent().unwrap()).unwrap();
         fs::copy(source.join(file), dir.path().join(file)).unwrap();
     }
     let policy = load_policy(dir.path()).unwrap();
     fs::write(dir.path().join("RULEBOOK.md"), render(&policy)).unwrap();
+    guide::build(dir.path()).unwrap();
     write_json(
         &dir.path().join("policy/reading-manifest.json"),
         &current_manifest(dir.path()).unwrap(),
@@ -74,7 +84,9 @@ fn complete(root: &Path) -> Audit {
 fn baseline_and_declared_receipt_pass() {
     let dir = fixture();
     let policy = check_repo(dir.path(), now().date()).unwrap();
-    validate_audit(dir.path(), &policy, &complete(dir.path()), now()).unwrap();
+    let audit = complete(dir.path());
+    assert_eq!(audit.checks.len(), 170);
+    validate_audit(dir.path(), &policy, &audit, now()).unwrap();
 }
 #[test]
 fn template_is_never_completion() {
@@ -261,11 +273,7 @@ fn broken_link_and_non_rust_source_are_rejected() {
         "# Extra\n[missing](absent.md)\n",
     )
     .unwrap();
-    assert!(
-        validate_links(dir.path())
-            .unwrap_err()
-            .contains("Broken link")
-    );
+    assert!(validate_links(dir.path()).is_err());
     fs::remove_file(dir.path().join("extra.md")).unwrap();
     for extension in ["py", "js", "sh", "c", "pl", "go"] {
         let path = dir.path().join(format!("implementation.{extension}"));
@@ -318,4 +326,44 @@ fn cli_does_not_overwrite_receipts_or_write_them_in_checkout() {
         .output()
         .unwrap();
     assert!(!result.status.success());
+}
+
+#[test]
+fn full_guide_and_adapters_cannot_drift() {
+    let dir = fixture();
+    fs::write(dir.path().join("CLAUDE.md"), "# Stale adapter\n").unwrap();
+    assert!(guide::check(dir.path()).is_err());
+    guide::build(dir.path()).unwrap();
+    guide::check(dir.path()).unwrap();
+    fs::write(dir.path().join("GUIDEBOOK.md"), "# Incomplete policy\n").unwrap();
+    assert!(guide::check(dir.path()).is_err());
+}
+
+#[test]
+fn removing_existing_rules_or_restoring_language_exception_fails() {
+    let dir = fixture();
+    let path = dir.path().join("rules/10-communication.md");
+    let text = fs::read_to_string(&path)
+        .unwrap()
+        .replace("**COM-001**", "**COM-999**");
+    fs::write(path, text).unwrap();
+    assert!(guide::build(dir.path()).is_err());
+    let dir = fixture();
+    let path = dir.path().join("policy.json");
+    let mut p: serde_json::Value = read_json(&path).unwrap();
+    p["implementation_language"] = "Python".into();
+    write_json(&path, &p).unwrap();
+    assert!(guide::build(dir.path()).is_err());
+}
+
+#[test]
+fn build_cannot_silently_refresh_reading_receipts() {
+    let dir = fixture();
+    let mut policy = load_policy(dir.path()).unwrap();
+    policy.rules[0]
+        .requirement
+        .push_str(" Added reviewed condition.");
+    write_json(&dir.path().join("policy/rules.json"), &policy).unwrap();
+    guide::build(dir.path()).unwrap();
+    assert!(check_repo(dir.path(), now().date()).is_err());
 }

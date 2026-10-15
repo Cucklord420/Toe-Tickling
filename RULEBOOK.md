@@ -244,7 +244,7 @@ Prefer free, local, reusable, open and portable tools where practical. Evaluate 
 
 Include acquisition, taxes, shipping, required accessories, subscriptions, maintenance, energy, migration, and replacement assumptions. Compare five-year TCO where applicable and reuse owned equipment before recommending purchases.
 
-**Self-check:** Show formulas, units, time horizon, rate dates, workload assumptions, and sensitivity.
+**Self-check:** Keep reproducible formulas, units, time horizon, rate dates, workload assumptions, and sensitivity in the evidence; show working in user output when requested or required.
 
 ### ENG-04 — Measure the exact system
 

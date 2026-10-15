@@ -4,9 +4,13 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    path::{Component, Path},
+    path::Path,
 };
 use time::{Date, OffsetDateTime, format_description::well_known::Rfc3339};
+
+pub mod adopt;
+pub mod guide;
+pub mod security;
 
 pub type Result<T> = std::result::Result<T, String>;
 pub const READING_FILES: &[&str] = &[
@@ -21,6 +25,16 @@ pub const READING_FILES: &[&str] = &[
     "CONTRIBUTING.md",
     "policy/rules.json",
     "llms.txt",
+    "GUIDEBOOK.md",
+    "policy.json",
+    "guidebook-lock.json",
+    "docs/INSTRUCTION_AUDIT.md",
+    "CLAUDE.md",
+    "GEMINI.md",
+    ".github/copilot-instructions.md",
+    ".cursor/rules/justin-guidebook.mdc",
+    "prompts/USE_WITH_ANY_MODEL.md",
+    "prompts/STANDING_MEMORY.md",
 ];
 const SOURCES: &[&str] = &[
     "public-existing",
@@ -236,7 +250,7 @@ pub fn render(policy: &Policy) -> String {
 }
 pub fn current_manifest(root: &Path) -> Result<Manifest> {
     let mut documents = BTreeMap::new();
-    for path in READING_FILES {
+    for path in READING_FILES.iter().chain(guide::SOURCES.iter()) {
         documents.insert((*path).to_owned(), sha256(&root.join(path))?);
     }
     Ok(Manifest {
@@ -244,70 +258,8 @@ pub fn current_manifest(root: &Path) -> Result<Manifest> {
         documents,
     })
 }
-fn files(root: &Path, here: &Path, output: &mut Vec<std::path::PathBuf>) -> Result<()> {
-    for entry in fs::read_dir(here).map_err(|e| e.to_string())? {
-        let entry = entry.map_err(|e| e.to_string())?;
-        let path = entry.path();
-        if here == root
-            && [".git", "target", "private", "local-data"]
-                .iter()
-                .any(|x| entry.file_name() == *x)
-        {
-            continue;
-        }
-        require(
-            !entry.file_type().map_err(|e| e.to_string())?.is_symlink(),
-            format!("Symlink outside audit scope: {}", path.display()),
-        )?;
-        if path.is_dir() {
-            files(root, &path, output)?;
-        } else {
-            output.push(path);
-        }
-    }
-    Ok(())
-}
 pub fn validate_links(root: &Path) -> Result<()> {
-    let mut paths = Vec::new();
-    files(root, root, &mut paths)?;
-    for path in paths {
-        let extension = path.extension().and_then(|x| x.to_str()).unwrap_or("");
-        require(
-            ["rs", "md", "json", "toml", "lock", "yml", "yaml", "txt"].contains(&extension)
-                || ["LICENSE", ".gitignore"]
-                    .iter()
-                    .any(|name| path.file_name().is_some_and(|file| file == *name)),
-            format!("Executable source must be Rust: {}", path.display()),
-        )?;
-        if extension != "md" {
-            continue;
-        }
-        let text = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        for tail in text.split("](").skip(1) {
-            let target = tail
-                .split(')')
-                .next()
-                .unwrap_or("")
-                .trim_matches(['<', '>']);
-            if target.contains("://") || target.starts_with("mailto:") || target.starts_with('#') {
-                continue;
-            }
-            let target = target.split('#').next().unwrap_or("");
-            require(
-                !target.is_empty()
-                    && !Path::new(target).is_absolute()
-                    && !Path::new(target)
-                        .components()
-                        .any(|c| matches!(c, Component::ParentDir)),
-                format!("Unsafe local link in {}: {target}", path.display()),
-            )?;
-            require(
-                path.parent().unwrap_or(root).join(target).exists(),
-                format!("Broken link in {}: {target}", path.display()),
-            )?;
-        }
-    }
-    Ok(())
+    security::check(root)
 }
 pub fn check_repo(root: &Path, today: Date) -> Result<Policy> {
     let policy = load_policy(root)?;
@@ -317,6 +269,7 @@ pub fn check_repo(root: &Path, today: Date) -> Result<Policy> {
         actual == render(&policy),
         "RULEBOOK.md differs from canonical rules; run render and review",
     )?;
+    guide::check(root)?;
     let saved: Manifest = read_json(&root.join("policy/reading-manifest.json"))?;
     require(
         saved.schema_version == 1 && saved.documents == current_manifest(root)?.documents,
@@ -409,12 +362,13 @@ pub fn validate_audit(root: &Path, policy: &Policy, a: &Audit, now: OffsetDateTi
             format!("Incomplete evidence {id}"),
         )?;
     }
-    let ids: BTreeSet<_> = policy
+    let mut ids: BTreeSet<_> = policy
         .rules
         .iter()
         .filter(|r| r.status == "active")
         .map(|r| r.id.clone())
         .collect();
+    ids.extend(guide::module_ids(root)?);
     let mut checked = BTreeSet::new();
     for c in &a.checks {
         require(
@@ -424,6 +378,7 @@ pub fn validate_audit(root: &Path, policy: &Policy, a: &Audit, now: OffsetDateTi
         check_disposition(c, &a.evidence, false)?;
         require(
             c.status != "not-applicable"
+                || !policy.rules.iter().any(|r| r.id == c.id)
                 || policy
                     .rules
                     .iter()
@@ -487,6 +442,12 @@ pub fn new_audit(root: &Path, task: String) -> Result<Audit> {
                 reason: "UNFILLED: inspect applicability and evidence".into(),
                 evidence: vec![],
             })
+            .chain(guide::module_ids(root)?.into_iter().map(|id| Check {
+                id,
+                status: "blocked".into(),
+                reason: "UNFILLED: inspect scoped module rule and evidence".into(),
+                evidence: vec![],
+            }))
             .collect(),
         acceptance: vec![Check {
             id: "AC-01".into(),

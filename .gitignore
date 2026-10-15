@@ -5,3 +5,11 @@
 .env
 .env.*
 !.env.example
+PRIVATE.local.md
+CLAUDE.local.md
+.private/
+.local/
+*.local.json
+*.local.log
+*.pem
+*.key

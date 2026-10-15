@@ -41,3 +41,7 @@ The user's later explicit requirement makes all newly authored executable code a
 For future review, enumerate newly accessible repositories and changed paths, record source commit and content hash, distinguish complete from sampled review, and maintain per-source receipts privately. Review remaining user-authored history in bounded resumable batches with explicit disposition and sensitivity. Promote only durable, evidence-supported preferences after reconciling later corrections. Keep stale facts and one-off permissions out of global policy. Add new rules and regression cases when a distinct gap is found.
 
 A useful initial release can be structurally complete for its stated scope while the historical discovery and future evolution remain open. Report those boundaries each time rather than labeling a moving corpus permanently exhaustive.
+
+## Other-agent integration checkpoint
+
+A later fetch during this work found `0bdc6fed00c35cec4ff3bf756da9d1f9dbb0c3a9` on main. That published revision supplied 125 stable rules, task playbooks, public profile, model adapters, source references, and a Python builder/adopter with tests. Those modules were reviewed and integrated; the current user correction explicitly supersedes their Python maintenance exception. The full combined guide is built and validated in Rust. Initial Python audit/validation reports are preserved as historical records under `docs/archive/`; their pass counts do not apply to the Rust replacement. Current observed results belong in `docs/VALIDATION.md`.

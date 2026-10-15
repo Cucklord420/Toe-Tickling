@@ -372,7 +372,7 @@
       "scope": "purchase",
       "status": "active",
       "requirement": "Include acquisition, taxes, shipping, required accessories, subscriptions, maintenance, energy, migration, and replacement assumptions. Compare five-year TCO where applicable and reuse owned equipment before recommending purchases.",
-      "verification": "Show formulas, units, time horizon, rate dates, workload assumptions, and sensitivity.",
+      "verification": "Keep reproducible formulas, units, time horizon, rate dates, workload assumptions, and sensitivity in the evidence; show working in user output when requested or required.",
       "source": "public-existing",
       "reviewed_on": "2026-10-15",
       "review_due": "2027-01-15",

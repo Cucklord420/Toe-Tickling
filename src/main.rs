@@ -11,19 +11,61 @@ use toe_tickling::{
 
 fn run() -> Result<()> {
     let mut args: Vec<String> = env::args().skip(1).collect();
-    let root = env::current_dir()
-        .map_err(|e| e.to_string())?
-        .canonicalize()
-        .map_err(|e| e.to_string())?;
+    let selected = if let Some(index) = args.iter().position(|arg| arg == "--root") {
+        if index + 1 >= args.len() {
+            return Err("--root needs a path".into());
+        }
+        let value = args.remove(index + 1);
+        args.remove(index);
+        PathBuf::from(value)
+    } else {
+        env::current_dir().map_err(|e| e.to_string())?
+    };
+    let root = selected.canonicalize().map_err(|e| e.to_string())?;
     if args.is_empty() || args == ["--help"] {
         println!(
-            "Run from the rule book checkout:\n  cargo run --locked -- check [--audit /private/receipt.json]\n  cargo run --locked -- render [--check]\n  cargo run --locked -- refresh-manifest\n  cargo run --locked -- new-audit --task 'Task description' --output /private/receipt.json\n\nChecks validate declarations and bytes, not truth or actual model behavior."
+            "Use the checkout as current directory or pass --root PATH:\n  cargo run --locked -- build\n  cargo run --locked -- check [--audit /private/receipt.json]\n  cargo run --locked -- render [--check]\n  cargo run --locked -- refresh-manifest\n  cargo run --locked -- new-audit --task 'Task description' --output /private/receipt.json\n  cargo run --locked -- adopt /path/to/project [--apply]\n\nChecks validate declarations and bytes, not truth or actual model behavior."
         );
         return Ok(());
     }
     let command = args.remove(0);
     let now = OffsetDateTime::now_utc();
     match command.as_str() {
+        "build" => {
+            if !args.is_empty() {
+                return Err("build takes no arguments".into());
+            }
+            println!(
+                "Generated {} full-guide, register, and adapter artifacts.",
+                toe_tickling::guide::build(&root)?
+            );
+        }
+        "adopt" => {
+            if args.is_empty() || args.len() > 2 || (args.len() == 2 && args[1] != "--apply") {
+                return Err("Expected adopt TARGET [--apply]".into());
+            }
+            let plan = toe_tickling::adopt::plan(&root, Path::new(&args[0]))?;
+            let changed: Vec<_> = plan
+                .files
+                .iter()
+                .filter(|(path, text)| {
+                    fs::read(plan.target.join(path)).ok().as_deref() != Some(text.as_bytes())
+                })
+                .map(|(path, _)| path.clone())
+                .collect();
+            let apply = args.len() == 2;
+            if apply {
+                toe_tickling::adopt::apply(&plan)?;
+            }
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "mode": if apply {"applied"} else {"preview"}, "changed": changed,
+                    "preserved_existing_adapters": plan.preserved_adapters
+                }))
+                .map_err(|e| e.to_string())?
+            );
+        }
         "check" => {
             let policy = check_repo(&root, now.date())?;
             if !args.is_empty() {
@@ -53,8 +95,9 @@ fn run() -> Result<()> {
                 if fs::read_to_string(target).map_err(|e| e.to_string())? != text {
                     return Err("RULEBOOK.md is stale".into());
                 }
+                toe_tickling::guide::check(&root)?;
             } else {
-                fs::write(target, text).map_err(|e| e.to_string())?;
+                toe_tickling::guide::build(&root)?;
             }
             println!("Rule book render verified.");
         }
