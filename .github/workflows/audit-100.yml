@@ -1,0 +1,25 @@
+name: Deep 100-pass guidebook audit
+
+on:
+  push:
+    branches:
+      - audit/self-check-hardening-20261015
+    paths:
+      - scripts/audit_100.py
+      - .github/workflows/audit-100.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit-100:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out exact ref
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Repeat complete validation and regressions 100 times
+        run: python3 scripts/audit_100.py --rounds 100 --output audit-100-results.json
