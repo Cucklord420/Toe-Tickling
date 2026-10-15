@@ -30,4 +30,5 @@ jobs:
       - name: Repeat Python validation, full regressions and Rust audit 100 times
         env:
           GUIDEBOOK_RUST_BINARY: ${{ runner.temp }}/guidebook-rust-target/debug/guidebook-audit
+          CARGO_TARGET_DIR: ${{ runner.temp }}/guidebook-rust-target
         run: python3 scripts/audit_100.py --rounds 100 --output "$RUNNER_TEMP/audit-100-results.json"
