@@ -1,0 +1,34 @@
+name: Deep 100-pass guidebook audit
+
+on:
+  push:
+    branches:
+      - audit/current-1-1-1-copyleft-100
+    paths:
+      - scripts/audit_100.py
+      - .github/workflows/audit-100.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit-100:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out exact ref
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.85.1 --profile minimal
+      - name: Compile Rust checker outside the source checkout
+        run: cargo +1.85.1 build --locked --offline --manifest-path rust/audit/Cargo.toml --target-dir "$RUNNER_TEMP/guidebook-rust-target"
+      - name: Run native Rust unit regressions
+        run: cargo +1.85.1 test --locked --offline --manifest-path rust/audit/Cargo.toml --target-dir "$RUNNER_TEMP/guidebook-rust-target"
+      - name: Repeat Python validation, full regressions and Rust audit 100 times
+        env:
+          GUIDEBOOK_RUST_BINARY: ${{ runner.temp }}/guidebook-rust-target/debug/guidebook-audit
+          CARGO_TARGET_DIR: ${{ runner.temp }}/guidebook-rust-target
+        run: python3 scripts/audit_100.py --rounds 100 --output "$RUNNER_TEMP/audit-100-results.json"
