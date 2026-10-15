@@ -117,7 +117,7 @@ def render(root: Path) -> dict[str, str]:
     for source in policy["sources"]:
         content = safe_path(root, source).read_text(encoding="utf-8")
         digest.update(source.encode() + b"\0" + content.encode() + b"\0")
-        ids.extend(re.findall(r"\*\*([A-Z]+-\d{3})\*\*", content))
+        ids.extend(re.findall(r"(?m)^- \*\*([A-Z]+-\d{3})\*\*(?=\s)", content))
         modules.append(f"<!-- Source: {source} -->\n\n{content.rstrip()}\n")
     if not ids or len(ids) != len(set(ids)):
         raise PolicyError("Rule IDs must be present and unique")
@@ -234,7 +234,9 @@ def check(root: Path) -> dict:
         if not path.exists() or path.read_bytes() != expected.encode():
             raise PolicyError(f"Generated file missing or stale: {relative}")
     files = file_list(root)
-    secrets = re.compile(r"\b(?:ghp_|github_pat_|sk-)[A-Za-z0-9_]{20,}|"
+    secrets = re.compile(r"\b(?:gh[pousr]_|github_pat_|sk-(?:proj-|svcacct-)?|"
+                         r"glpat-|xox[baprs]-)[A-Za-z0-9_-]{20,}|"
+                         r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b|"
                          r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")
     email = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
     for path in files:
@@ -254,12 +256,30 @@ def check(root: Path) -> dict:
                 linked = (path.parent / unquote(parsed.path)).resolve()
                 if not linked.is_relative_to(root.resolve()) or not linked.exists():
                     raise PolicyError(f"Broken or escaping local link in {rel}: {target}")
-    workflow = safe_path(root, ".github/workflows/validate.yml").read_text(encoding="utf-8")
-    if "contents: read" not in workflow or "persist-credentials: false" not in workflow:
-        raise PolicyError("CI must have explicit read-only permissions and no persisted credentials")
-    for action in re.findall(r"uses:\s*([^\s#]+)", workflow):
-        if not re.fullmatch(r"[^@]+@[0-9a-f]{40}", action):
-            raise PolicyError("External CI actions must use full commit pins")
+    workflows = [path for path in files
+                 if path.relative_to(root).parts[:2] == (".github", "workflows")
+                 and path.suffix in {".yml", ".yaml"}]
+    if not workflows or not any(path.name == "validate.yml" for path in workflows):
+        raise PolicyError("Missing required validation workflow")
+    for path in workflows:
+        workflow = path.read_text(encoding="utf-8")
+        name = str(path.relative_to(root))
+        if not re.search(r"(?m)^permissions:\s*\n\s+contents:\s*read\s*$", workflow):
+            raise PolicyError(f"CI must set read-only token permissions: {name}")
+        if len(re.findall(r"(?m)^\s*permissions\s*:", workflow)) != 1:
+            raise PolicyError(f"Unexpected or overriding CI permissions block: {name}")
+        if re.search(r"(?m)^\s*[a-zA-Z_-]+:\s*write(?:\s*#.*)?$", workflow):
+            raise PolicyError(f"CI write permission prohibited: {name}")
+        active = "\n".join(line.split("#", 1)[0] for line in workflow.splitlines())
+        if re.search(r"\b(?:pull_request_target|workflow_run)\b", active):
+            raise PolicyError(f"Privileged CI trigger needs separate review: {name}")
+        if re.search(r"\bsecrets\b", active):
+            raise PolicyError(f"CI secret access needs separate review: {name}")
+        if "persist-credentials: false" not in workflow:
+            raise PolicyError(f"CI must not persist checkout credentials: {name}")
+        for action in re.findall(r"(?m)^\s*-?\s*uses:\s*([^\s#]+)", workflow):
+            if not re.fullmatch(r"[^@]+@[0-9a-f]{40}", action):
+                raise PolicyError(f"External CI actions must use full commit pins: {name}")
     lock = json.loads(outputs["guidebook-lock.json"])
     return {"files": len(files), "rules": lock["rule_count"],
             "guidebook_sha256": lock["guidebook_sha256"]}
