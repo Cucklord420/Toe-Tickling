@@ -1,0 +1,7 @@
+/target/
+/private/
+/local-data/
+*.audit.json
+.env
+.env.*
+!.env.example

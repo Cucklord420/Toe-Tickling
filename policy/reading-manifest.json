@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "documents": {
+    "AGENTS.md": "d6e9aa7d58bb3a876d94ed312fcbf41ecab3d2b2252a456c4a69b6e2bc8daf3b",
+    "CONTRIBUTING.md": "8f2b14d39f635e4998b46b9014dbd622dd9c59d59990005d576b3032d779095b",
+    "README.md": "e0791a9031aa6f3cf2e64d8dfb399658577349863baa00a3a03fb2876afdd398",
+    "RULEBOOK.md": "f14cc4115ae71bed88e4e3160cda2f707a712262c8eb1eb3de1a4640fb8c4423",
+    "docs/ADOPTION.md": "594f0e5adef440a1d2d2f75bf06ed170c00fcaddbaaad6e85d47ad8529c012db",
+    "docs/EVOLUTION.md": "2803805b0df81a88520dcd7970318d109d260199c333f5b2c6f6bbb08e0ff189",
+    "docs/PROVENANCE.md": "721ec3686fbe696f5665d9431e24b567ea4b3c4e58b8dcd8ba10a79404cc0f5b",
+    "docs/SCENARIOS.md": "4f75704ac962cd98ecc994aa5da5d0a91cf99b785e30eee020961289791f90ab",
+    "docs/SELF_CHECKS.md": "7c0fb08237a7804b46c32f5c472872b3c93134cbebcabf84af1655ea1925ddfb",
+    "llms.txt": "ee068bd1ba16dbb040ebb11a26e2e72786977ad0812f7d5ca86e63a5b17149c6",
+    "policy/rules.json": "55f2cb3b036bde3e198e1996a9dd00fab5e3d35e14b7dd932547fb6ca4c470bc"
+  }
+}

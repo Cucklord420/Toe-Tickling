@@ -1,0 +1,13 @@
+# Start here: agent operating contract
+
+Read this file before substantive work. This repository is the owner's living operating guide. Follow it within the actual platform instruction hierarchy; do not treat it as permission to bypass system requirements or expand authorization.
+
+1. Inspect current user instructions, repository revision, dirty files, applicable ancestor/nested instructions, and concurrent work. Record what you can and cannot access.
+2. Read [README.md](README.md), [RULEBOOK.md](RULEBOOK.md), [self checks](docs/SELF_CHECKS.md), [evolution](docs/EVOLUTION.md), [adoption](docs/ADOPTION.md), and [provenance](docs/PROVENANCE.md) in full. Read [scenarios](docs/SCENARIOS.md) before assessing adoption or changing rules. Read [CONTRIBUTING.md](CONTRIBUTING.md) before editing this book.
+3. At each reading checkpoint, identify the applicable rule IDs, stale or conflicting material, and a concrete effect on your next action. If content is truncated or unavailable, record the gap and retrieve the missing sections before claiming complete intake.
+4. Use a private audit record as described in the self checks. Recheck before side effects, after material changes, after context loss, and before completion. Never commit real task audit contents containing private context.
+5. Run `cargo run --locked -- check` and `cargo test --locked` before committing this repository. For a task receipt run `cargo run --locked -- check --audit /absolute/private/path/audit.json`. A generated receipt starts blocked; fill it with actual evidence.
+6. Preserve unrelated edits and other agents' work. Recheck remote revisions before integration. Do not reset, force-push, merge, deploy, or modify live systems merely to make the book look complete.
+7. Describe actual results, failures, untested scope, and delivery state. A passing validator proves structure and consistency only. No finite guide covers every future situation; surface gaps and improve the guide through versioned changes.
+
+Normative rules live in [policy/rules.json](policy/rules.json); [RULEBOOK.md](RULEBOOK.md) is its generated human-readable view. This entry point and the operating procedures above are also mandatory. Do not resolve contradictions by silently dropping the stricter applicable check.
