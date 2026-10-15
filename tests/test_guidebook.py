@@ -177,6 +177,63 @@ class GuidebookTests(unittest.TestCase):
         path.write_text(path.read_text().replace("contents: read", "contents: write"))
         self.cli("check", ok=False)
 
+    def test_non_rule_bold_id_cannot_spoof_required_audit_rule(self):
+        path = self.repo / "rules/60-instruction-audits.md"
+        path.write_text(path.read_text().replace("- **AUD-003**", "  **AUD-003**", 1))
+        self.assertIn("audit", self.cli("build", ok=False).stderr)
+
+    def test_second_workflow_requires_read_only_permissions(self):
+        extra = self.repo / ".github/workflows/unreviewed.yml"
+        extra.write_text("name: unreviewed\non: push\npermissions:\n  contents: write\n")
+        self.assertIn("CI", self.cli("check", ok=False).stderr)
+
+    def test_second_workflow_cannot_hide_in_yaml_extension(self):
+        extra = self.repo / ".github/workflows/unreviewed.yaml"
+        extra.write_text("name: unreviewed\non: push\njobs:\n  run:\n    runs-on: ubuntu-latest\n")
+        self.assertIn("CI", self.cli("check", ok=False).stderr)
+
+    def test_job_level_permission_override_is_rejected(self):
+        path = self.repo / ".github/workflows/validate.yml"
+        path.write_text(path.read_text().replace(
+            "    runs-on: ubuntu-latest",
+            "    permissions:\n      contents: write\n    runs-on: ubuntu-latest"))
+        self.assertIn("CI", self.cli("check", ok=False).stderr)
+
+    def test_new_workflow_rejects_unpinned_action(self):
+        extra = self.repo / ".github/workflows/unsafe.yml"
+        extra.write_text("name: extra\non: push\npermissions:\n  contents: read\n"
+                         "jobs:\n  check:\n    runs-on: ubuntu-latest\n"
+                         "    steps:\n      - uses: actions/checkout@main\n"
+                         "        with:\n          persist-credentials: false\n")
+        self.assertIn("pins", self.cli("check", ok=False).stderr)
+
+    def test_safe_second_workflow_is_allowed(self):
+        extra = self.repo / ".github/workflows/other.yaml"
+        extra.write_text("name: other\non: push\npermissions:\n  contents: read\n"
+                         "jobs:\n  check:\n    runs-on: ubuntu-latest\n"
+                         "    steps:\n      - uses: actions/checkout@"
+                         + "fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09\n"
+                         "        with:\n          persist-credentials: false\n")
+        self.cli("check")
+
+    def test_modern_provider_token_patterns_are_rejected(self):
+        for label, token in (
+            ("OpenAI project key", "sk-proj-" + "A" * 32),
+            ("GitLab token", "glpat-" + "A" * 30),
+            ("Slack token", "xoxb-" + "A" * 30),
+            ("AWS access ID", "AKIA" + "A" * 16),
+        ):
+            with self.subTest(label=label):
+                path = self.repo / "synthetic-fixture.txt"
+                path.write_text(token + "\n")
+                self.assertIn("credential", self.cli("check", ok=False).stderr)
+                path.unlink()
+
+    def test_privileged_ci_event_is_rejected(self):
+        path = self.repo / ".github/workflows/validate.yml"
+        path.write_text(path.read_text() + "\n# fixture\npull_request_target:\n")
+        self.assertIn("trigger", self.cli("check", ok=False).stderr)
+
     def test_preview_does_not_write(self):
         (self.target / "AGENTS.md").write_text("Existing project rules.\n")
         before = self.snapshot(self.target)
