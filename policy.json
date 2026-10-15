@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "policy_version": "1.0.0",
+  "updated": "10-15-2026",
+  "owner": "Cucklord420",
+  "repository": "Toe-Tickling",
+  "default_branch": "main",
+  "canonical_url": "https://github.com/Cucklord420/Toe-Tickling",
+  "entry_file": "GUIDEBOOK.md",
+  "sources": [
+    "rules/00-authority.md",
+    "rules/05-execution-contract.md",
+    "rules/10-communication.md",
+    "rules/20-research.md",
+    "rules/30-engineering.md",
+    "rules/40-security.md",
+    "rules/50-workflows.md",
+    "rules/60-instruction-audits.md",
+    "rules/70-task-playbooks.md",
+    "profile/PUBLIC.md"
+  ],
+  "maintenance_language_exception": "Python standard library for portable document generation, validation and instruction installation; new application logic remains Rust-first."
+}

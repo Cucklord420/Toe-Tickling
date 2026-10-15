@@ -1,0 +1,27 @@
+name: Validate guidebook
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: guidebook-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5, resolved 10-15-2026
+        with:
+          persist-credentials: false
+      - name: Check policy, generated files, links, and selected privacy patterns
+        run: python3 scripts/guidebook.py check
+      - name: Run real CLI and safe adoption regressions
+        run: python3 -m unittest discover -s tests -v
