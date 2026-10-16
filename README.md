@@ -33,7 +33,7 @@ The last command intentionally fails until the record has real evidence and reso
 
 ## Current delivery boundary
 
-Read [GUIDEBOOK.md](GUIDEBOOK.md) in full for the complete integrated standing policy and public profile. The original [modular sources](policy.json) and the 45-rule verification register complement one another.
+Read [GUIDEBOOK.md](GUIDEBOOK.md) in full for the complete integrated standing policy and public profile. The original [modular sources](policy.json) and the 46-rule verification register complement one another.
 
 The initial review inventoried all 13 accessible repositories and inspected selected instructions, project records, and historical conversations. It did not read every historical message or private release asset. At the initial snapshot, this repository contained only its README and license; no other agent's published branch or pull request was visible. See provenance for exact coverage limits and follow-up work. No model deployment or cross-repository rollout is implied.
 
