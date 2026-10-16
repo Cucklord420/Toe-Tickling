@@ -1,6 +1,16 @@
-# Rust validation — policy 1.2.2
+# Rust validation
 
-This report records observed checks on 10-16-2026, plus explicitly historical evidence. The current canonical standing policy is version **1.2.2** with **159 standing rules** and **46 active verification rules**. Earlier Python results remain historical; see [the initial validation report](archive/INITIAL_VALIDATION.md).
+## Policy 1.2.3 — local evidence, 10-16-2026
+
+Base: `4f519c3ea1ed120d36aefea014fbf31bc0593304`; review branch `audit/preserve-verification-history`. Linux x86_64, Rust 1.99.1, Cargo edition 2024. The official release notes retrieved on this date also identify 1.99.1 as stable; no compiler or dependency update was made. Consulted the official Rust Book's testing guidance and relevant standard-library/Cargo/Clippy/rustfmt/edition documentation for the focused validator change; no exhaustive Reference read or performance claim is made.
+
+The new removal regression failed before the repair with `silently deleted AUTH-01`. After repair, `cargo test --workspace --locked` passed **87 tests**: 12 independent-auditor, 24 adoption, 26 security, and 25 validation tests, with no failures or ignored cases. `cargo fmt --all -- --check` and strict workspace Clippy also passed. After regeneration and manifest refresh, `cargo run --locked -- check` and `cargo run --locked -p guidebook-audit -- check .` passed with 159 standing and 46 verification rules. Remote CI evidence for the delivered commit belongs in its PR; the earlier workflow below validates only its explicitly identified tree.
+
+The removal checks protect stable-ID retention and explicit evolution. They do not establish semantic truth, full historical source review, live model behavior, native Windows/macOS behavior, or deployment. The earlier migration and operational limits still apply.
+
+## Policy 1.2.2 — prior GitHub Actions evidence
+
+This prior report records observed checks on 10-16-2026, plus explicitly historical evidence. At its tested revision the canonical standing policy was version **1.2.2** with **159 standing rules** and **46 active verification rules**. Earlier Python results remain historical; see [the initial validation report](archive/INITIAL_VALIDATION.md).
 
 ## Exact GitHub Actions evidence
 
