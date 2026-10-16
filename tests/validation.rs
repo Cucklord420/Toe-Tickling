@@ -285,6 +285,33 @@ fn invalid_duplicate_overdue_and_future_review_metadata_fail() {
     assert!(validate_policy(&future, now().date()).is_err());
 }
 #[test]
+fn every_existing_verification_id_must_survive_policy_updates() {
+    let dir = fixture();
+    let baseline = load_policy(dir.path()).unwrap();
+    for removed in &baseline.rules {
+        let mut policy = baseline.clone();
+        policy.rules.retain(|rule| rule.id != removed.id);
+        assert!(
+            validate_policy(&policy, now().date()).is_err(),
+            "silently deleted {}",
+            removed.id
+        );
+    }
+}
+
+#[test]
+fn verification_rules_can_evolve_without_deleting_history() {
+    let dir = fixture();
+    let mut policy = load_policy(dir.path()).unwrap();
+    let mut successor = policy.rules[0].clone();
+    successor.id = "AUTH-07".into();
+    successor.supersedes = vec![policy.rules[0].id.clone()];
+    policy.rules[0].status = "superseded".into();
+    policy.rules.push(successor);
+    validate_policy(&policy, now().date()).unwrap();
+}
+
+#[test]
 fn supersession_missing_replacement_active_target_and_cycles_fail() {
     let dir = fixture();
     let baseline = load_policy(dir.path()).unwrap();

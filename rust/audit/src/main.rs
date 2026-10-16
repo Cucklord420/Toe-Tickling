@@ -33,7 +33,7 @@ const FAMILIES: &[(&str, usize)] = &[
     ("EXEC", 12),
     ("COM", 10),
     ("RES", 12),
-    ("ENG", 19),
+    ("ENG", 20),
     ("SEC", 8),
     ("OPS", 10),
     ("AUD", 20),
@@ -46,7 +46,7 @@ const REGISTER_FAMILIES: &[(&str, usize)] = &[
     ("EVID", 6),
     ("EXEC", 8),
     ("SAFE", 6),
-    ("ENG", 6),
+    ("ENG", 7),
     ("DOM", 5),
     ("AUD", 8),
 ];
@@ -501,7 +501,7 @@ mod tests {
             self.write("GUIDEBOOK.md", &guide);
             self.write("guidebook-lock.json", &json!({"policy_version": "1.2.0", "source_repo": CANONICAL,
                 "source_sha256": hash, "guidebook_sha256": format!("{:x}", Sha256::digest(guide.as_bytes())),
-                "rule_count": count, "verification_rule_count": 45, "sources": SOURCES}).to_string());
+                "rule_count": count, "verification_rule_count": 46, "sources": SOURCES}).to_string());
         }
         fn alter_lock(&self, field: &str, value: Value) {
             let mut lock: Value = serde_json::from_str(&self.read("guidebook-lock.json")).unwrap();
@@ -517,8 +517,8 @@ mod tests {
             audit(&f.root).unwrap(),
             Summary {
                 sources: 14,
-                rules: 158,
-                verification_rules: 45
+                rules: 159,
+                verification_rules: 46
             }
         );
     }
@@ -538,6 +538,7 @@ mod tests {
         let f = Fixture::new();
         for (source, missing) in [
             (SOURCES[4], "ENG-019"),
+            (SOURCES[4], "ENG-020"),
             (SOURCES[7], "AUD-020"),
             (SOURCES[8], "EVO-028"),
         ] {
@@ -633,6 +634,25 @@ mod tests {
             assert!(audit(&f.root).is_err());
         }
     }
+    #[test]
+    fn removed_rust_verification_rule_fails_even_with_consistent_artifacts() {
+        let f = Fixture::new();
+        let mut register: Value = serde_json::from_str(&f.read("policy/rules.json")).unwrap();
+        register["rules"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|rule| rule["id"] != "ENG-07");
+        f.write("policy/rules.json", &register.to_string());
+        f.write(
+            "RULEBOOK.md",
+            &f.read("RULEBOOK.md")
+                .replace("### ENG-07 — Synthetic requirement\n\n", ""),
+        );
+        f.rebuild();
+        f.alter_lock("verification_rule_count", json!(45));
+        assert!(audit(&f.root).unwrap_err().contains("ENG-07"));
+    }
+
     #[test]
     fn register_identity_and_status_must_match_rendered_headings() {
         let f = Fixture::new();

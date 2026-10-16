@@ -189,6 +189,25 @@ pub fn validate_policy(policy: &Policy, today: Date) -> Result<()> {
             ),
         )?;
     }
+    // Stable IDs remain present even when superseded. Regenerating the book
+    // and manifest must not turn a silently deleted obligation into valid policy.
+    for (family, count) in [
+        ("AUTH", 6),
+        ("EVID", 6),
+        ("EXEC", 8),
+        ("SAFE", 6),
+        ("ENG", 7),
+        ("DOM", 5),
+        ("AUD", 8),
+    ] {
+        for number in 1..=count {
+            let id = format!("{family}-{number:02}");
+            require(
+                ids.contains(&id),
+                format!("Missing existing verification rule {id}; preserve stable IDs and history"),
+            )?;
+        }
+    }
     let mut replacements = BTreeSet::new();
     for r in &policy.rules {
         for old in &r.supersedes {
