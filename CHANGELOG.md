@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.2 — 10-16-2026
+
+- Replaced the full-Rust-Reference reading gate with task-focused official Rust Book and Rust API Guidelines reading under ENG-020 / ENG-07; consult targeted Reference, standard-library, Cargo and Clippy material when relevant.
+- Preserved compiler/edition compatibility checks, Rust parity and regression evidence, safe-code requirements and measured performance expectations. Regenerated the guide, register, lock and reading manifest together.
+
 ## 1.2.1 — 10-15-2026
 
 - Added mandatory complete official stable Rust Reference reading for every AI agent undertaking Rust development, review, porting, or optimization (ENG-020 and ENG-07), with chapter/page evidence instead of unverified reading claims.
