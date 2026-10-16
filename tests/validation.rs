@@ -81,38 +81,31 @@ fn complete(root: &Path) -> Audit {
     audit
 }
 #[test]
-fn rust_reference_policy_requires_latest_stable_and_full_reading() {
+fn rust_guidance_policy_requires_relevant_official_docs_not_whole_reference() {
     let dir = fixture();
     let policy = load_policy(dir.path()).unwrap();
     let rust_rule = policy
         .rules
         .iter()
         .find(|rule| rule.id == "ENG-07" && rule.status == "active")
-        .expect("Required Rust Reference verification rule is missing or inactive");
-    assert!(
-        rust_rule
-            .requirement
-            .contains("https://doc.rust-lang.org/reference/index.html")
-    );
-    assert!(
-        rust_rule
-            .requirement
-            .contains("https://doc.rust-lang.org/releases.html")
-    );
-    assert!(
-        rust_rule
-            .requirement
-            .contains("entire CURRENT OFFICIAL STABLE Rust Reference")
-    );
-    assert!(rust_rule.requirement.contains("project's pinned"));
-    assert!(
-        rust_rule.verification.contains("BLOCKED")
-            || rust_rule.verification.contains("missing/truncated")
-    );
+        .expect("Required Rust guidance rule is missing or inactive");
+    for url in [
+        "https://doc.rust-lang.org/book/",
+        "https://rust-lang.github.io/api-guidelines/",
+        "https://doc.rust-lang.org/style-guide/",
+        "https://doc.rust-lang.org/clippy/",
+        "https://doc.rust-lang.org/reference/",
+    ] {
+        assert!(rust_rule.requirement.contains(url), "Missing source: {url}");
+    }
+    assert!(rust_rule.requirement.contains("not as a complete-document reading gate"));
+    assert!(rust_rule.requirement.contains("pinned rustc toolchain"));
+    assert!(rust_rule.verification.contains("Do not require entire Rust Reference reading"));
+    assert!(rust_rule.verification.contains("baseline and after benchmarks"));
     let standing = fs::read_to_string(dir.path().join("rules/30-engineering.md")).unwrap();
     assert!(standing.contains("- **ENG-020**"));
-    assert!(standing.contains("https://doc.rust-lang.org/reference/index.html"));
-    assert!(standing.contains("https://doc.rust-lang.org/releases.html"));
+    assert!(standing.contains("https://doc.rust-lang.org/book/"));
+    assert!(!standing.contains("read the entire CURRENT OFFICIAL STABLE Rust Reference"));
 }
 
 #[test]
