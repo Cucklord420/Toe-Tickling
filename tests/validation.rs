@@ -85,7 +85,11 @@ fn baseline_and_declared_receipt_pass() {
     let dir = fixture();
     let policy = check_repo(dir.path(), now().date()).unwrap();
     let audit = complete(dir.path());
-    assert_eq!(audit.checks.len(), 203);
+    assert_eq!(
+        audit.checks.len(),
+        toe_tickling::guide::module_ids(dir.path()).unwrap().len()
+            + policy.rules.iter().filter(|rule| rule.status == "active").count()
+    );
     validate_audit(dir.path(), &policy, &audit, now()).unwrap();
 }
 #[test]
