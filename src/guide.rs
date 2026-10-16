@@ -152,7 +152,7 @@ fn validate_module_ids(ids: &BTreeSet<String>) -> Result<()> {
         ("EXEC", 12),
         ("COM", 10),
         ("RES", 12),
-        ("ENG", 19),
+        ("ENG", 20),
         ("SEC", 8),
         ("OPS", 10),
         ("AUD", 20),
@@ -197,7 +197,7 @@ pub fn outputs(root: &Path) -> Result<BTreeMap<String, String>> {
     }
     validate_module_ids(&ids)?;
     require(
-        ids.len() >= 158,
+        ids.len() >= 159,
         "Existing rule-family coverage was reduced; explicitly review the change",
     )?;
     let source_sha256 = format!("{:x}", digest.finalize());

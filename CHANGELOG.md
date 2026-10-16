@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.1 — 10-15-2026
+
+- Added mandatory complete official stable Rust Reference reading for every AI agent undertaking Rust development, review, porting, or optimization (ENG-020 and ENG-07), with chapter/page evidence instead of unverified reading claims.
+- Required a fresh official stable-release/Reference check before each new Rust task, review of changed material after releases, and compatibility checks against the repository-pinned compiler and edition; documented evidence gates when access is incomplete.
+- Made measured release-mode profiling and correctness/parity regression checks prerequisites for performance claims; clarified that the Reference defines language behavior rather than guaranteeing fast code.
+- As of this review, the official release notes list stable Rust 1.99.1; this repository still pins Rust 1.99.0 and edition 2024. No toolchain upgrade was made.
+
 ## 0.1.0 — 10-15-2026
 
 - Established a living rule register and generated readable guide with scoped requirements and observable self checks.
