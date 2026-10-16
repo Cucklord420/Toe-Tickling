@@ -85,11 +85,27 @@ fn rust_policy_requires_relevant_official_guidance_and_evidence() {
         .iter()
         .find(|rule| rule.id == "ENG-07" && rule.status == "active")
         .expect("Required Rust guidance verification rule is missing or inactive");
-    assert!(rust_rule.requirement.contains("https://doc.rust-lang.org/stable/book/"));
-    assert!(rust_rule.requirement.contains("https://doc.rust-lang.org/releases.html"));
-    assert!(rust_rule.requirement.contains("project's pinned Rust compiler"));
+    assert!(
+        rust_rule
+            .requirement
+            .contains("https://doc.rust-lang.org/stable/book/")
+    );
+    assert!(
+        rust_rule
+            .requirement
+            .contains("https://doc.rust-lang.org/releases.html")
+    );
+    assert!(
+        rust_rule
+            .requirement
+            .contains("project's pinned Rust compiler")
+    );
     assert!(rust_rule.requirement.contains("original-language parity"));
-    assert!(rust_rule.requirement.contains("Reading the entire Reference and every nested page is not required"));
+    assert!(
+        rust_rule
+            .requirement
+            .contains("Reading the entire Reference and every nested page is not required")
+    );
     assert!(rust_rule.verification.contains("actually read"));
     assert!(rust_rule.verification.contains("rustfmt"));
     let standing = fs::read_to_string(dir.path().join("rules/30-engineering.md")).unwrap();
