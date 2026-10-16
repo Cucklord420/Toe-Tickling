@@ -4,11 +4,7 @@ use time::OffsetDateTime;
 use toe_tickling::*;
 
 fn now() -> OffsetDateTime {
-    OffsetDateTime::parse(
-        "2026-10-15T23:00:00Z",
-        &time::format_description::well_known::Rfc3339,
-    )
-    .unwrap()
+    OffsetDateTime::now_utc()
 }
 fn fixture() -> TempDir {
     let dir = tempfile::tempdir().unwrap();
@@ -81,38 +77,26 @@ fn complete(root: &Path) -> Audit {
     audit
 }
 #[test]
-fn rust_reference_policy_requires_latest_stable_and_full_reading() {
+fn rust_policy_requires_relevant_official_guidance_and_evidence() {
     let dir = fixture();
     let policy = load_policy(dir.path()).unwrap();
     let rust_rule = policy
         .rules
         .iter()
         .find(|rule| rule.id == "ENG-07" && rule.status == "active")
-        .expect("Required Rust Reference verification rule is missing or inactive");
-    assert!(
-        rust_rule
-            .requirement
-            .contains("https://doc.rust-lang.org/reference/index.html")
-    );
-    assert!(
-        rust_rule
-            .requirement
-            .contains("https://doc.rust-lang.org/releases.html")
-    );
-    assert!(
-        rust_rule
-            .requirement
-            .contains("entire CURRENT OFFICIAL STABLE Rust Reference")
-    );
-    assert!(rust_rule.requirement.contains("project's pinned"));
-    assert!(
-        rust_rule.verification.contains("BLOCKED")
-            || rust_rule.verification.contains("missing/truncated")
-    );
+        .expect("Required Rust guidance verification rule is missing or inactive");
+    assert!(rust_rule.requirement.contains("https://doc.rust-lang.org/stable/book/"));
+    assert!(rust_rule.requirement.contains("https://doc.rust-lang.org/releases.html"));
+    assert!(rust_rule.requirement.contains("project's pinned Rust compiler"));
+    assert!(rust_rule.requirement.contains("original-language parity"));
+    assert!(rust_rule.requirement.contains("Reading the entire Reference and every nested page is not required"));
+    assert!(rust_rule.verification.contains("actually read"));
+    assert!(rust_rule.verification.contains("rustfmt"));
     let standing = fs::read_to_string(dir.path().join("rules/30-engineering.md")).unwrap();
     assert!(standing.contains("- **ENG-020**"));
-    assert!(standing.contains("https://doc.rust-lang.org/reference/index.html"));
+    assert!(standing.contains("https://doc.rust-lang.org/stable/book/"));
     assert!(standing.contains("https://doc.rust-lang.org/releases.html"));
+    assert!(standing.contains("an exhaustive reading of every Reference page is NOT required"));
 }
 
 #[test]
