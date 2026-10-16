@@ -1,8 +1,8 @@
 {
-  "policy_version": "1.2.1",
+  "policy_version": "1.2.2",
   "source_repo": "https://github.com/Cucklord420/Toe-Tickling",
-  "source_sha256": "f923e7eb98ff8c965bea4623b238031686243309e67865de899ca3687ea2c7d2",
-  "guidebook_sha256": "03961e693e19aea3e1b14dd6698182975b1a71b57bea75d66d1e2bb40241a144",
+  "source_sha256": "4bb94df59a4d0c0cceaa861770da82e2997d1348efd34c1ecb36aee449ee5a73",
+  "guidebook_sha256": "b82e41382ae76526c4cfe31434b2de4c70b2617ffaf296208456808080693755",
   "rule_count": 159,
   "verification_rule_count": 46,
   "sources": [

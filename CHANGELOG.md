@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.2 — 10-16-2026
+
+- Applied the owner's latest instruction: use the official Rust Book, Style Guide, Clippy, Cargo documentation, and task-relevant Reference pages instead of reading every page of the Rust Reference before each task.
+- Retained pinned toolchain/edition checks, formatting, linting, actual-entrypoint/parity tests, explicit safety boundaries, and controlled performance evidence.
+- Regenerated the guide, rule register view, digest lock and reading manifest; Rust CLI and CI validation remain required before merging.
+
 ## 1.2.1 — 10-15-2026
 
 - Added mandatory complete official stable Rust Reference reading for every AI agent undertaking Rust development, review, porting, or optimization (ENG-020 and ENG-07), with chapter/page evidence instead of unverified reading claims.
