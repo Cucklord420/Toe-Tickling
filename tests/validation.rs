@@ -107,7 +107,8 @@ fn rust_policy_requires_relevant_official_guidance_and_evidence() {
             .contains("Reading the entire Reference and every nested page is not required")
     );
     assert!(rust_rule.verification.contains("actually read"));
-    assert!(rust_rule.verification.contains("rustfmt"));
+    assert!(rust_rule.requirement.contains("rustfmt"));
+    assert!(rust_rule.verification.contains("Rust formatting/lint/testing"));
     let standing = fs::read_to_string(dir.path().join("rules/30-engineering.md")).unwrap();
     assert!(standing.contains("- **ENG-020**"));
     assert!(standing.contains("https://doc.rust-lang.org/stable/book/"));
