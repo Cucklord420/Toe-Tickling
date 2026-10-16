@@ -89,11 +89,26 @@ fn rust_reference_policy_requires_latest_stable_and_full_reading() {
         .iter()
         .find(|rule| rule.id == "ENG-07" && rule.status == "active")
         .expect("Required Rust Reference verification rule is missing or inactive");
-    assert!(rust_rule.requirement.contains("https://doc.rust-lang.org/reference/index.html"));
-    assert!(rust_rule.requirement.contains("https://doc.rust-lang.org/releases.html"));
-    assert!(rust_rule.requirement.contains("entire CURRENT OFFICIAL STABLE Rust Reference"));
+    assert!(
+        rust_rule
+            .requirement
+            .contains("https://doc.rust-lang.org/reference/index.html")
+    );
+    assert!(
+        rust_rule
+            .requirement
+            .contains("https://doc.rust-lang.org/releases.html")
+    );
+    assert!(
+        rust_rule
+            .requirement
+            .contains("entire CURRENT OFFICIAL STABLE Rust Reference")
+    );
     assert!(rust_rule.requirement.contains("project's pinned"));
-    assert!(rust_rule.verification.contains("BLOCKED") || rust_rule.verification.contains("missing/truncated"));
+    assert!(
+        rust_rule.verification.contains("BLOCKED")
+            || rust_rule.verification.contains("missing/truncated")
+    );
     let standing = fs::read_to_string(dir.path().join("rules/30-engineering.md")).unwrap();
     assert!(standing.contains("- **ENG-020**"));
     assert!(standing.contains("https://doc.rust-lang.org/reference/index.html"));
@@ -108,7 +123,11 @@ fn baseline_and_declared_receipt_pass() {
     assert_eq!(
         audit.checks.len(),
         toe_tickling::guide::module_ids(dir.path()).unwrap().len()
-            + policy.rules.iter().filter(|rule| rule.status == "active").count()
+            + policy
+                .rules
+                .iter()
+                .filter(|rule| rule.status == "active")
+                .count()
     );
     validate_audit(dir.path(), &policy, &audit, now()).unwrap();
 }
