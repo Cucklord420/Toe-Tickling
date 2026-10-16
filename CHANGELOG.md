@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.2 — 10-16-2026
+
+- ENG-020 and ENG-07 now require consulting the official Rust Book and task-relevant official references, not crawling the entire Rust Reference before every change.
+- Keep release/toolchain/edition reconciliation, source parity, safe Rust, appropriate CI and measured performance evidence.
+
+
 ## 1.2.1 — 10-15-2026
 
 - Added mandatory complete official stable Rust Reference reading for every AI agent undertaking Rust development, review, porting, or optimization (ENG-020 and ENG-07), with chapter/page evidence instead of unverified reading claims.
