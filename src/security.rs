@@ -5,7 +5,6 @@ use std::{
     collections::BTreeSet,
     fs,
     path::{Component, Path, PathBuf},
-    process::Command,
 };
 
 use crate::Result;
@@ -117,7 +116,7 @@ fn walk(root: &Path, here: &Path, files: &mut BTreeSet<PathBuf>) -> Result<()> {
 /// Match Git's public candidate set: tracked files plus unignored new files.
 /// Ignored, untracked local context must not be opened or exposed by the scan.
 fn file_list(root: &Path) -> Result<BTreeSet<PathBuf>> {
-    let git_root = Command::new("git")
+    let git_root = crate::git_command()
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(root)
         .output();
@@ -139,7 +138,7 @@ fn file_list(root: &Path) -> Result<BTreeSet<PathBuf>> {
         walk(root, root, &mut files)?;
         return Ok(files);
     }
-    let output = Command::new("git")
+    let output = crate::git_command()
         .args([
             "ls-files",
             "--cached",
