@@ -13,6 +13,23 @@ pub mod guide;
 pub mod security;
 
 pub type Result<T> = std::result::Result<T, String>;
+
+/// Run Git against the repository selected by `current_dir`, not ambient redirects.
+/// Inherited Git context variables can make tracked files disappear from `ls-files`
+/// or make an audit receipt claim another checkout's revision.
+pub(crate) fn git_command() -> std::process::Command {
+    let mut command = std::process::Command::new("git");
+    for variable in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+    ] {
+        command.env_remove(variable);
+    }
+    command
+}
+
 pub const READING_FILES: &[&str] = &[
     "AGENTS.md",
     "README.md",
@@ -326,7 +343,7 @@ pub fn validate_audit(root: &Path, policy: &Policy, a: &Audit, now: OffsetDateTi
         "Expected full Git revision",
     )?;
     // Bind the declared revision to this checkout, not an arbitrary plausible SHA.
-    let head = std::process::Command::new("git")
+    let head = git_command()
         .args(["rev-parse", "HEAD"])
         .current_dir(root)
         .output()
@@ -408,7 +425,7 @@ pub fn validate_audit(root: &Path, policy: &Policy, a: &Audit, now: OffsetDateTi
 }
 pub fn new_audit(root: &Path, task: String) -> Result<Audit> {
     let policy = load_policy(root)?;
-    let head = std::process::Command::new("git")
+    let head = git_command()
         .args(["rev-parse", "HEAD"])
         .current_dir(root)
         .output()

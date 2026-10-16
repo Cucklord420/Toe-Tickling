@@ -12,7 +12,7 @@ use std::{
     fs,
     io::Write,
     path::{Component, Path, PathBuf},
-    process::{Command, Stdio},
+    process::Stdio,
     time::{Duration, Instant, SystemTime},
 };
 
@@ -151,13 +151,10 @@ fn absolute_target(target: &Path) -> Result<PathBuf> {
 }
 
 fn git_root(target: &Path) -> Result<PathBuf> {
-    let mut child = Command::new("git")
+    let mut child = crate::git_command()
         .arg("-C")
         .arg(target)
         .args(["rev-parse", "--show-toplevel"])
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_COMMON_DIR")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

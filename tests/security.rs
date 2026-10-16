@@ -30,6 +30,23 @@ fn git(root: &Path, args: &[&str]) {
     assert!(output.status.success(), "Git fixture operation failed");
 }
 
+fn git_isolated(root: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_INDEX_FILE")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "Git fixture operation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn public_rust_and_declarative_formats_are_accepted() {
     let directory = fixture();
@@ -119,6 +136,65 @@ fn tracked_private_paths_remain_rejected_even_when_ignored() {
                 .unwrap_err()
                 .contains("Private path"),
             "Accepted {path}"
+        );
+    }
+}
+
+#[test]
+fn ambient_git_redirects_cannot_hide_tracked_ignored_private_files() {
+    if let Some(root) = std::env::var_os("TOE_TICKLING_SECURITY_CHILD_ROOT") {
+        let result = check(Path::new(&root));
+        assert!(
+            result
+                .as_ref()
+                .is_err_and(|error| error.contains("Private path")),
+            "expected tracked private path rejection, got {result:?}"
+        );
+        return;
+    }
+
+    let directory = fixture();
+    git_isolated(directory.path(), &["init", "-q"]);
+    write(directory.path(), ".gitignore", "/.env\n");
+    write(directory.path(), ".env", "Fictional private fixture\n");
+    git_isolated(directory.path(), &["add", "."]);
+    git_isolated(directory.path(), &["add", "--force", ".env"]);
+
+    let foreign = tempfile::tempdir().unwrap();
+    git_isolated(foreign.path(), &["init", "-q"]);
+    for redirect in ["git-dir", "index-file"] {
+        let mut child = Command::new(std::env::current_exe().unwrap());
+        child
+            .args([
+                "--exact",
+                "ambient_git_redirects_cannot_hide_tracked_ignored_private_files",
+                "--nocapture",
+            ])
+            .env("TOE_TICKLING_SECURITY_CHILD_ROOT", directory.path())
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR")
+            .env_remove("GIT_INDEX_FILE");
+        match redirect {
+            "git-dir" => {
+                child
+                    .env("GIT_DIR", foreign.path().join(".git"))
+                    .env("GIT_WORK_TREE", directory.path());
+            }
+            "index-file" => {
+                child.env(
+                    "GIT_INDEX_FILE",
+                    foreign.path().join(".git/alternate-index"),
+                );
+            }
+            _ => unreachable!(),
+        }
+        let output = child.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{redirect} child failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 }

@@ -58,6 +58,50 @@ fn fixture() -> TempDir {
     }
     dir
 }
+
+fn clean_git(root: &Path, args: &[&str]) -> std::process::Output {
+    Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_INDEX_FILE")
+        .output()
+        .unwrap()
+}
+
+fn commit_fixture(root: &Path, name: &str) {
+    for args in [
+        vec!["init", "-q"],
+        vec!["add", "fixture.txt"],
+        vec![
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            name,
+        ],
+    ] {
+        if args.first() == Some(&"add") {
+            fs::write(root.join("fixture.txt"), "Fictional fixture\n").unwrap();
+        }
+        let output = clean_git(root, &args);
+        assert!(
+            output.status.success(),
+            "Git fixture operation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+fn git_head(root: &Path) -> String {
+    let output = clean_git(root, &["rev-parse", "HEAD"]);
+    assert!(output.status.success());
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
 fn complete(root: &Path) -> Audit {
     let mut audit = new_audit(root, "Validate a fictional isolated fixture".into()).unwrap();
     audit.recorded_at = "2026-10-15T12:00:00Z".into();
@@ -478,4 +522,67 @@ fn adoption_cli_runs_from_an_unrelated_directory_and_path_with_spaces() {
         .output()
         .unwrap();
     assert!(!head.status.success(), "Adoption must not create commits");
+}
+
+#[test]
+fn new_audit_binds_its_revision_to_the_selected_checkout() {
+    let source = fixture();
+    let foreign = tempfile::tempdir().unwrap();
+    commit_fixture(foreign.path(), "Fictional external repository");
+    let output_dir = tempfile::tempdir().unwrap();
+    let receipt_path = output_dir.path().join("receipt.json");
+    let run = Command::new(env!("CARGO_BIN_EXE_toe-tickling"))
+        .arg("--root")
+        .arg(source.path())
+        .args([
+            "new-audit",
+            "--task",
+            "Fictional receipt identity probe",
+            "--output",
+        ])
+        .arg(&receipt_path)
+        .env("GIT_DIR", foreign.path().join(".git"))
+        .env("GIT_WORK_TREE", source.path())
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_INDEX_FILE")
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}",
+        String::from_utf8_lossy(&run.stderr)
+    );
+    let audit: Audit = read_json(&receipt_path).unwrap();
+    assert_eq!(audit.repository_revision, git_head(source.path()));
+    assert_ne!(audit.repository_revision, git_head(foreign.path()));
+}
+
+#[test]
+fn audit_validation_uses_the_selected_checkout_under_git_redirects() {
+    let source = fixture();
+    let audit = complete(source.path());
+    let foreign = tempfile::tempdir().unwrap();
+    commit_fixture(foreign.path(), "Fictional external repository");
+    let output_dir = tempfile::tempdir().unwrap();
+    let receipt_path = output_dir.path().join("receipt.json");
+    write_json(&receipt_path, &audit).unwrap();
+
+    let run = Command::new(env!("CARGO_BIN_EXE_toe-tickling"))
+        .arg("--root")
+        .arg(source.path())
+        .arg("check")
+        .arg("--audit")
+        .arg(&receipt_path)
+        .env("GIT_DIR", foreign.path().join(".git"))
+        .env("GIT_WORK_TREE", source.path())
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_INDEX_FILE")
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
 }
