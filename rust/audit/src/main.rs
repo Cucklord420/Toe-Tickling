@@ -64,6 +64,13 @@ fn ids(text: &str) -> Result<BTreeSet<String>, String> {
         let id = format!("EVO-{n:03}");
         if !found.contains(&id) { return Err(format!("missing evolution rule: {id}")); }
     }
+    // Match the Python reference's REQUIRED_REAL_FILE_IDS contract.
+    for n in 15..=19 {
+        let id = format!("ENG-{n:03}");
+        if !found.contains(&id) {
+            return Err(format!("missing real-file verification rule: {id}"));
+        }
+    }
     Ok(found)
 }
 
@@ -144,9 +151,14 @@ mod tests {
     fn valid() -> String {
         let audits = (1..=20).map(|i| format!("- **AUD-{i:03}** audit\n")).collect::<String>();
         let evolution = (1..=28).map(|i| format!("- **EVO-{i:03}** evolution\n")).collect::<String>();
-        audits + &evolution
+        let real_files = (15..=19).map(|i| format!("- **ENG-{i:03}** real file check\n")).collect::<String>();
+        audits + &evolution + &real_files
     }
-    #[test] fn all_audits_present() { assert_eq!(ids(&valid()).unwrap().len(), 48); }
+    #[test] fn all_audits_present() { assert_eq!(ids(&valid()).unwrap().len(), 53); }
+    #[test] fn missing_mandatory_real_file_rule_fails() {
+        let missing = valid().replace("- **ENG-017** real file check\n", "");
+        assert!(ids(&missing).unwrap_err().contains("missing real-file verification rule: ENG-017"));
+    }
     #[test] fn missing_audits_fail() { assert!(ids("**AUTH-001**").is_err()); }
     #[test] fn no_rules_fail() { assert!(ids("nothing here").is_err()); }
     #[test] fn duplicate_ids_fail() {
@@ -154,21 +166,21 @@ mod tests {
             .unwrap_err().contains("duplicate"));
     }
     #[test] fn ordinary_bold_ignored() {
-        assert_eq!(ids(&(valid()+"**warning**")).unwrap().len(), 48);
+        assert_eq!(ids(&(valid()+"**warning**")).unwrap().len(), 53);
     }
     #[test] fn extra_rules_work() {
-        assert_eq!(ids(&(valid()+"- **ENG-014** rule\n")).unwrap().len(), 49);
+        assert_eq!(ids(&(valid()+"- **ENG-014** rule\n")).unwrap().len(), 54);
     }
     #[test] fn inline_bold_rule_mention_ignored() {
         assert_eq!(ids(&(valid() + "A prose reference to **ENG-014** is not a rule.\n"))
-            .unwrap().len(), 48);
+            .unwrap().len(), 53);
     }
     #[test] fn non_bullet_audit_rule_not_counted() {
         let text = valid().replacen("- **AUD-001** audit", "  **AUD-001** audit", 1);
         assert!(ids(&text).is_err());
     }
     #[test] fn malformed_numeric_rule_ignored() {
-        assert_eq!(ids(&(valid()+"- **ENG-0000** invalid\n")).unwrap().len(), 48);
+        assert_eq!(ids(&(valid()+"- **ENG-0000** invalid\n")).unwrap().len(), 53);
     }
     #[test] fn valid_source_marker() {
         assert_eq!(modules("Header\n<!-- Source: rules/test.md -->\n\n").unwrap()[0].at,7);
