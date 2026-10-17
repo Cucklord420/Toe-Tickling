@@ -12,7 +12,7 @@ use std::{
     fs,
     io::Write,
     path::{Component, Path, PathBuf},
-    process::{Command, Stdio},
+    process::Stdio,
     time::{Duration, Instant, SystemTime},
 };
 
@@ -151,13 +151,10 @@ fn absolute_target(target: &Path) -> Result<PathBuf> {
 }
 
 fn git_root(target: &Path) -> Result<PathBuf> {
-    let mut child = Command::new("git")
+    let mut child = crate::git_command(target)
         .arg("-C")
         .arg(target)
         .args(["rev-parse", "--show-toplevel"])
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_COMMON_DIR")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -275,7 +272,10 @@ pub fn plan(root: &Path, target: &Path) -> Result<AdoptionPlan> {
     let root = crate::security::checked_root(root)?;
     let target = validate_target(&root, target)?;
     let git_identity = GitIdentity::read(&target)?;
-    crate::check_repo(&root, time::OffsetDateTime::now_utc().date())?;
+    crate::check_repo(
+        &root,
+        crate::policy_date_at(time::OffsetDateTime::now_utc())?,
+    )?;
     let outputs = guide::outputs(&root)?;
     let expected_guide = outputs
         .get("GUIDEBOOK.md")

@@ -284,6 +284,123 @@ fn invalid_duplicate_overdue_and_future_review_metadata_fail() {
     future.rules[0].reviewed_on = "2027-01-01".into();
     assert!(validate_policy(&future, now().date()).is_err());
 }
+
+#[test]
+fn policy_date_uses_new_york_calendar_across_summer_and_winter_midnight() {
+    let rfc3339 = time::format_description::well_known::Rfc3339;
+    let cases = [
+        ("2026-07-15T03:59:59Z", "2026-07-14"),
+        ("2026-07-15T04:00:00Z", "2026-07-15"),
+        ("2026-01-01T04:59:59Z", "2025-12-31"),
+        ("2026-01-01T05:00:00Z", "2026-01-01"),
+    ];
+    for (instant, expected_date) in cases {
+        let instant = OffsetDateTime::parse(instant, &rfc3339).unwrap();
+        assert_eq!(policy_date_at(instant).unwrap().to_string(), expected_date);
+    }
+}
+
+#[test]
+fn primary_validator_rejects_missing_stable_verification_rule() {
+    let dir = fixture();
+    let mut policy = load_policy(dir.path()).unwrap();
+    policy.rules.retain(|rule| rule.id != "AUTH-01");
+    assert!(
+        validate_policy(&policy, policy_date_at(now()).unwrap())
+            .unwrap_err()
+            .contains("AUTH-01")
+    );
+}
+
+#[test]
+fn new_audit_binds_the_checkout_head_not_ambient_git_repository_overrides() {
+    let checkout = fixture();
+    let alternate = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(
+        alternate.path().join("README.md"),
+        "Fictional alternate repository\n",
+    )
+    .unwrap();
+    for args in [
+        vec!["init", "-q"],
+        vec!["add", "README.md"],
+        vec![
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "Fictional alternate HEAD",
+        ],
+    ] {
+        assert!(
+            Command::new("git")
+                .args(args)
+                .current_dir(alternate.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let head = |root: &Path| {
+        let output = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    };
+    let checkout_head = head(checkout.path());
+    let alternate_head = head(alternate.path());
+    assert_ne!(checkout_head, alternate_head);
+
+    let output_path = outside.path().join("audit.json");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_toe-tickling"));
+    command
+        .env("GIT_DIR", alternate.path().join(".git"))
+        .env("GIT_WORK_TREE", alternate.path())
+        .arg("--root")
+        .arg(checkout.path())
+        .args([
+            "new-audit",
+            "--task",
+            "Fictional isolated Git environment regression",
+            "--output",
+        ])
+        .arg(&output_path);
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let audit: Audit = read_json(&output_path).unwrap();
+    assert_eq!(audit.repository_revision, checkout_head);
+
+    let mut spoofed = complete(checkout.path());
+    spoofed.repository_revision = alternate_head;
+    let spoofed_path = outside.path().join("spoofed.json");
+    write_json(&spoofed_path, &spoofed).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_toe-tickling"))
+        .arg("--root")
+        .arg(checkout.path())
+        .arg("check")
+        .arg("--audit")
+        .arg(spoofed_path)
+        .env("GIT_DIR", alternate.path().join(".git"))
+        .env("GIT_WORK_TREE", alternate.path())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("Audit revision does not match checkout HEAD")
+    );
+}
+
 #[test]
 fn supersession_missing_replacement_active_target_and_cycles_fail() {
     let dir = fixture();
@@ -313,6 +430,51 @@ fn stale_manifest_cannot_remove_required_files() {
     write_json(&dir.path().join("policy/reading-manifest.json"), &manifest).unwrap();
     assert!(check_repo(dir.path(), now().date()).is_err());
 }
+
+#[test]
+fn guide_build_failure_does_not_persist_an_earlier_generated_file() {
+    let dir = fixture();
+    let rule_path = dir.path().join("policy/rules.json");
+    let mut register: serde_json::Value = read_json(&rule_path).unwrap();
+    register["rules"][0]["title"] = serde_json::Value::String("Fictional changed title".into());
+    write_json(&rule_path, &register).unwrap();
+    fs::write(dir.path().join("policy.json"), "not valid JSON").unwrap();
+
+    let rulebook_before = fs::read(dir.path().join("RULEBOOK.md")).unwrap();
+    let guide_before = fs::read(dir.path().join("GUIDEBOOK.md")).unwrap();
+    assert!(guide::build(dir.path()).is_err());
+    let rulebook_after = fs::read(dir.path().join("RULEBOOK.md")).unwrap();
+    let guide_after = fs::read(dir.path().join("GUIDEBOOK.md")).unwrap();
+    assert!(
+        rulebook_after == rulebook_before,
+        "failed generation changed RULEBOOK.md"
+    );
+    assert!(
+        guide_after == guide_before,
+        "failed generation changed GUIDEBOOK.md"
+    );
+}
+
+#[test]
+fn guide_build_rejects_output_type_collisions_before_persisting_any_file() {
+    let dir = fixture();
+    let rule_path = dir.path().join("policy/rules.json");
+    let mut register: serde_json::Value = read_json(&rule_path).unwrap();
+    register["rules"][0]["title"] = serde_json::Value::String("Fictional changed title".into());
+    write_json(&rule_path, &register).unwrap();
+    let colliding_output = dir.path().join(".cursor/rules/justin-guidebook.mdc");
+    fs::remove_file(&colliding_output).unwrap();
+    fs::create_dir(&colliding_output).unwrap();
+
+    let rulebook_before = fs::read(dir.path().join("RULEBOOK.md")).unwrap();
+    assert!(guide::build(dir.path()).is_err());
+    let rulebook_after = fs::read(dir.path().join("RULEBOOK.md")).unwrap();
+    assert!(
+        rulebook_after == rulebook_before,
+        "output collision partially changed RULEBOOK.md"
+    );
+}
+
 #[test]
 fn broken_link_and_non_rust_source_are_rejected() {
     let dir = fixture();

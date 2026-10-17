@@ -1,6 +1,9 @@
 use std::{fs, path::Path, process::Command};
 use tempfile::TempDir;
-use toe_tickling::security::{check, checked_root};
+use toe_tickling::security::check;
+#[cfg(unix)]
+use toe_tickling::security::checked_root;
+use toe_tickling::{READING_FILES, current_manifest, guide, load_policy, render, write_json};
 
 const WORKFLOW: &str = "name: audit\npermissions:\n  contents: read\njobs:\n  audit:\n    runs-on: ubuntu-latest\n    timeout-minutes: 10\n    steps:\n      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\n        with:\n          persist-credentials: false\n      - run: cargo test --locked\n";
 
@@ -18,6 +21,39 @@ fn fixture() -> TempDir {
         "README.md",
         "# Fictional public fixture\n",
     );
+    directory
+}
+
+fn full_fixture() -> TempDir {
+    let directory = tempfile::tempdir().unwrap();
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for path in READING_FILES.iter().chain(guide::SOURCES.iter()) {
+        let target = directory.path().join(path);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::copy(source.join(path), target).unwrap();
+    }
+    for file in [
+        "LICENSE",
+        "LICENSE-SCOPE.md",
+        "CHANGELOG.md",
+        ".github/workflows/validate.yml",
+        "docs/VALIDATION.md",
+        "docs/archive/INITIAL_INSTRUCTION_AUDIT.md",
+        "docs/archive/INITIAL_VALIDATION.md",
+    ] {
+        let target = directory.path().join(file);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::copy(source.join(file), target).unwrap();
+    }
+    fs::write(directory.path().join(".gitignore"), "/README.md\n").unwrap();
+    let policy = load_policy(directory.path()).unwrap();
+    fs::write(directory.path().join("RULEBOOK.md"), render(&policy)).unwrap();
+    guide::build(directory.path()).unwrap();
+    write_json(
+        &directory.path().join("policy/reading-manifest.json"),
+        &current_manifest(directory.path()).unwrap(),
+    )
+    .unwrap();
     directory
 }
 
@@ -101,9 +137,14 @@ fn tracked_private_paths_remain_rejected_even_when_ignored() {
         ".private/context.md",
         ".local/context.md",
         "PRIVATE.local.md",
+        "PRIVATE.Local.md",
         "CLAUDE.local.md",
+        "claude.local.md",
         ".env",
         ".env.production",
+        ".ENV.md",
+        ".ENV",
+        ".ENV.example",
     ] {
         let directory = fixture();
         git(directory.path(), &["init", "-q"]);
@@ -125,18 +166,24 @@ fn tracked_private_paths_remain_rejected_even_when_ignored() {
 
 #[test]
 fn unignored_untracked_private_context_is_rejected() {
-    let directory = fixture();
-    git(directory.path(), &["init", "-q"]);
-    write(
-        directory.path(),
+    for path in [
         "private/context.md",
-        "Fictional placeholder",
-    );
-    assert!(
-        check(directory.path())
-            .unwrap_err()
-            .contains("Private path")
-    );
+        "PRIVATE.Local.md",
+        "claude.local.md",
+        ".ENV.md",
+        ".ENV",
+        ".ENV.example",
+    ] {
+        let directory = fixture();
+        git(directory.path(), &["init", "-q"]);
+        write(directory.path(), path, "Fictional placeholder");
+        assert!(
+            check(directory.path())
+                .unwrap_err()
+                .contains("Private path"),
+            "Accepted untracked private path {path}"
+        );
+    }
 }
 
 #[test]
@@ -156,6 +203,154 @@ fn git_enumerates_new_public_files_and_skips_tracked_deletions() {
         check(directory.path())
             .unwrap_err()
             .contains("Executable source must be Rust")
+    );
+}
+
+#[test]
+fn staged_credentials_are_rejected_after_the_worktree_is_cleaned_or_removed() {
+    let fictional_token = ["ghp_", "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"].concat();
+    for remove_worktree_file in [false, true] {
+        let directory = fixture();
+        git(directory.path(), &["init", "-q"]);
+        git(directory.path(), &["add", "."]);
+        write(
+            directory.path(),
+            "README.md",
+            &format!("Fictional credential {fictional_token}\n"),
+        );
+        git(directory.path(), &["add", "README.md"]);
+        if remove_worktree_file {
+            fs::remove_file(directory.path().join("README.md")).unwrap();
+        } else {
+            write(
+                directory.path(),
+                "README.md",
+                "Harmless public documentation.\n",
+            );
+        }
+        let error = check(directory.path()).unwrap_err();
+        assert!(error.contains("Potential private credential/contact"));
+        assert!(!error.contains(&fictional_token));
+    }
+}
+
+#[test]
+fn scanner_ignores_ambient_git_index_override() {
+    let fictional_token = ["ghp_", "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"].concat();
+    let directory = full_fixture();
+    git(directory.path(), &["init", "-q"]);
+    git(directory.path(), &["add", "."]);
+    write(
+        directory.path(),
+        "README.md",
+        &format!("Fictional credential {fictional_token}\n"),
+    );
+    write_json(
+        &directory.path().join("policy/reading-manifest.json"),
+        &current_manifest(directory.path()).unwrap(),
+    )
+    .unwrap();
+    git(directory.path(), &["add", "policy/reading-manifest.json"]);
+    git(directory.path(), &["add", "--force", "README.md"]);
+    let alternate_index_dir = tempfile::tempdir().unwrap();
+    let alternate_index = alternate_index_dir.path().join("index");
+    assert!(
+        Command::new("git")
+            .args(["read-tree", "--empty"])
+            .current_dir(directory.path())
+            .env("GIT_INDEX_FILE", &alternate_index)
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_toe-tickling"))
+        .arg("check")
+        .current_dir(directory.path())
+        .env("GIT_INDEX_FILE", alternate_index)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        !output.status.success(),
+        "alternate index hid tracked content"
+    );
+    assert!(
+        stderr.contains("Potential private credential/contact"),
+        "unexpected scanner result: {stderr}"
+    );
+    assert!(!stderr.contains(&fictional_token));
+}
+
+#[test]
+fn reference_style_local_markdown_links_are_validated() {
+    let directory = fixture();
+    write(
+        directory.path(),
+        "guide.md",
+        "[guide]: existing.md\n\n[guide]\n",
+    );
+    write(directory.path(), "existing.md", "Fictional target\n");
+    check(directory.path()).unwrap();
+
+    write(
+        directory.path(),
+        "guide.md",
+        "[guide]: missing.md\n\n[guide]\n",
+    );
+    assert!(
+        check(directory.path())
+            .unwrap_err()
+            .contains("Broken or escaping local Markdown link")
+    );
+}
+
+#[test]
+fn staged_workflow_is_checked_even_when_worktree_workflow_is_safe() {
+    let directory = fixture();
+    git(directory.path(), &["init", "-q"]);
+    git(directory.path(), &["add", "."]);
+    let staged_unsafe = WORKFLOW.replace("contents: read", "contents: write");
+    write(
+        directory.path(),
+        ".github/workflows/validate.yml",
+        &staged_unsafe,
+    );
+    git(directory.path(), &["add", ".github/workflows/validate.yml"]);
+    write(directory.path(), ".github/workflows/validate.yml", WORKFLOW);
+    assert!(
+        check(directory.path())
+            .unwrap_err()
+            .contains("explicit read-only contents permissions")
+    );
+}
+
+#[test]
+fn staged_workflow_deletion_is_not_hidden_by_an_unstaged_copy() {
+    let directory = fixture();
+    git(directory.path(), &["init", "-q"]);
+    git(directory.path(), &["add", "."]);
+    git(
+        directory.path(),
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "Fictional baseline",
+        ],
+    );
+    git(
+        directory.path(),
+        &["rm", "--cached", "--", ".github/workflows/validate.yml"],
+    );
+
+    assert!(
+        check(directory.path())
+            .unwrap_err()
+            .contains("staged deletion of required CI workflow")
     );
 }
 
