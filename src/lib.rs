@@ -6,13 +6,32 @@ use std::{
     fs,
     path::Path,
 };
-use time::{Date, OffsetDateTime, format_description::well_known::Rfc3339};
+use time::{Date, Month, OffsetDateTime, format_description::well_known::Rfc3339};
 
 pub mod adopt;
 pub mod guide;
 pub mod security;
 
 pub type Result<T> = std::result::Result<T, String>;
+
+/// Run Git against a selected checkout without ambient `GIT_*` overrides.
+/// Repository-local reads must not inherit a different index, work tree, or
+/// configuration from the invoking process.
+pub(crate) fn git_command(root: &Path) -> std::process::Command {
+    let mut command = std::process::Command::new("git");
+    command.current_dir(root);
+    for (key, _) in std::env::vars_os() {
+        if key
+            .to_string_lossy()
+            .to_ascii_uppercase()
+            .starts_with("GIT_")
+        {
+            command.env_remove(key);
+        }
+    }
+    command
+}
+
 pub const READING_FILES: &[&str] = &[
     "AGENTS.md",
     "README.md",
@@ -52,6 +71,15 @@ const SCOPES: &[&str] = &[
     "finance",
     "ev",
     "research",
+];
+const STABLE_VERIFICATION_RULE_FAMILIES: &[(&str, usize)] = &[
+    ("AUTH", 6),
+    ("EVID", 6),
+    ("EXEC", 8),
+    ("SAFE", 6),
+    ("ENG", 6),
+    ("DOM", 5),
+    ("AUD", 8),
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,6 +168,22 @@ fn useful(value: &str) -> bool {
             .iter()
             .any(|s| value.to_uppercase().contains(s))
 }
+
+/// Return the policy calendar date for the owner's configured America/New_York timezone.
+/// RFC3339 audit timestamps remain UTC; only date-only policy deadlines use this calendar.
+pub fn policy_date_at(now: OffsetDateTime) -> Result<Date> {
+    use chrono::Datelike;
+
+    let utc =
+        chrono::DateTime::<chrono::Utc>::from_timestamp(now.unix_timestamp(), now.nanosecond())
+            .ok_or("Current timestamp is outside the timezone conversion range")?;
+    let local = utc.with_timezone(&chrono_tz::America::New_York);
+    let month_number = u8::try_from(local.month()).map_err(|e| e.to_string())?;
+    let month = Month::try_from(month_number).map_err(|e| e.to_string())?;
+    let day = u8::try_from(local.day()).map_err(|e| e.to_string())?;
+    Date::from_calendar_date(local.year(), month, day).map_err(|e| e.to_string())
+}
+
 pub fn load_policy(root: &Path) -> Result<Policy> {
     read_json(&root.join("policy/rules.json"))
 }
@@ -188,6 +232,12 @@ pub fn validate_policy(policy: &Policy, today: Date) -> Result<()> {
                 r.id, due
             ),
         )?;
+    }
+    for (family, count) in STABLE_VERIFICATION_RULE_FAMILIES {
+        for number in 1..=*count {
+            let id = format!("{family}-{number:02}");
+            require(ids.contains(&id), format!("Missing stable rule: {id}"))?;
+        }
     }
     let mut replacements = BTreeSet::new();
     for r in &policy.rules {
@@ -326,9 +376,8 @@ pub fn validate_audit(root: &Path, policy: &Policy, a: &Audit, now: OffsetDateTi
         "Expected full Git revision",
     )?;
     // Bind the declared revision to this checkout, not an arbitrary plausible SHA.
-    let head = std::process::Command::new("git")
+    let head = git_command(root)
         .args(["rev-parse", "HEAD"])
-        .current_dir(root)
         .output()
         .map_err(|e| e.to_string())?;
     require(
@@ -408,9 +457,8 @@ pub fn validate_audit(root: &Path, policy: &Policy, a: &Audit, now: OffsetDateTi
 }
 pub fn new_audit(root: &Path, task: String) -> Result<Audit> {
     let policy = load_policy(root)?;
-    let head = std::process::Command::new("git")
+    let head = git_command(root)
         .args(["rev-parse", "HEAD"])
-        .current_dir(root)
         .output()
         .map_err(|e| e.to_string())?;
     require(head.status.success(), "Cannot identify repository HEAD")?;
