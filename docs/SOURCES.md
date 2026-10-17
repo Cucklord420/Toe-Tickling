@@ -11,7 +11,6 @@ Reviewed 10-15-2026. The dates below are review dates for undated live documenta
 - Sources: GitHub — 10-15-2026 — https://docs.github.com/en/actions/reference/security/secure-use. Review date; minimum permissions, untrusted contributions, and immutable action pins.
 - Sources: GitHub — 10-15-2026 — https://docs.github.com/en/actions/concepts/billing-and-usage. Review date; free standard hosted runners for public repositories, usage limits, and separate private-repository quotas.
 
-
 ## Official Rust engineering sources
 
 Reviewed 10-17-2026. These are review dates, not publication dates. Consult the sections relevant to the code under review, the actual pinned toolchain and the original program's behavior. These references do **not** establish that a port was built, tested, installed, or behaviorally equivalent.
