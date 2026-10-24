@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.4 — 10-24-2026
+
+- Add PREF-011: favor openness, privacy, interoperability and ownership where practical while prioritizing mature, supported, ready-to-use and low-maintenance options across domains. Technical experience does not imply willingness to maintain experimental products; retaining working equipment or buying nothing remains valid.
+- Clarify the ownership boundary between this operating-rule guide, canonical personalization in ai-personalization, and project-specific deployment records. Preferences grant no purchase, deployment or account-change authority.
+- Regenerate the guide, adapters and integrity records under the new policy version, preserving all 160 standing and 46 verification rules and existing evidence history. Installed-agent adoption and account personalization remain separate, unverified actions.
+
 ## 1.2.3 — 10-16-2026
 
 - Reject silent removal of any of the 46 existing verification IDs in the primary validator, including after regeneration. Explicit supersession remains supported without deleting history.
