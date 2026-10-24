@@ -586,6 +586,18 @@ fn main() {
             linked.join(".git").is_file(),
             "fixture is not a linked worktree"
         );
+        let ambiguous = scratch.path().join("ambiguous-target");
+        fs::create_dir(&ambiguous).unwrap();
+        fs::write(
+            ambiguous.join(".git"),
+            fs::read(linked.join(".git")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            validate_target(&source, &ambiguous)
+                .is_err_and(|error| error.contains("Target must be the root")),
+            "ambiguous linked-worktree marker was not rejected"
+        );
         isolated_git(&foreign, &["init", "-q"]);
 
         for redirect in ["git-dir", "work-tree", "common-dir", "index-file"] {
