@@ -488,6 +488,9 @@ fn main() {
 
         let target = scratch.path().join("target");
         fs::create_dir(&target).unwrap();
+        let sentinel = target.join("preserve.txt");
+        let original = b"unchanged".to_vec();
+        fs::write(&sentinel, &original).unwrap();
         let mut command = Command::new(&slow_git);
         command.env("PID_FILE", &pid_file);
         let started = Instant::now();
@@ -501,6 +504,11 @@ fn main() {
         assert_eq!(
             result.unwrap_err(),
             "Timed out inspecting target Git working tree"
+        );
+        assert_eq!(
+            fs::read(&sentinel).unwrap(),
+            original,
+            "timed-out Git child changed the adoption target"
         );
 
         let pid = fs::read_to_string(pid_file)
