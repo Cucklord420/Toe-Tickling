@@ -297,7 +297,11 @@ fn mismatched_linked_worktree_marker_fails_closed() {
     let selected = fixture();
     let foreign = tempfile::tempdir().unwrap();
     git_isolated(foreign.path(), &["init", "-q"]);
-    write(foreign.path(), "README.md", "Fictional foreign repository\n");
+    write(
+        foreign.path(),
+        "README.md",
+        "Fictional foreign repository\n",
+    );
     git_isolated(foreign.path(), &["add", "README.md"]);
     git_isolated(
         foreign.path(),
