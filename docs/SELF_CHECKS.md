@@ -53,3 +53,7 @@ Run `cargo run --locked -- check --audit /absolute/private/path/audit.json`. Str
 Use these dimensions to avoid blind spots: instruction authority; scope; source coverage; source trust; freshness; conflicts; feasibility; permissions; target identity; privacy; dependency integrity; reproducibility; compatibility; input validation; numerical correctness; idempotency; concurrency; failure handling; cancellation; backup coverage; restore behavior; rollback; resource limits; real output quality; artifact contents; delivery state; citation fidelity; user communication; review-tool correctness; and policy drift.
 
 Apply the relevant dimensions. “Not applicable” is a documented judgment, not a successful test. A larger check count does not make an audit better.
+
+## Regression checks for policy evolution
+
+When changing the register or its checker, test removal of an existing rule even after rendered text, counts, and digests have been regenerated consistently. A matching bundle must still fail when it has lost a required stable ID. Check both the primary validator and the independent auditor; keep their minimum coverage current when adding obligations. A replacement must retain the superseded declaration and identify its successor. Also test that a valid replacement passes, so preservation does not freeze the policy against intentional evolution.
