@@ -1,6 +1,6 @@
 # Justin's complete AI guidebook
 
-Version: 1.2.3 | Updated: 10-16-2026
+Version: 1.2.4 | Updated: 10-24-2026
 
 Canonical repository: https://github.com/Cucklord420/Toe-Tickling
 
