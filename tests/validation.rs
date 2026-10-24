@@ -749,7 +749,6 @@ fn audit_validation_uses_the_selected_checkout_under_git_redirects() {
         .env("GIT_DIR", foreign.path().join(".git"))
         .env("GIT_WORK_TREE", &selected)
         .env("GIT_COMMON_DIR", foreign.path().join(".git"))
-        .env("GIT_INDEX_FILE", foreign.path().join(".git/index"))
         .output()
         .unwrap();
     assert!(
@@ -757,5 +756,27 @@ fn audit_validation_uses_the_selected_checkout_under_git_redirects() {
         "{}\n{}",
         String::from_utf8_lossy(&run.stdout),
         String::from_utf8_lossy(&run.stderr)
+    );
+
+    let alternate_index = Command::new(env!("CARGO_BIN_EXE_toe-tickling"))
+        .arg("--root")
+        .arg(&selected)
+        .arg("check")
+        .arg("--audit")
+        .arg(&receipt_path)
+        .env(
+            "GIT_INDEX_FILE",
+            foreign.path().join(".git/alternate-index"),
+        )
+        .output()
+        .unwrap();
+    let alternate_stderr = String::from_utf8_lossy(&alternate_index.stderr);
+    assert!(
+        !alternate_index.status.success(),
+        "audit validation must fail closed for an alternate Git index"
+    );
+    assert!(
+        alternate_stderr.contains("GIT_INDEX_FILE override"),
+        "unexpected alternate-index result: {alternate_stderr}"
     );
 }
