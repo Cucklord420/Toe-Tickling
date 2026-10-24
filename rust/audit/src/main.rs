@@ -654,6 +654,38 @@ mod tests {
     }
 
     #[test]
+    fn valid_retained_history_supersession_passes_independent_audit() {
+        let f = Fixture::new();
+        let mut register: Value = serde_json::from_str(&f.read("policy/rules.json")).unwrap();
+        let rules = register["rules"].as_array_mut().unwrap();
+        let old = rules
+            .iter_mut()
+            .find(|rule| rule["id"] == "ENG-07")
+            .unwrap();
+        old["status"] = json!("superseded");
+        rules.push(json!({
+            "id": "ENG-47",
+            "status": "active",
+            "supersedes": ["ENG-07"]
+        }));
+        f.write("policy/rules.json", &register.to_string());
+
+        let mut rulebook = f.read("RULEBOOK.md");
+        rulebook.push_str("### ENG-47 — Synthetic successor\n\n");
+        f.write("RULEBOOK.md", &rulebook);
+        f.rebuild();
+
+        assert_eq!(
+            audit(&f.root).unwrap(),
+            Summary {
+                sources: 14,
+                rules: 159,
+                verification_rules: 46
+            }
+        );
+    }
+
+    #[test]
     fn register_identity_and_status_must_match_rendered_headings() {
         let f = Fixture::new();
         let original = f.read("policy/rules.json");
