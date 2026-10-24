@@ -445,9 +445,7 @@ mod tests {
                 command.env_remove(key);
             }
         }
-        let output = command
-            .output()
-            .unwrap();
+        let output = command.output().unwrap();
         assert!(
             output.status.success(),
             "Git fixture operation failed: {}",
@@ -540,7 +538,10 @@ fn main() {
                     .args(["config", "--get", "user.name"])
                     .output()
                     .unwrap();
-                assert!(output.status.success(), "documented Git config was discarded");
+                assert!(
+                    output.status.success(),
+                    "documented Git config was discarded"
+                );
                 assert_eq!(
                     String::from_utf8(output.stdout).unwrap().trim(),
                     "Preserved Fixture User"
@@ -576,7 +577,10 @@ fn main() {
             &target,
             &["worktree", "add", "--detach", &linked_path, "HEAD"],
         );
-        assert!(linked.join(".git").is_file(), "fixture is not a linked worktree");
+        assert!(
+            linked.join(".git").is_file(),
+            "fixture is not a linked worktree"
+        );
         isolated_git(&foreign, &["init", "-q"]);
 
         for redirect in ["git-dir", "work-tree", "common-dir", "index-file"] {
@@ -611,10 +615,7 @@ fn main() {
                     child.env("GIT_COMMON_DIR", foreign.join(".git"));
                 }
                 "index-file" => {
-                    child.env(
-                        "GIT_INDEX_FILE",
-                        foreign.join(".git/index"),
-                    );
+                    child.env("GIT_INDEX_FILE", foreign.join(".git/index"));
                 }
                 _ => unreachable!(),
             }
