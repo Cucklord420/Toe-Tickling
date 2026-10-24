@@ -240,7 +240,6 @@ fn ambient_git_redirects_cannot_hide_tracked_ignored_private_files() {
     }
 }
 
-
 #[test]
 fn unignored_untracked_private_context_is_rejected() {
     for path in [
