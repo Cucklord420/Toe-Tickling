@@ -135,7 +135,10 @@ fn clean_git(root: &Path, args: &[&str]) -> std::process::Output {
 
 fn add_linked_worktree(repository: &Path, target: &Path) {
     let target = target.to_string_lossy().into_owned();
-    let output = clean_git(repository, &["worktree", "add", "--detach", &target, "HEAD"]);
+    let output = clean_git(
+        repository,
+        &["worktree", "add", "--detach", &target, "HEAD"],
+    );
     assert!(
         output.status.success(),
         "Linked-worktree fixture failed: {}",
