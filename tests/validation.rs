@@ -47,13 +47,11 @@ fn fixture() -> TempDir {
             "Fictional fixture",
         ],
     ] {
+        let output = clean_git(dir.path(), &args);
         assert!(
-            Command::new("git")
-                .args(args)
-                .current_dir(dir.path())
-                .status()
-                .unwrap()
-                .success()
+            output.status.success(),
+            "Git fixture operation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
         );
     }
     dir
@@ -121,15 +119,29 @@ fn rust_policy_requires_relevant_official_guidance_and_evidence() {
 }
 
 fn clean_git(root: &Path, args: &[&str]) -> std::process::Output {
-    Command::new("git")
-        .args(args)
-        .current_dir(root)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_COMMON_DIR")
-        .env_remove("GIT_INDEX_FILE")
-        .output()
-        .unwrap()
+    let mut command = Command::new("git");
+    command.args(args).current_dir(root);
+    for (key, _) in std::env::vars_os() {
+        if key
+            .to_string_lossy()
+            .to_ascii_uppercase()
+            .starts_with("GIT_")
+        {
+            command.env_remove(key);
+        }
+    }
+    command.output().unwrap()
+}
+
+fn add_linked_worktree(repository: &Path, target: &Path) {
+    let target = target.to_string_lossy().into_owned();
+    let output = clean_git(repository, &["worktree", "add", "--detach", &target, "HEAD"]);
+    assert!(
+        output.status.success(),
+        "Linked-worktree fixture failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(Path::new(&target).join(".git").is_file());
 }
 
 fn commit_fixture(root: &Path, name: &str) {
@@ -353,6 +365,9 @@ fn primary_validator_rejects_missing_stable_verification_rule() {
 #[test]
 fn new_audit_binds_the_checkout_head_not_ambient_git_repository_overrides() {
     let checkout = fixture();
+    let linked_sandbox = tempfile::tempdir().unwrap();
+    let selected = linked_sandbox.path().join("selected-worktree");
+    add_linked_worktree(checkout.path(), &selected);
     let alternate = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
     fs::write(
@@ -391,7 +406,7 @@ fn new_audit_binds_the_checkout_head_not_ambient_git_repository_overrides() {
         assert!(output.status.success());
         String::from_utf8(output.stdout).unwrap().trim().to_owned()
     };
-    let checkout_head = head(checkout.path());
+    let checkout_head = head(&selected);
     let alternate_head = head(alternate.path());
     assert_ne!(checkout_head, alternate_head);
 
@@ -399,9 +414,11 @@ fn new_audit_binds_the_checkout_head_not_ambient_git_repository_overrides() {
     let mut command = Command::new(env!("CARGO_BIN_EXE_toe-tickling"));
     command
         .env("GIT_DIR", alternate.path().join(".git"))
-        .env("GIT_WORK_TREE", alternate.path())
+        .env("GIT_WORK_TREE", &selected)
+        .env("GIT_COMMON_DIR", alternate.path().join(".git"))
+        .env("GIT_INDEX_FILE", alternate.path().join(".git/index"))
         .arg("--root")
-        .arg(checkout.path())
+        .arg(&selected)
         .args([
             "new-audit",
             "--task",
@@ -418,13 +435,13 @@ fn new_audit_binds_the_checkout_head_not_ambient_git_repository_overrides() {
     let audit: Audit = read_json(&output_path).unwrap();
     assert_eq!(audit.repository_revision, checkout_head);
 
-    let mut spoofed = complete(checkout.path());
+    let mut spoofed = complete(&selected);
     spoofed.repository_revision = alternate_head;
     let spoofed_path = outside.path().join("spoofed.json");
     write_json(&spoofed_path, &spoofed).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_toe-tickling"))
         .arg("--root")
-        .arg(checkout.path())
+        .arg(&selected)
         .arg("check")
         .arg("--audit")
         .arg(spoofed_path)
@@ -710,7 +727,10 @@ fn adoption_cli_runs_from_an_unrelated_directory_and_path_with_spaces() {
 #[test]
 fn audit_validation_uses_the_selected_checkout_under_git_redirects() {
     let source = fixture();
-    let audit = complete(source.path());
+    let linked_sandbox = tempfile::tempdir().unwrap();
+    let selected = linked_sandbox.path().join("selected-worktree");
+    add_linked_worktree(source.path(), &selected);
+    let audit = complete(&selected);
     let foreign = tempfile::tempdir().unwrap();
     commit_fixture(foreign.path(), "Fictional external repository");
     let output_dir = tempfile::tempdir().unwrap();
@@ -719,14 +739,14 @@ fn audit_validation_uses_the_selected_checkout_under_git_redirects() {
 
     let run = Command::new(env!("CARGO_BIN_EXE_toe-tickling"))
         .arg("--root")
-        .arg(source.path())
+        .arg(&selected)
         .arg("check")
         .arg("--audit")
         .arg(&receipt_path)
         .env("GIT_DIR", foreign.path().join(".git"))
-        .env("GIT_WORK_TREE", source.path())
-        .env_remove("GIT_COMMON_DIR")
-        .env_remove("GIT_INDEX_FILE")
+        .env("GIT_WORK_TREE", &selected)
+        .env("GIT_COMMON_DIR", foreign.path().join(".git"))
+        .env("GIT_INDEX_FILE", foreign.path().join(".git/index"))
         .output()
         .unwrap();
     assert!(
