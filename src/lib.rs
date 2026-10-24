@@ -14,17 +14,30 @@ pub mod security;
 
 pub type Result<T> = std::result::Result<T, String>;
 
-/// Run Git against a selected checkout without ambient `GIT_*` overrides.
-/// Repository-local reads must not inherit a different index, work tree, or
-/// configuration from the invoking process.
+const GIT_CONTEXT_REDIRECTS: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+];
+
+/// Run Git against the selected checkout without inherited repository redirects.
+/// Documented `GIT_CONFIG_*` settings remain available; repository-root callers
+/// compare Git's resolved worktree with the selected path and fail closed on a
+/// mismatch.
 pub(crate) fn git_command(root: &Path) -> std::process::Command {
     let mut command = std::process::Command::new("git");
     command.current_dir(root);
     for (key, _) in std::env::vars_os() {
-        if key
-            .to_string_lossy()
-            .to_ascii_uppercase()
-            .starts_with("GIT_")
+        let name = key.to_string_lossy();
+        if GIT_CONTEXT_REDIRECTS
+            .iter()
+            .any(|redirect| name.eq_ignore_ascii_case(redirect))
         {
             command.env_remove(key);
         }
