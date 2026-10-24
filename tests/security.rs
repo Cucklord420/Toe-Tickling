@@ -435,7 +435,7 @@ fn staged_symlink_mode_is_rejected_even_when_worktree_is_regular() {
 }
 
 #[test]
-fn scanner_ignores_ambient_git_index_override() {
+fn scanner_fails_closed_on_ambient_git_index_override() {
     let fictional_token = ["ghp_", "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"].concat();
     let directory = full_fixture();
     git(directory.path(), &["init", "-q"]);
@@ -476,7 +476,81 @@ fn scanner_ignores_ambient_git_index_override() {
         "alternate index hid tracked content"
     );
     assert!(
-        stderr.contains("Potential private credential/contact"),
+        stderr.contains("GIT_INDEX_FILE override"),
+        "unexpected scanner result: {stderr}"
+    );
+    assert!(!stderr.contains(&fictional_token));
+}
+
+#[test]
+fn alternate_index_only_staged_credentials_fail_closed() {
+    let fictional_token = ["ghp_", "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"].concat();
+    let directory = full_fixture();
+    git_isolated(directory.path(), &["init", "-q"]);
+    git_isolated(directory.path(), &["add", "."]);
+    git_isolated(directory.path(), &["add", "--force", "README.md"]);
+
+    let alternate_index_dir = tempfile::tempdir().unwrap();
+    let alternate_index = alternate_index_dir.path().join("index");
+    fs::copy(directory.path().join(".git/index"), &alternate_index).unwrap();
+
+    let readme = directory.path().join("README.md");
+    let original = fs::read(&readme).unwrap();
+    fs::write(
+        &readme,
+        format!("Fictional credential {fictional_token}\n"),
+    )
+    .unwrap();
+    let mut stage_alternate = Command::new("git");
+    stage_alternate
+        .args(["add", "--force", "README.md"])
+        .current_dir(directory.path());
+    for variable in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_NAMESPACE",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    ] {
+        stage_alternate.env_remove(variable);
+    }
+    assert!(stage_alternate
+        .env("GIT_INDEX_FILE", &alternate_index)
+        .status()
+        .unwrap()
+        .success());
+    fs::write(&readme, original).unwrap();
+
+    let mut scan = Command::new(env!("CARGO_BIN_EXE_toe-tickling"));
+    scan.arg("check").current_dir(directory.path());
+    for variable in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_NAMESPACE",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    ] {
+        scan.env_remove(variable);
+    }
+    let output = scan
+        .env("GIT_INDEX_FILE", &alternate_index)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        !output.status.success(),
+        "alternate-index-only staged content must fail closed"
+    );
+    assert!(
+        stderr.contains("GIT_INDEX_FILE override"),
         "unexpected scanner result: {stderr}"
     );
     assert!(!stderr.contains(&fictional_token));
