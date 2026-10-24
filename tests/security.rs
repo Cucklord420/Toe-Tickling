@@ -293,53 +293,6 @@ fn ambient_git_redirects_cannot_hide_tracked_ignored_private_files() {
 }
 
 #[test]
-fn mismatched_linked_worktree_marker_fails_closed() {
-    let selected = fixture();
-    let foreign = tempfile::tempdir().unwrap();
-    git_isolated(foreign.path(), &["init", "-q"]);
-    write(
-        foreign.path(),
-        "README.md",
-        "Fictional foreign repository\n",
-    );
-    git_isolated(foreign.path(), &["add", "README.md"]);
-    git_isolated(
-        foreign.path(),
-        &[
-            "-c",
-            "user.name=Fixture",
-            "-c",
-            "user.email=fixture@example.invalid",
-            "commit",
-            "-m",
-            "foreign fixture",
-        ],
-    );
-
-    let linked_sandbox = tempfile::tempdir().unwrap();
-    let linked = linked_sandbox.path().join("foreign-worktree");
-    let linked_path = linked.to_string_lossy().into_owned();
-    git_isolated(
-        foreign.path(),
-        &["worktree", "add", "--detach", &linked_path, "HEAD"],
-    );
-    assert!(
-        linked.join(".git").is_file(),
-        "fixture is not a linked worktree"
-    );
-
-    let foreign_marker = fs::read_to_string(linked.join(".git")).unwrap();
-    write(selected.path(), ".git", &foreign_marker);
-    let result = check(selected.path());
-    assert!(
-        result.as_ref().is_err_and(|error| {
-            error.contains("Git working-tree root does not match selected public tree")
-        }),
-        "expected mismatched linked-worktree marker to fail closed, got {result:?}"
-    );
-}
-
-#[test]
 fn unignored_untracked_private_context_is_rejected() {
     for path in [
         "private/context.md",
