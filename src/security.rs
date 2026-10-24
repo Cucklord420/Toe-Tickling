@@ -562,6 +562,11 @@ fn workflow(relative: &Path, bytes: &[u8], secret_context: &Regex) -> Result<()>
 /// Audit public paths, Rust-only sources, selected privacy patterns, links and CI.
 /// This is a structural guard, not a guarantee that all sensitive data is detected.
 pub fn check(root: &Path) -> Result<()> {
+    // Do not silently audit the default index when Git is using an alternate
+    // index: it may be the actual commit candidate for the caller.
+    if std::env::var_os("GIT_INDEX_FILE").is_some() {
+        return Err("GIT_INDEX_FILE override prevents verification of the commit index".into());
+    }
     let root = checked_root(root)?;
     let patterns = TextPatterns {
         secrets: Regex::new(
