@@ -98,9 +98,15 @@ fn git_root(root: &Path) -> Result<bool> {
         Ok(output) if output.status.success() => {
             let directory =
                 String::from_utf8(output.stdout).map_err(|_| "Git root is not valid UTF-8")?;
-            Ok(fs::canonicalize(directory.trim_end_matches(['\r', '\n']))
-                .map_err(|_| "Cannot resolve Git root")?
-                == root)
+            let directory = fs::canonicalize(directory.trim_end_matches(['\r', '\n']))
+                .map_err(|_| "Cannot resolve Git root")?;
+            if directory == root {
+                Ok(true)
+            } else if root.join(".git").exists() {
+                Err("Git working-tree root does not match selected public tree".into())
+            } else {
+                Ok(false)
+            }
         }
         _ if root.join(".git").exists() => Err("Cannot enumerate the Git public tree".into()),
         _ => Ok(false),
