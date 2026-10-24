@@ -6,13 +6,45 @@ use std::{
     fs,
     path::Path,
 };
-use time::{Date, OffsetDateTime, format_description::well_known::Rfc3339};
+use time::{Date, Month, OffsetDateTime, format_description::well_known::Rfc3339};
 
 pub mod adopt;
 pub mod guide;
 pub mod security;
 
 pub type Result<T> = std::result::Result<T, String>;
+
+const GIT_CONTEXT_REDIRECTS: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+];
+
+/// Run Git against the selected checkout without inherited repository redirects.
+/// Documented `GIT_CONFIG_*` settings remain available; repository-root callers
+/// compare Git's resolved worktree with the selected path and fail closed on a
+/// mismatch.
+pub(crate) fn git_command(root: &Path) -> std::process::Command {
+    let mut command = std::process::Command::new("git");
+    command.current_dir(root);
+    for (key, _) in std::env::vars_os() {
+        let name = key.to_string_lossy();
+        if GIT_CONTEXT_REDIRECTS
+            .iter()
+            .any(|redirect| name.eq_ignore_ascii_case(redirect))
+        {
+            command.env_remove(key);
+        }
+    }
+    command
+}
+
 pub const READING_FILES: &[&str] = &[
     "AGENTS.md",
     "README.md",
@@ -52,6 +84,16 @@ const SCOPES: &[&str] = &[
     "finance",
     "ev",
     "research",
+];
+// Stable IDs remain required when superseded; generated views retain policy history.
+const STABLE_VERIFICATION_RULE_FAMILIES: &[(&str, usize)] = &[
+    ("AUTH", 6),
+    ("EVID", 6),
+    ("EXEC", 8),
+    ("SAFE", 6),
+    ("ENG", 7),
+    ("DOM", 5),
+    ("AUD", 8),
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,6 +182,22 @@ fn useful(value: &str) -> bool {
             .iter()
             .any(|s| value.to_uppercase().contains(s))
 }
+
+/// Return the policy calendar date for the owner's configured America/New_York timezone.
+/// RFC3339 audit timestamps remain UTC; only date-only policy deadlines use this calendar.
+pub fn policy_date_at(now: OffsetDateTime) -> Result<Date> {
+    use chrono::Datelike;
+
+    let utc =
+        chrono::DateTime::<chrono::Utc>::from_timestamp(now.unix_timestamp(), now.nanosecond())
+            .ok_or("Current timestamp is outside the timezone conversion range")?;
+    let local = utc.with_timezone(&chrono_tz::America::New_York);
+    let month_number = u8::try_from(local.month()).map_err(|e| e.to_string())?;
+    let month = Month::try_from(month_number).map_err(|e| e.to_string())?;
+    let day = u8::try_from(local.day()).map_err(|e| e.to_string())?;
+    Date::from_calendar_date(local.year(), month, day).map_err(|e| e.to_string())
+}
+
 pub fn load_policy(root: &Path) -> Result<Policy> {
     read_json(&root.join("policy/rules.json"))
 }
@@ -189,18 +247,8 @@ pub fn validate_policy(policy: &Policy, today: Date) -> Result<()> {
             ),
         )?;
     }
-    // Stable IDs remain present even when superseded. Regenerating the book
-    // and manifest must not turn a silently deleted obligation into valid policy.
-    for (family, count) in [
-        ("AUTH", 6),
-        ("EVID", 6),
-        ("EXEC", 8),
-        ("SAFE", 6),
-        ("ENG", 7),
-        ("DOM", 5),
-        ("AUD", 8),
-    ] {
-        for number in 1..=count {
+    for (family, count) in STABLE_VERIFICATION_RULE_FAMILIES {
+        for number in 1..=*count {
             let id = format!("{family}-{number:02}");
             require(
                 ids.contains(&id),
@@ -345,9 +393,8 @@ pub fn validate_audit(root: &Path, policy: &Policy, a: &Audit, now: OffsetDateTi
         "Expected full Git revision",
     )?;
     // Bind the declared revision to this checkout, not an arbitrary plausible SHA.
-    let head = std::process::Command::new("git")
+    let head = git_command(root)
         .args(["rev-parse", "HEAD"])
-        .current_dir(root)
         .output()
         .map_err(|e| e.to_string())?;
     require(
@@ -427,9 +474,8 @@ pub fn validate_audit(root: &Path, policy: &Policy, a: &Audit, now: OffsetDateTi
 }
 pub fn new_audit(root: &Path, task: String) -> Result<Audit> {
     let policy = load_policy(root)?;
-    let head = std::process::Command::new("git")
+    let head = git_command(root)
         .args(["rev-parse", "HEAD"])
-        .current_dir(root)
         .output()
         .map_err(|e| e.to_string())?;
     require(head.status.success(), "Cannot identify repository HEAD")?;

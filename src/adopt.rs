@@ -151,13 +151,14 @@ fn absolute_target(target: &Path) -> Result<PathBuf> {
 }
 
 fn git_root(target: &Path) -> Result<PathBuf> {
-    let mut child = Command::new("git")
+    run_git_root(target, crate::git_command(target), Duration::from_secs(10))
+}
+
+fn run_git_root(target: &Path, mut command: Command, timeout: Duration) -> Result<PathBuf> {
+    let mut child = command
         .arg("-C")
         .arg(target)
         .args(["rev-parse", "--show-toplevel"])
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_COMMON_DIR")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -166,7 +167,7 @@ fn git_root(target: &Path) -> Result<PathBuf> {
     loop {
         match child.try_wait() {
             Ok(Some(_)) => break,
-            Ok(None) if started.elapsed() < Duration::from_secs(10) => {
+            Ok(None) if started.elapsed() < timeout => {
                 std::thread::sleep(Duration::from_millis(10));
             }
             Ok(None) => {
@@ -275,7 +276,10 @@ pub fn plan(root: &Path, target: &Path) -> Result<AdoptionPlan> {
     let root = crate::security::checked_root(root)?;
     let target = validate_target(&root, target)?;
     let git_identity = GitIdentity::read(&target)?;
-    crate::check_repo(&root, time::OffsetDateTime::now_utc().date())?;
+    crate::check_repo(
+        &root,
+        crate::policy_date_at(time::OffsetDateTime::now_utc())?,
+    )?;
     let outputs = guide::outputs(&root)?;
     let expected_guide = outputs
         .get("GUIDEBOOK.md")
@@ -423,4 +427,261 @@ pub fn apply(plan: &AdoptionPlan) -> Result<()> {
         })?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn isolated_git(root: &Path, args: &[&str]) {
+        let mut command = Command::new("git");
+        command.args(args).current_dir(root);
+        for (key, _) in std::env::vars_os() {
+            if key
+                .to_string_lossy()
+                .to_ascii_uppercase()
+                .starts_with("GIT_")
+            {
+                command.env_remove(key);
+            }
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "Git fixture operation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_root_timeout_kills_and_reaps_child() {
+        let scratch = tempfile::tempdir().unwrap();
+        let helper_source = scratch.path().join("slow-git.rs");
+        let slow_git = scratch.path().join("slow-git");
+        let pid_file = scratch.path().join("child.pid");
+        fs::write(
+            &helper_source,
+            r#"
+use std::{env, fs, thread, time::Duration};
+
+fn main() {
+    let pid_file = env::var_os("PID_FILE").expect("PID_FILE");
+    fs::write(pid_file, std::process::id().to_string()).expect("write child pid");
+    thread::sleep(Duration::from_secs(5));
+}
+"#,
+        )
+        .unwrap();
+        let compile = Command::new("rustc")
+            .args(["--edition=2024"])
+            .arg(&helper_source)
+            .arg("-o")
+            .arg(&slow_git)
+            .output()
+            .unwrap();
+        assert!(
+            compile.status.success(),
+            "Rust slow-Git fixture failed: {}",
+            String::from_utf8_lossy(&compile.stderr)
+        );
+
+        let target = scratch.path().join("target");
+        fs::create_dir(&target).unwrap();
+        let sentinel = target.join("preserve.txt");
+        let original = b"unchanged".to_vec();
+        fs::write(&sentinel, &original).unwrap();
+        let mut command = Command::new(&slow_git);
+        command.env("PID_FILE", &pid_file);
+        let started = Instant::now();
+        let result = run_git_root(&target, command, Duration::from_millis(500));
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "timed Git child was not terminated promptly: {elapsed:?}"
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            "Timed out inspecting target Git working tree"
+        );
+        assert_eq!(
+            fs::read(&sentinel).unwrap(),
+            original,
+            "timed-out Git child changed the adoption target"
+        );
+
+        let pid = fs::read_to_string(pid_file)
+            .unwrap()
+            .trim()
+            .parse::<u32>()
+            .unwrap();
+        let pid_arg = pid.to_string();
+        let probe = Command::new("kill")
+            .args(["-0", &pid_arg])
+            .status()
+            .unwrap();
+        assert!(!probe.success(), "timed-out Git child {pid} remains alive");
+    }
+
+    #[test]
+    fn git_root_ignores_ambient_repository_redirects() {
+        if let Some(target) = std::env::var_os("TOE_TICKLING_ADOPT_TEST_TARGET") {
+            let target = PathBuf::from(target);
+            let expected =
+                PathBuf::from(std::env::var_os("TOE_TICKLING_ADOPT_TEST_EXPECTED").unwrap());
+            if std::env::var_os("TOE_TICKLING_ADOPT_TEST_VALIDATE_CONFIG").is_some() {
+                let source =
+                    PathBuf::from(std::env::var_os("TOE_TICKLING_ADOPT_TEST_SOURCE").unwrap());
+                assert_eq!(git_root(&target).unwrap(), expected);
+                assert_eq!(validate_target(&source, &target).unwrap(), target);
+            } else {
+                assert_eq!(git_root(&target).unwrap(), expected);
+            }
+            if std::env::var_os("TOE_TICKLING_ADOPT_TEST_PRESERVE_CONFIG").is_some() {
+                let output = crate::git_command(&target)
+                    .args(["config", "--get", "user.name"])
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "documented Git config was discarded"
+                );
+                assert_eq!(
+                    String::from_utf8(output.stdout).unwrap().trim(),
+                    "Preserved Fixture User"
+                );
+            }
+            return;
+        }
+
+        let scratch = tempfile::tempdir().unwrap();
+        let source = scratch.path().join("source");
+        let target = scratch.path().join("target");
+        let linked = scratch.path().join("linked-target");
+        let foreign = scratch.path().join("foreign");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&target).unwrap();
+        fs::create_dir(&foreign).unwrap();
+        isolated_git(&target, &["init", "-q"]);
+        isolated_git(
+            &target,
+            &[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "fixture",
+            ],
+        );
+        let linked_path = linked.to_string_lossy().into_owned();
+        isolated_git(
+            &target,
+            &["worktree", "add", "--detach", &linked_path, "HEAD"],
+        );
+        assert!(
+            linked.join(".git").is_file(),
+            "fixture is not a linked worktree"
+        );
+        isolated_git(&foreign, &["init", "-q"]);
+
+        for redirect in ["git-dir", "work-tree", "common-dir", "index-file"] {
+            let mut child = Command::new(std::env::current_exe().unwrap());
+            child
+                .args([
+                    "--exact",
+                    "adopt::tests::git_root_ignores_ambient_repository_redirects",
+                    "--nocapture",
+                ])
+                .env("TOE_TICKLING_ADOPT_TEST_TARGET", &linked)
+                .env("TOE_TICKLING_ADOPT_TEST_EXPECTED", &linked)
+                .env_remove("TOE_TICKLING_ADOPT_TEST_VALIDATE_CONFIG")
+                .env_remove("TOE_TICKLING_ADOPT_TEST_PRESERVE_CONFIG")
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_COMMON_DIR")
+                .env_remove("GIT_INDEX_FILE")
+                .env_remove("GIT_CONFIG_COUNT")
+                .env_remove("GIT_CONFIG_KEY_0")
+                .env_remove("GIT_CONFIG_VALUE_0");
+            match redirect {
+                "git-dir" => {
+                    child
+                        .env("GIT_DIR", foreign.join(".git"))
+                        .env("GIT_WORK_TREE", &foreign);
+                }
+                "work-tree" => {
+                    child.env("GIT_WORK_TREE", &foreign);
+                }
+                "common-dir" => {
+                    child.env("GIT_COMMON_DIR", foreign.join(".git"));
+                }
+                "index-file" => {
+                    child.env("GIT_INDEX_FILE", foreign.join(".git/index"));
+                }
+                _ => unreachable!(),
+            }
+            let output = child.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{redirect} Git-root child failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "adopt::tests::git_root_ignores_ambient_repository_redirects",
+                "--nocapture",
+            ])
+            .env("TOE_TICKLING_ADOPT_TEST_TARGET", &linked)
+            .env("TOE_TICKLING_ADOPT_TEST_EXPECTED", &linked)
+            .env("TOE_TICKLING_ADOPT_TEST_VALIDATE_CONFIG", "1")
+            .env("TOE_TICKLING_ADOPT_TEST_SOURCE", &source)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR")
+            .env_remove("GIT_INDEX_FILE")
+            .env("GIT_CONFIG_COUNT", "1")
+            .env("GIT_CONFIG_KEY_0", "core.worktree")
+            .env("GIT_CONFIG_VALUE_0", &foreign)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "config redirect child failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "adopt::tests::git_root_ignores_ambient_repository_redirects",
+                "--nocapture",
+            ])
+            .env("TOE_TICKLING_ADOPT_TEST_TARGET", &linked)
+            .env("TOE_TICKLING_ADOPT_TEST_EXPECTED", &linked)
+            .env("TOE_TICKLING_ADOPT_TEST_PRESERVE_CONFIG", "1")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR")
+            .env_remove("GIT_INDEX_FILE")
+            .env("GIT_CONFIG_COUNT", "1")
+            .env("GIT_CONFIG_KEY_0", "user.name")
+            .env("GIT_CONFIG_VALUE_0", "Preserved Fixture User")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "preserved config child failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
