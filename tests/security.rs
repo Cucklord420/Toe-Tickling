@@ -229,7 +229,10 @@ fn ambient_git_redirects_cannot_hide_tracked_ignored_private_files() {
         directory.path(),
         &["worktree", "add", "--detach", &linked_path, "HEAD"],
     );
-    assert!(linked.join(".git").is_file(), "fixture is not a linked worktree");
+    assert!(
+        linked.join(".git").is_file(),
+        "fixture is not a linked worktree"
+    );
 
     let foreign = tempfile::tempdir().unwrap();
     git_isolated(foreign.path(), &["init", "-q"]);
