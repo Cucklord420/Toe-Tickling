@@ -496,11 +496,7 @@ fn alternate_index_only_staged_credentials_fail_closed() {
 
     let readme = directory.path().join("README.md");
     let original = fs::read(&readme).unwrap();
-    fs::write(
-        &readme,
-        format!("Fictional credential {fictional_token}\n"),
-    )
-    .unwrap();
+    fs::write(&readme, format!("Fictional credential {fictional_token}\n")).unwrap();
     let mut stage_alternate = Command::new("git");
     stage_alternate
         .args(["add", "--force", "README.md"])
@@ -518,11 +514,13 @@ fn alternate_index_only_staged_credentials_fail_closed() {
     ] {
         stage_alternate.env_remove(variable);
     }
-    assert!(stage_alternate
-        .env("GIT_INDEX_FILE", &alternate_index)
-        .status()
-        .unwrap()
-        .success());
+    assert!(
+        stage_alternate
+            .env("GIT_INDEX_FILE", &alternate_index)
+            .status()
+            .unwrap()
+            .success()
+    );
     fs::write(&readme, original).unwrap();
 
     let mut scan = Command::new(env!("CARGO_BIN_EXE_toe-tickling"));
