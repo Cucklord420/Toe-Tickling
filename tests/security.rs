@@ -185,11 +185,16 @@ fn tracked_private_paths_remain_rejected_even_when_ignored() {
 fn ambient_git_redirects_cannot_hide_tracked_ignored_private_files() {
     if let Some(root) = std::env::var_os("TOE_TICKLING_SECURITY_CHILD_ROOT") {
         let result = check(Path::new(&root));
+        let expected_error = if std::env::var_os("GIT_INDEX_FILE").is_some() {
+            "GIT_INDEX_FILE override"
+        } else {
+            "Private path"
+        };
         assert!(
             result
                 .as_ref()
-                .is_err_and(|error| error.contains("Private path")),
-            "expected tracked private path rejection, got {result:?}"
+                .is_err_and(|error| error.contains(expected_error)),
+            "expected {expected_error} rejection, got {result:?}"
         );
         return;
     }
