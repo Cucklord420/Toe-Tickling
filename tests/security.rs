@@ -185,21 +185,12 @@ fn tracked_private_paths_remain_rejected_even_when_ignored() {
 fn ambient_git_redirects_cannot_hide_tracked_ignored_private_files() {
     if let Some(root) = std::env::var_os("TOE_TICKLING_SECURITY_CHILD_ROOT") {
         let result = check(Path::new(&root));
-        if std::env::var_os("TOE_TICKLING_SECURITY_EXPECT_ROOT_MISMATCH").is_some() {
-            assert!(
-                result.as_ref().is_err_and(|error| {
-                    error.contains("Git working-tree root does not match selected public tree")
-                }),
-                "expected fail-closed root mismatch, got {result:?}"
-            );
-        } else {
-            assert!(
-                result
-                    .as_ref()
-                    .is_err_and(|error| error.contains("Private path")),
-                "expected tracked private path rejection, got {result:?}"
-            );
-        }
+        assert!(
+            result
+                .as_ref()
+                .is_err_and(|error| error.contains("Private path")),
+            "expected tracked private path rejection, got {result:?}"
+        );
         return;
     }
 
@@ -288,7 +279,6 @@ fn ambient_git_redirects_cannot_hide_tracked_ignored_private_files() {
             "--nocapture",
         ])
         .env("TOE_TICKLING_SECURITY_CHILD_ROOT", &linked)
-        .env("TOE_TICKLING_SECURITY_EXPECT_ROOT_MISMATCH", "1")
         .env("GIT_CONFIG_COUNT", "1")
         .env("GIT_CONFIG_KEY_0", "core.worktree")
         .env("GIT_CONFIG_VALUE_0", foreign.path())
