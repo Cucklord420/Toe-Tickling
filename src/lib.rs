@@ -72,12 +72,13 @@ const SCOPES: &[&str] = &[
     "ev",
     "research",
 ];
+// Stable IDs remain required when superseded; generated views retain policy history.
 const STABLE_VERIFICATION_RULE_FAMILIES: &[(&str, usize)] = &[
     ("AUTH", 6),
     ("EVID", 6),
     ("EXEC", 8),
     ("SAFE", 6),
-    ("ENG", 6),
+    ("ENG", 7),
     ("DOM", 5),
     ("AUD", 8),
 ];
@@ -236,7 +237,10 @@ pub fn validate_policy(policy: &Policy, today: Date) -> Result<()> {
     for (family, count) in STABLE_VERIFICATION_RULE_FAMILIES {
         for number in 1..=*count {
             let id = format!("{family}-{number:02}");
-            require(ids.contains(&id), format!("Missing stable rule: {id}"))?;
+            require(
+                ids.contains(&id),
+                format!("Missing existing verification rule {id}; preserve stable IDs and history"),
+            )?;
         }
     }
     let mut replacements = BTreeSet::new();

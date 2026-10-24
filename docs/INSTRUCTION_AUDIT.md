@@ -1,4 +1,16 @@
-# Integrated instruction audit — 10-15-2026
+# Integrated instruction audit and follow-up findings
+
+## Follow-up — 10-16-2026, policy 1.2.3
+
+Base inspected: `4f519c3ea1ed120d36aefea014fbf31bc0593304` (policy 1.2.2). Published PR #6 at `87098798d02587a6e8d3eb683760d91c79894433` remains a historical, separate audit; its Python/100-run evidence does not validate this change. This review does not establish access to another worker's unpublished files or continuous supervision.
+
+**EV-001 — Medium: stable verification IDs could disappear.** The primary `validate_policy` accepted removal of an existing rule as long as the remaining records were valid. The new removal regression failed before repair with `silently deleted AUTH-01`. Consistently regenerating the rendered book and hashes could therefore hide lost obligations from the primary structural check. The independent auditor guarded the older baseline but omitted the later ENG-020 and ENG-07 obligations.
+
+Correction: require all 46 existing verification IDs in the primary validator and update the independent auditor to all 159 standing and 46 verification IDs. Preserve explicit supersession instead of requiring that every historical rule remain active. Regressions remove each current verification ID, accept a valid retained-history replacement, remove ENG-020 from a rebuilt synthetic bundle, and remove ENG-07 with consistent rendered bytes/counts/digests. Scenario S29 and the self-check procedure describe this failure mode. Check results for this revision belong in [VALIDATION.md](VALIDATION.md).
+
+Residual limits: minimum-ID guards require deliberate maintenance when adding future rules; retaining an ID cannot detect every semantic weakening of its text. Review source diffs and authority/provenance as well as tool results. No private corpus was republished, user preference changed, provider configured, or live model compliance established by this repair.
+
+## Original integrated review — 10-15-2026
 
 Policy version: 1.2.0. Scope: the other agent's published 0bdc6fe modules and implementation, current explicit mandatory-Rust instructions, the integrated full guide, 45-rule verification register, Rust tooling, and self-check procedures. Initial reports are preserved in [the historical audit](archive/INITIAL_INSTRUCTION_AUDIT.md) and [historical validation](archive/INITIAL_VALIDATION.md); their Python results do not validate this revision.
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.3 — 10-16-2026
+
+- Reject silent removal of any of the 46 existing verification IDs in the primary validator, including after regeneration. Explicit supersession remains supported without deleting history.
+- Bring the independent auditor's baseline up to ENG-020 and ENG-07; add removal and valid-replacement regressions and scenario S29. Preserve the 159 standing and 46 verification obligations without changing user preferences.
+- Document the evolution failure mode and its evidence in the instruction audit; prior validation results remain tied to their original tested tree.
+
 ## 1.2.2 — 10-16-2026
 
 - ENG-020 and ENG-07 now require consulting the official Rust Book and task-relevant official references, not crawling the entire Rust Reference before every change.

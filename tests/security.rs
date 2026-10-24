@@ -310,6 +310,79 @@ fn staged_credentials_are_rejected_after_the_worktree_is_cleaned_or_removed() {
     }
 }
 
+
+#[test]
+fn staged_renamed_file_is_checked_from_its_index_blob() {
+    let fictional_token = ["ghp_", "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"].concat();
+    let directory = fixture();
+    git_isolated(directory.path(), &["init", "-q"]);
+    git_isolated(directory.path(), &["add", "."]);
+    git_isolated(
+        directory.path(),
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "Fictional baseline",
+        ],
+    );
+
+    write(
+        directory.path(),
+        "README.md",
+        &format!("Fictional public fixture\n{fictional_token}\n"),
+    );
+    git_isolated(directory.path(), &["add", "README.md"]);
+    git_isolated(directory.path(), &["mv", "README.md", "renamed.md"]);
+    write(directory.path(), "renamed.md", "Fictional public fixture\n");
+
+    let error = check(directory.path()).unwrap_err();
+    assert!(error.contains("Potential private credential/contact"));
+    assert!(!error.contains(&fictional_token));
+}
+
+#[test]
+fn staged_symlink_mode_is_rejected_even_when_worktree_is_regular() {
+    let directory = fixture();
+    git_isolated(directory.path(), &["init", "-q"]);
+    git_isolated(directory.path(), &["add", "."]);
+    git_isolated(
+        directory.path(),
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "Fictional baseline",
+        ],
+    );
+
+    let blob = Command::new("git")
+        .args(["hash-object", "-w", "README.md"])
+        .current_dir(directory.path())
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_INDEX_FILE")
+        .output()
+        .unwrap();
+    assert!(blob.status.success());
+    let oid = String::from_utf8(blob.stdout).unwrap().trim().to_owned();
+    let cache_info = format!("120000,{oid},README.md");
+    git_isolated(
+        directory.path(),
+        &["update-index", "--add", "--cacheinfo", &cache_info],
+    );
+
+    let error = check(directory.path()).unwrap_err();
+    assert!(error.contains("regular file, not a symlink or special entry"));
+}
+
 #[test]
 fn scanner_ignores_ambient_git_index_override() {
     let fictional_token = ["ghp_", "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"].concat();

@@ -433,22 +433,55 @@ pub fn apply(plan: &AdoptionPlan) -> Result<()> {
 mod tests {
     use super::*;
 
+    fn isolated_git(root: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR")
+            .env_remove("GIT_INDEX_FILE")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "Git fixture operation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn git_root_timeout_kills_and_reaps_child() {
-        use std::os::unix::fs::PermissionsExt;
-
         let scratch = tempfile::tempdir().unwrap();
+        let helper_source = scratch.path().join("slow-git.rs");
         let slow_git = scratch.path().join("slow-git");
         let pid_file = scratch.path().join("child.pid");
         fs::write(
-            &slow_git,
-            "#!/bin/sh\nprintf '%s\\n' \"$$\" > \"$PID_FILE\"\nexec sleep 5\n",
+            &helper_source,
+            r#"
+use std::{env, fs, thread, time::Duration};
+
+fn main() {
+    let pid_file = env::var_os("PID_FILE").expect("PID_FILE");
+    fs::write(pid_file, std::process::id().to_string()).expect("write child pid");
+    thread::sleep(Duration::from_secs(5));
+}
+"#,
         )
         .unwrap();
-        let mut permissions = fs::metadata(&slow_git).unwrap().permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&slow_git, permissions).unwrap();
+        let compile = Command::new("rustc")
+            .args(["--edition=2024"])
+            .arg(&helper_source)
+            .arg("-o")
+            .arg(&slow_git)
+            .output()
+            .unwrap();
+        assert!(
+            compile.status.success(),
+            "Rust slow-Git fixture failed: {}",
+            String::from_utf8_lossy(&compile.stderr)
+        );
 
         let target = scratch.path().join("target");
         fs::create_dir(&target).unwrap();
@@ -473,10 +506,47 @@ mod tests {
             .parse::<u32>()
             .unwrap();
         let pid_arg = pid.to_string();
-        let probe = Command::new("/bin/sh")
-            .args(["-c", "kill -0 \"$1\" >/dev/null 2>&1", "sh", &pid_arg])
-            .status()
-            .unwrap();
+        let probe = Command::new("kill").args(["-0", &pid_arg]).status().unwrap();
         assert!(!probe.success(), "timed-out Git child {pid} remains alive");
+    }
+
+    #[test]
+    fn git_root_ignores_ambient_repository_redirects() {
+        if let Some(target) = std::env::var_os("TOE_TICKLING_ADOPT_TEST_TARGET") {
+            let target = PathBuf::from(target);
+            let expected =
+                PathBuf::from(std::env::var_os("TOE_TICKLING_ADOPT_TEST_EXPECTED").unwrap());
+            assert_eq!(git_root(&target).unwrap(), expected);
+            return;
+        }
+
+        let scratch = tempfile::tempdir().unwrap();
+        let target = scratch.path().join("target");
+        let foreign = scratch.path().join("foreign");
+        fs::create_dir(&target).unwrap();
+        fs::create_dir(&foreign).unwrap();
+        isolated_git(&target, &["init", "-q"]);
+        isolated_git(&foreign, &["init", "-q"]);
+
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "adopt::tests::git_root_ignores_ambient_repository_redirects",
+                "--nocapture",
+            ])
+            .env("TOE_TICKLING_ADOPT_TEST_TARGET", &target)
+            .env("TOE_TICKLING_ADOPT_TEST_EXPECTED", &target)
+            .env("GIT_DIR", foreign.join(".git"))
+            .env("GIT_WORK_TREE", &foreign)
+            .env("GIT_COMMON_DIR", foreign.join(".git"))
+            .env("GIT_INDEX_FILE", foreign.join(".git/index"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "redirected Git-root child failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }
