@@ -506,7 +506,10 @@ fn main() {
             .parse::<u32>()
             .unwrap();
         let pid_arg = pid.to_string();
-        let probe = Command::new("kill").args(["-0", &pid_arg]).status().unwrap();
+        let probe = Command::new("kill")
+            .args(["-0", &pid_arg])
+            .status()
+            .unwrap();
         assert!(!probe.success(), "timed-out Git child {pid} remains alive");
     }
 

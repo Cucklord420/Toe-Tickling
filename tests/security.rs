@@ -310,7 +310,6 @@ fn staged_credentials_are_rejected_after_the_worktree_is_cleaned_or_removed() {
     }
 }
 
-
 #[test]
 fn staged_renamed_file_is_checked_from_its_index_blob() {
     let fictional_token = ["ghp_", "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"].concat();
