@@ -120,6 +120,44 @@ fn rust_policy_requires_relevant_official_guidance_and_evidence() {
     assert!(standing.contains("an exhaustive reading of every Reference page is NOT required"));
 }
 
+fn clean_git(root: &Path, args: &[&str]) -> std::process::Output {
+    Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_INDEX_FILE")
+        .output()
+        .unwrap()
+}
+
+fn commit_fixture(root: &Path, name: &str) {
+    for args in [
+        vec!["init", "-q"],
+        vec!["add", "fixture.txt"],
+        vec![
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            name,
+        ],
+    ] {
+        if args.first() == Some(&"add") {
+            fs::write(root.join("fixture.txt"), "Fictional fixture\n").unwrap();
+        }
+        let output = clean_git(root, &args);
+        assert!(
+            output.status.success(),
+            "Git fixture operation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
 #[test]
 fn baseline_and_declared_receipt_pass() {
     let dir = fixture();
@@ -640,4 +678,34 @@ fn adoption_cli_runs_from_an_unrelated_directory_and_path_with_spaces() {
         .output()
         .unwrap();
     assert!(!head.status.success(), "Adoption must not create commits");
+}
+
+#[test]
+fn audit_validation_uses_the_selected_checkout_under_git_redirects() {
+    let source = fixture();
+    let audit = complete(source.path());
+    let foreign = tempfile::tempdir().unwrap();
+    commit_fixture(foreign.path(), "Fictional external repository");
+    let output_dir = tempfile::tempdir().unwrap();
+    let receipt_path = output_dir.path().join("receipt.json");
+    write_json(&receipt_path, &audit).unwrap();
+
+    let run = Command::new(env!("CARGO_BIN_EXE_toe-tickling"))
+        .arg("--root")
+        .arg(source.path())
+        .arg("check")
+        .arg("--audit")
+        .arg(&receipt_path)
+        .env("GIT_DIR", foreign.path().join(".git"))
+        .env("GIT_WORK_TREE", source.path())
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_INDEX_FILE")
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
 }

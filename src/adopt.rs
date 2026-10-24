@@ -12,7 +12,7 @@ use std::{
     fs,
     io::Write,
     path::{Component, Path, PathBuf},
-    process::Stdio,
+    process::{Command, Stdio},
     time::{Duration, Instant, SystemTime},
 };
 
@@ -151,7 +151,11 @@ fn absolute_target(target: &Path) -> Result<PathBuf> {
 }
 
 fn git_root(target: &Path) -> Result<PathBuf> {
-    let mut child = crate::git_command(target)
+    run_git_root(target, crate::git_command(target), Duration::from_secs(10))
+}
+
+fn run_git_root(target: &Path, mut command: Command, timeout: Duration) -> Result<PathBuf> {
+    let mut child = command
         .arg("-C")
         .arg(target)
         .args(["rev-parse", "--show-toplevel"])
@@ -163,7 +167,7 @@ fn git_root(target: &Path) -> Result<PathBuf> {
     loop {
         match child.try_wait() {
             Ok(Some(_)) => break,
-            Ok(None) if started.elapsed() < Duration::from_secs(10) => {
+            Ok(None) if started.elapsed() < timeout => {
                 std::thread::sleep(Duration::from_millis(10));
             }
             Ok(None) => {
@@ -423,4 +427,56 @@ pub fn apply(plan: &AdoptionPlan) -> Result<()> {
         })?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn git_root_timeout_kills_and_reaps_child() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let scratch = tempfile::tempdir().unwrap();
+        let slow_git = scratch.path().join("slow-git");
+        let pid_file = scratch.path().join("child.pid");
+        fs::write(
+            &slow_git,
+            "#!/bin/sh\nprintf '%s\\n' \"$$\" > \"$PID_FILE\"\nexec sleep 5\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&slow_git).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&slow_git, permissions).unwrap();
+
+        let target = scratch.path().join("target");
+        fs::create_dir(&target).unwrap();
+        let mut command = Command::new(&slow_git);
+        command.env("PID_FILE", &pid_file);
+        let started = Instant::now();
+        let result = run_git_root(&target, command, Duration::from_millis(500));
+        let elapsed = started.elapsed();
+
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "timed Git child was not terminated promptly: {elapsed:?}"
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            "Timed out inspecting target Git working tree"
+        );
+
+        let pid = fs::read_to_string(pid_file)
+            .unwrap()
+            .trim()
+            .parse::<u32>()
+            .unwrap();
+        let pid_arg = pid.to_string();
+        let probe = Command::new("/bin/sh")
+            .args(["-c", "kill -0 \"$1\" >/dev/null 2>&1", "sh", &pid_arg])
+            .status()
+            .unwrap();
+        assert!(!probe.success(), "timed-out Git child {pid} remains alive");
+    }
 }
