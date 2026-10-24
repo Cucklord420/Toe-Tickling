@@ -434,13 +434,18 @@ mod tests {
     use super::*;
 
     fn isolated_git(root: &Path, args: &[&str]) {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(root)
-            .env_remove("GIT_DIR")
-            .env_remove("GIT_WORK_TREE")
-            .env_remove("GIT_COMMON_DIR")
-            .env_remove("GIT_INDEX_FILE")
+        let mut command = Command::new("git");
+        command.args(args).current_dir(root);
+        for (key, _) in std::env::vars_os() {
+            if key
+                .to_string_lossy()
+                .to_ascii_uppercase()
+                .starts_with("GIT_")
+            {
+                command.env_remove(key);
+            }
+        }
+        let output = command
             .output()
             .unwrap();
         assert!(
@@ -519,17 +524,108 @@ fn main() {
             let target = PathBuf::from(target);
             let expected =
                 PathBuf::from(std::env::var_os("TOE_TICKLING_ADOPT_TEST_EXPECTED").unwrap());
-            assert_eq!(git_root(&target).unwrap(), expected);
+            if std::env::var_os("TOE_TICKLING_ADOPT_TEST_EXPECT_MISMATCH").is_some() {
+                let source =
+                    PathBuf::from(std::env::var_os("TOE_TICKLING_ADOPT_TEST_SOURCE").unwrap());
+                assert!(
+                    validate_target(&source, &target)
+                        .is_err_and(|error| error.contains("Target must be the root")),
+                    "repository-config redirect was not rejected"
+                );
+            } else {
+                assert_eq!(git_root(&target).unwrap(), expected);
+            }
+            if std::env::var_os("TOE_TICKLING_ADOPT_TEST_PRESERVE_CONFIG").is_some() {
+                let output = crate::git_command(&target)
+                    .args(["config", "--get", "user.name"])
+                    .output()
+                    .unwrap();
+                assert!(output.status.success(), "documented Git config was discarded");
+                assert_eq!(
+                    String::from_utf8(output.stdout).unwrap().trim(),
+                    "Preserved Fixture User"
+                );
+            }
             return;
         }
 
         let scratch = tempfile::tempdir().unwrap();
+        let source = scratch.path().join("source");
         let target = scratch.path().join("target");
+        let linked = scratch.path().join("linked-target");
         let foreign = scratch.path().join("foreign");
+        fs::create_dir(&source).unwrap();
         fs::create_dir(&target).unwrap();
         fs::create_dir(&foreign).unwrap();
         isolated_git(&target, &["init", "-q"]);
+        isolated_git(
+            &target,
+            &[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "fixture",
+            ],
+        );
+        let linked_path = linked.to_string_lossy().into_owned();
+        isolated_git(
+            &target,
+            &["worktree", "add", "--detach", &linked_path, "HEAD"],
+        );
+        assert!(linked.join(".git").is_file(), "fixture is not a linked worktree");
         isolated_git(&foreign, &["init", "-q"]);
+
+        for redirect in ["git-dir", "work-tree", "common-dir", "index-file"] {
+            let mut child = Command::new(std::env::current_exe().unwrap());
+            child
+                .args([
+                    "--exact",
+                    "adopt::tests::git_root_ignores_ambient_repository_redirects",
+                    "--nocapture",
+                ])
+                .env("TOE_TICKLING_ADOPT_TEST_TARGET", &linked)
+                .env("TOE_TICKLING_ADOPT_TEST_EXPECTED", &linked)
+                .env_remove("TOE_TICKLING_ADOPT_TEST_EXPECT_MISMATCH")
+                .env_remove("TOE_TICKLING_ADOPT_TEST_PRESERVE_CONFIG")
+                .env_remove("GIT_DIR")
+                .env_remove("GIT_WORK_TREE")
+                .env_remove("GIT_COMMON_DIR")
+                .env_remove("GIT_INDEX_FILE")
+                .env_remove("GIT_CONFIG_COUNT")
+                .env_remove("GIT_CONFIG_KEY_0")
+                .env_remove("GIT_CONFIG_VALUE_0");
+            match redirect {
+                "git-dir" => {
+                    child
+                        .env("GIT_DIR", foreign.join(".git"))
+                        .env("GIT_WORK_TREE", &foreign);
+                }
+                "work-tree" => {
+                    child.env("GIT_WORK_TREE", &foreign);
+                }
+                "common-dir" => {
+                    child.env("GIT_COMMON_DIR", foreign.join(".git"));
+                }
+                "index-file" => {
+                    child.env(
+                        "GIT_INDEX_FILE",
+                        foreign.join(".git/index"),
+                    );
+                }
+                _ => unreachable!(),
+            }
+            let output = child.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{redirect} Git-root child failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
 
         let output = Command::new(std::env::current_exe().unwrap())
             .args([
@@ -537,17 +633,47 @@ fn main() {
                 "adopt::tests::git_root_ignores_ambient_repository_redirects",
                 "--nocapture",
             ])
-            .env("TOE_TICKLING_ADOPT_TEST_TARGET", &target)
-            .env("TOE_TICKLING_ADOPT_TEST_EXPECTED", &target)
-            .env("GIT_DIR", foreign.join(".git"))
-            .env("GIT_WORK_TREE", &foreign)
-            .env("GIT_COMMON_DIR", foreign.join(".git"))
-            .env("GIT_INDEX_FILE", foreign.join(".git/index"))
+            .env("TOE_TICKLING_ADOPT_TEST_TARGET", &linked)
+            .env("TOE_TICKLING_ADOPT_TEST_EXPECTED", &linked)
+            .env("TOE_TICKLING_ADOPT_TEST_EXPECT_MISMATCH", "1")
+            .env("TOE_TICKLING_ADOPT_TEST_SOURCE", &source)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR")
+            .env_remove("GIT_INDEX_FILE")
+            .env("GIT_CONFIG_COUNT", "1")
+            .env("GIT_CONFIG_KEY_0", "core.worktree")
+            .env("GIT_CONFIG_VALUE_0", &foreign)
             .output()
             .unwrap();
         assert!(
             output.status.success(),
-            "redirected Git-root child failed:\n{}\n{}",
+            "config redirect child failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "adopt::tests::git_root_ignores_ambient_repository_redirects",
+                "--nocapture",
+            ])
+            .env("TOE_TICKLING_ADOPT_TEST_TARGET", &linked)
+            .env("TOE_TICKLING_ADOPT_TEST_EXPECTED", &linked)
+            .env("TOE_TICKLING_ADOPT_TEST_PRESERVE_CONFIG", "1")
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR")
+            .env_remove("GIT_INDEX_FILE")
+            .env("GIT_CONFIG_COUNT", "1")
+            .env("GIT_CONFIG_KEY_0", "user.name")
+            .env("GIT_CONFIG_VALUE_0", "Preserved Fixture User")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "preserved config child failed:\n{}\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
