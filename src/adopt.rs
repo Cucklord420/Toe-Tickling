@@ -522,14 +522,11 @@ fn main() {
             let target = PathBuf::from(target);
             let expected =
                 PathBuf::from(std::env::var_os("TOE_TICKLING_ADOPT_TEST_EXPECTED").unwrap());
-            if std::env::var_os("TOE_TICKLING_ADOPT_TEST_EXPECT_MISMATCH").is_some() {
+            if std::env::var_os("TOE_TICKLING_ADOPT_TEST_VALIDATE_CONFIG").is_some() {
                 let source =
                     PathBuf::from(std::env::var_os("TOE_TICKLING_ADOPT_TEST_SOURCE").unwrap());
-                assert!(
-                    validate_target(&source, &target)
-                        .is_err_and(|error| error.contains("Target must be the root")),
-                    "repository-config redirect was not rejected"
-                );
+                assert_eq!(git_root(&target).unwrap(), expected);
+                assert_eq!(validate_target(&source, &target).unwrap(), target);
             } else {
                 assert_eq!(git_root(&target).unwrap(), expected);
             }
@@ -593,7 +590,7 @@ fn main() {
                 ])
                 .env("TOE_TICKLING_ADOPT_TEST_TARGET", &linked)
                 .env("TOE_TICKLING_ADOPT_TEST_EXPECTED", &linked)
-                .env_remove("TOE_TICKLING_ADOPT_TEST_EXPECT_MISMATCH")
+                .env_remove("TOE_TICKLING_ADOPT_TEST_VALIDATE_CONFIG")
                 .env_remove("TOE_TICKLING_ADOPT_TEST_PRESERVE_CONFIG")
                 .env_remove("GIT_DIR")
                 .env_remove("GIT_WORK_TREE")
@@ -636,7 +633,7 @@ fn main() {
             ])
             .env("TOE_TICKLING_ADOPT_TEST_TARGET", &linked)
             .env("TOE_TICKLING_ADOPT_TEST_EXPECTED", &linked)
-            .env("TOE_TICKLING_ADOPT_TEST_EXPECT_MISMATCH", "1")
+            .env("TOE_TICKLING_ADOPT_TEST_VALIDATE_CONFIG", "1")
             .env("TOE_TICKLING_ADOPT_TEST_SOURCE", &source)
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
