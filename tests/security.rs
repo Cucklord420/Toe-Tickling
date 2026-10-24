@@ -185,12 +185,21 @@ fn tracked_private_paths_remain_rejected_even_when_ignored() {
 fn ambient_git_redirects_cannot_hide_tracked_ignored_private_files() {
     if let Some(root) = std::env::var_os("TOE_TICKLING_SECURITY_CHILD_ROOT") {
         let result = check(Path::new(&root));
-        assert!(
-            result
-                .as_ref()
-                .is_err_and(|error| error.contains("Private path")),
-            "expected tracked private path rejection, got {result:?}"
-        );
+        if std::env::var_os("TOE_TICKLING_SECURITY_EXPECT_ROOT_MISMATCH").is_some() {
+            assert!(
+                result.as_ref().is_err_and(|error| {
+                    error.contains("Git working-tree root does not match selected public tree")
+                }),
+                "expected fail-closed root mismatch, got {result:?}"
+            );
+        } else {
+            assert!(
+                result
+                    .as_ref()
+                    .is_err_and(|error| error.contains("Private path")),
+                "expected tracked private path rejection, got {result:?}"
+            );
+        }
         return;
     }
 
@@ -200,10 +209,31 @@ fn ambient_git_redirects_cannot_hide_tracked_ignored_private_files() {
     write(directory.path(), ".env", "Fictional private fixture\n");
     git_isolated(directory.path(), &["add", "."]);
     git_isolated(directory.path(), &["add", "--force", ".env"]);
+    git_isolated(
+        directory.path(),
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-m",
+            "synthetic private fixture",
+        ],
+    );
+
+    let linked_sandbox = tempfile::tempdir().unwrap();
+    let linked = linked_sandbox.path().join("selected-worktree");
+    let linked_path = linked.to_string_lossy().into_owned();
+    git_isolated(
+        directory.path(),
+        &["worktree", "add", "--detach", &linked_path, "HEAD"],
+    );
+    assert!(linked.join(".git").is_file(), "fixture is not a linked worktree");
 
     let foreign = tempfile::tempdir().unwrap();
     git_isolated(foreign.path(), &["init", "-q"]);
-    for redirect in ["git-dir", "index-file"] {
+    for redirect in ["git-dir", "work-tree", "common-dir", "index-file"] {
         let mut child = Command::new(std::env::current_exe().unwrap());
         child
             .args([
@@ -211,16 +241,25 @@ fn ambient_git_redirects_cannot_hide_tracked_ignored_private_files() {
                 "ambient_git_redirects_cannot_hide_tracked_ignored_private_files",
                 "--nocapture",
             ])
-            .env("TOE_TICKLING_SECURITY_CHILD_ROOT", directory.path())
+            .env("TOE_TICKLING_SECURITY_CHILD_ROOT", &linked)
             .env_remove("GIT_DIR")
             .env_remove("GIT_WORK_TREE")
             .env_remove("GIT_COMMON_DIR")
-            .env_remove("GIT_INDEX_FILE");
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_CONFIG_COUNT")
+            .env_remove("GIT_CONFIG_KEY_0")
+            .env_remove("GIT_CONFIG_VALUE_0");
         match redirect {
             "git-dir" => {
                 child
                     .env("GIT_DIR", foreign.path().join(".git"))
-                    .env("GIT_WORK_TREE", directory.path());
+                    .env("GIT_WORK_TREE", &linked);
+            }
+            "work-tree" => {
+                child.env("GIT_WORK_TREE", foreign.path());
+            }
+            "common-dir" => {
+                child.env("GIT_COMMON_DIR", foreign.path().join(".git"));
             }
             "index-file" => {
                 child.env(
@@ -238,6 +277,26 @@ fn ambient_git_redirects_cannot_hide_tracked_ignored_private_files() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "ambient_git_redirects_cannot_hide_tracked_ignored_private_files",
+            "--nocapture",
+        ])
+        .env("TOE_TICKLING_SECURITY_CHILD_ROOT", &linked)
+        .env("TOE_TICKLING_SECURITY_EXPECT_ROOT_MISMATCH", "1")
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "core.worktree")
+        .env("GIT_CONFIG_VALUE_0", foreign.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "config redirect child failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
