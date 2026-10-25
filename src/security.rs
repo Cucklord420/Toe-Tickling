@@ -2,7 +2,7 @@
 use regex::Regex;
 use serde_yaml_ng::{Mapping, Value};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Component, Path, PathBuf},
     process::Command,
@@ -66,8 +66,9 @@ fn private_path(relative: &Path) -> bool {
         .file_name()
         .and_then(|name| name.to_str())
         .is_some_and(|name| {
-            matches!(name, "PRIVATE.local.md" | "CLAUDE.local.md")
-                || (name.starts_with(".env") && name != ".env.example")
+            let folded = name.to_ascii_lowercase();
+            matches!(folded.as_str(), "private.local.md" | "claude.local.md")
+                || (folded.starts_with(".env") && name != ".env.example")
         })
 }
 
@@ -83,6 +84,131 @@ fn checked_path(root: &Path, relative: &Path) -> Result<PathBuf> {
     let path = root.join(relative);
     no_symlink_ancestors(&path)?;
     Ok(path)
+}
+
+fn git_command(root: &Path, args: &[&str]) -> Command {
+    let mut command = crate::git_command(root);
+    command.args(args);
+    command
+}
+
+fn git_root(root: &Path) -> Result<bool> {
+    let git_root = git_command(root, &["rev-parse", "--show-toplevel"]).output();
+    match git_root {
+        Ok(output) if output.status.success() => {
+            let directory =
+                String::from_utf8(output.stdout).map_err(|_| "Git root is not valid UTF-8")?;
+            let directory = fs::canonicalize(directory.trim_end_matches(['\r', '\n']))
+                .map_err(|_| "Cannot resolve Git root")?;
+            if directory == root {
+                Ok(true)
+            } else if root.join(".git").exists() {
+                Err("Git working-tree root does not match selected public tree".into())
+            } else {
+                Ok(false)
+            }
+        }
+        _ if root.join(".git").exists() => Err("Cannot enumerate the Git public tree".into()),
+        _ => Ok(false),
+    }
+}
+
+/// Return stage-zero regular-file entries and their immutable object IDs.
+/// Conflicted and non-regular index entries cannot be safely treated as a
+/// single publishable file, so reject them before reading any content.
+fn staged_entries(root: &Path) -> Result<Option<BTreeMap<PathBuf, String>>> {
+    if !git_root(root)? {
+        return Ok(None);
+    }
+    let output = git_command(root, &["ls-files", "--stage", "-z"])
+        .output()
+        .map_err(|_| "Cannot list staged Git blobs")?;
+    if !output.status.success() {
+        return Err("Cannot list staged Git blobs".into());
+    }
+    let mut entries = BTreeMap::new();
+    for record in output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|row| !row.is_empty())
+    {
+        let separator = record
+            .iter()
+            .position(|byte| *byte == b'\t')
+            .ok_or("Malformed staged Git entry")?;
+        let header =
+            std::str::from_utf8(&record[..separator]).map_err(|_| "Malformed staged Git entry")?;
+        let path = std::str::from_utf8(&record[separator + 1..])
+            .map_err(|_| "Public file name is not valid UTF-8")?;
+        let mut fields = header.split_ascii_whitespace();
+        let mode = fields.next().ok_or("Malformed staged Git entry")?;
+        let oid = fields.next().ok_or("Malformed staged Git entry")?;
+        let stage = fields.next().ok_or("Malformed staged Git entry")?;
+        if fields.next().is_some() || stage != "0" {
+            return Err(fail(
+                "Conflicted Git index entry requires review",
+                Path::new(path),
+            ));
+        }
+        if !matches!(mode, "100644" | "100755") {
+            return Err(fail(
+                "Public staged path must be a regular file, not a symlink or special entry",
+                Path::new(path),
+            ));
+        }
+        if !matches!(oid.len(), 40 | 64) || !oid.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err("Malformed staged Git object ID".into());
+        }
+        if entries
+            .insert(PathBuf::from(path), oid.to_owned())
+            .is_some()
+        {
+            return Err(fail("Duplicate staged Git path", Path::new(path)));
+        }
+    }
+    Ok(Some(entries))
+}
+
+fn staged_deletions(root: &Path) -> Result<BTreeSet<PathBuf>> {
+    if !git_root(root)? {
+        return Ok(BTreeSet::new());
+    }
+    let output = git_command(
+        root,
+        &[
+            "diff",
+            "--cached",
+            "--no-renames",
+            "--diff-filter=D",
+            "--name-only",
+            "-z",
+        ],
+    )
+    .output()
+    .map_err(|_| "Cannot list staged Git deletions")?;
+    if !output.status.success() {
+        return Err("Cannot list staged Git deletions".into());
+    }
+    output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|name| !name.is_empty())
+        .map(|name| {
+            std::str::from_utf8(name)
+                .map(PathBuf::from)
+                .map_err(|_| "Public file name is not valid UTF-8".into())
+        })
+        .collect()
+}
+
+fn staged_blob(root: &Path, oid: &str, relative: &Path) -> Result<Vec<u8>> {
+    let output = git_command(root, &["cat-file", "blob", oid])
+        .output()
+        .map_err(|_| fail("Cannot read staged Git blob", relative))?;
+    if !output.status.success() {
+        return Err(fail("Cannot read staged Git blob", relative));
+    }
+    Ok(output.stdout)
 }
 
 fn walk(root: &Path, here: &Path, files: &mut BTreeSet<PathBuf>) -> Result<()> {
@@ -117,39 +243,23 @@ fn walk(root: &Path, here: &Path, files: &mut BTreeSet<PathBuf>) -> Result<()> {
 /// Match Git's public candidate set: tracked files plus unignored new files.
 /// Ignored, untracked local context must not be opened or exposed by the scan.
 fn file_list(root: &Path) -> Result<BTreeSet<PathBuf>> {
-    let git_root = Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
-        .current_dir(root)
-        .output();
-    let is_git_root = match git_root {
-        Ok(output) if output.status.success() => {
-            let directory =
-                String::from_utf8(output.stdout).map_err(|_| "Git root is not valid UTF-8")?;
-            fs::canonicalize(directory.trim_end_matches(['\r', '\n']))
-                .map_err(|_| "Cannot resolve Git root")?
-                == root
-        }
-        _ if root.join(".git").exists() => {
-            return Err("Cannot enumerate the Git public tree".into());
-        }
-        _ => false,
-    };
     let mut files = BTreeSet::new();
-    if !is_git_root {
+    if !git_root(root)? {
         walk(root, root, &mut files)?;
         return Ok(files);
     }
-    let output = Command::new("git")
-        .args([
+    let output = git_command(
+        root,
+        &[
             "ls-files",
             "--cached",
             "--others",
             "--exclude-standard",
             "-z",
-        ])
-        .current_dir(root)
-        .output()
-        .map_err(|_| "Cannot list Git public-tree files")?;
+        ],
+    )
+    .output()
+    .map_err(|_| "Cannot list Git public-tree files")?;
     if !output.status.success() {
         return Err("Git public-tree enumeration failed".into());
     }
@@ -220,8 +330,17 @@ fn percent_decode(value: &str) -> Result<String> {
     String::from_utf8(decoded).map_err(|_| "Local Markdown link is not valid UTF-8".into())
 }
 
-fn local_links(root: &Path, relative: &Path, text: &str, links: &Regex) -> Result<()> {
-    for matched in links.captures_iter(text) {
+fn local_links(
+    root: &Path,
+    relative: &Path,
+    text: &str,
+    inline_links: &Regex,
+    reference_links: &Regex,
+) -> Result<()> {
+    for matched in inline_links
+        .captures_iter(text)
+        .chain(reference_links.captures_iter(text))
+    {
         let target = matched.get(1).or_else(|| matched.get(2)).unwrap().as_str();
         let scheme = target.split_once(':').is_some_and(|(scheme, _)| {
             scheme.starts_with(|character: char| character.is_ascii_alphabetic())
@@ -252,6 +371,13 @@ fn local_links(root: &Path, relative: &Path, text: &str, links: &Regex) -> Resul
         }
     }
     Ok(())
+}
+
+struct TextPatterns {
+    secrets: Regex,
+    emails: Regex,
+    inline_links: Regex,
+    reference_links: Regex,
 }
 
 fn field<'a>(mapping: &'a Mapping, key: &str) -> Option<&'a Value> {
@@ -350,11 +476,9 @@ fn secret_access(value: &Value, context: &Regex) -> bool {
     }
 }
 
-fn workflow(root: &Path, relative: &Path, secret_context: &Regex) -> Result<()> {
-    let path = checked_path(root, relative)?;
-    let bytes = fs::read(path).map_err(|_| fail("Missing CI workflow", relative))?;
+fn workflow(relative: &Path, bytes: &[u8], secret_context: &Regex) -> Result<()> {
     let document: Value =
-        serde_yaml_ng::from_slice(&bytes).map_err(|_| "Invalid CI workflow YAML")?;
+        serde_yaml_ng::from_slice(bytes).map_err(|_| "Invalid CI workflow YAML")?;
     if !no_yaml_merges(&document) {
         return Err("CI workflow must use explicit mappings without YAML merges or tags".into());
     }
@@ -438,49 +562,114 @@ fn workflow(root: &Path, relative: &Path, secret_context: &Regex) -> Result<()> 
 /// Audit public paths, Rust-only sources, selected privacy patterns, links and CI.
 /// This is a structural guard, not a guarantee that all sensitive data is detected.
 pub fn check(root: &Path) -> Result<()> {
+    // Do not silently audit the default index when Git is using an alternate
+    // index: it may be the actual commit candidate for the caller.
+    if std::env::var_os("GIT_INDEX_FILE").is_some() {
+        return Err("GIT_INDEX_FILE override prevents verification of the commit index".into());
+    }
     let root = checked_root(root)?;
-    let secrets = Regex::new(
-        r"\b(?:gh[pousr]_|github_pat_|sk-(?:proj-|svcacct-)?|glpat-|xox[baprs]-)[A-Za-z0-9_-]{20,}|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----",
-    ).map_err(|_| "Invalid credential scanner expression")?;
-    let emails = Regex::new(r"[\w.+-]+@([\w-]+(?:\.[\w-]+)+)")
-        .map_err(|_| "Invalid contact scanner expression")?;
-    let links = Regex::new(r#"\[[^\]\n]*\]\(\s*(?:<([^>\n]+)>|([^\s)]+))(?:\s+"[^"\n]*")?\s*\)"#)
-        .map_err(|_| "Invalid Markdown scanner expression")?;
+    let patterns = TextPatterns {
+        secrets: Regex::new(
+            r"\b(?:gh[pousr]_|github_pat_|sk-(?:proj-|svcacct-)?|glpat-|xox[baprs]-)[A-Za-z0-9_-]{20,}|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----",
+        )
+        .map_err(|_| "Invalid credential scanner expression")?,
+        emails: Regex::new(r"[\w.+-]+@([\w-]+(?:\.[\w-]+)+)")
+            .map_err(|_| "Invalid contact scanner expression")?,
+        inline_links: Regex::new(
+            r#"\[[^\]\n]*\]\(\s*(?:<([^>\n]+)>|([^\s)]+))(?:\s+"[^"\n]*")?\s*\)"#,
+        )
+        .map_err(|_| "Invalid Markdown scanner expression")?,
+        reference_links: Regex::new(
+            r"(?m)^[ \t]{0,3}\[[^\]\n]+\]:[ \t]*(?:<([^>\n]+)>|([^\s]+))",
+        )
+        .map_err(|_| "Invalid Markdown reference scanner expression")?,
+    };
     let secret_context = Regex::new(r"\$\{\{[^}]*\bsecrets\b")
         .map_err(|_| "Invalid CI secret context expression")?;
-    let mut workflows = BTreeSet::from([PathBuf::from(".github/workflows/validate.yml")]);
-    for relative in file_list(&root)? {
+    let required_workflow = PathBuf::from(".github/workflows/validate.yml");
+    if staged_deletions(&root)?.contains(&required_workflow) {
+        return Err(fail(
+            "Commit candidate contains staged deletion of required CI workflow",
+            &required_workflow,
+        ));
+    }
+    let staged = staged_entries(&root)?;
+    let mut files = file_list(&root)?;
+    if let Some(entries) = &staged {
+        files.extend(entries.keys().cloned());
+    }
+    let mut workflows = Vec::new();
+    for relative in files {
         if private_path(&relative) {
             return Err(fail("Private path in public tree", &relative));
         }
         if !rust_or_data(&relative) {
             return Err(fail("Executable source must be Rust", &relative));
         }
-        let text = fs::read_to_string(checked_path(&root, &relative)?)
-            .map_err(|_| fail("Public file must be readable UTF-8", &relative))?;
-        let contact = emails.captures_iter(&text).any(|matched| {
-            let domain = matched[1].to_ascii_lowercase();
-            domain != "example.invalid" && !domain.ends_with(".example.invalid")
-        });
-        if secrets.is_match(&text) || contact {
-            return Err(fail("Potential private credential/contact", &relative));
-        }
-        if relative
-            .extension()
-            .is_some_and(|extension| extension == "md")
+        let mut found_content = false;
+        if let Some(entries) = &staged
+            && let Some(oid) = entries.get(&relative)
         {
-            local_links(&root, &relative, &text, &links)?;
+            let bytes = staged_blob(&root, oid, &relative)?;
+            let text = String::from_utf8(bytes)
+                .map_err(|_| fail("Public file must be readable UTF-8", &relative))?;
+            inspect_text(&root, &relative, &text, &patterns, &mut workflows)?;
+            found_content = true;
         }
-        if relative.parent() == Some(Path::new(".github/workflows"))
-            && relative
-                .extension()
-                .is_some_and(|extension| extension == "yml" || extension == "yaml")
-        {
-            workflows.insert(relative);
+        let path = checked_path(&root, &relative)?;
+        match fs::read_to_string(path) {
+            Ok(text) => {
+                inspect_text(&root, &relative, &text, &patterns, &mut workflows)?;
+                found_content = true;
+            }
+            Err(error) if found_content && error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err(fail("Public file must be readable UTF-8", &relative)),
+        }
+        if !found_content {
+            return Err(fail("Public file must be readable UTF-8", &relative));
         }
     }
-    for relative in workflows {
-        workflow(&root, &relative, &secret_context)?;
+    if !workflows.iter().any(|(path, _)| path == &required_workflow) {
+        return Err(fail("Missing CI workflow", &required_workflow));
+    }
+    for (relative, text) in workflows {
+        workflow(&relative, text.as_bytes(), &secret_context)?;
+    }
+    Ok(())
+}
+
+fn inspect_text(
+    root: &Path,
+    relative: &Path,
+    text: &str,
+    patterns: &TextPatterns,
+    workflows: &mut Vec<(PathBuf, String)>,
+) -> Result<()> {
+    let contact = patterns.emails.captures_iter(text).any(|matched| {
+        let domain = matched[1].to_ascii_lowercase();
+        domain != "example.invalid" && !domain.ends_with(".example.invalid")
+    });
+    if patterns.secrets.is_match(text) || contact {
+        return Err(fail("Potential private credential/contact", relative));
+    }
+    if relative
+        .extension()
+        .is_some_and(|extension| extension == "md")
+    {
+        local_links(
+            root,
+            relative,
+            text,
+            &patterns.inline_links,
+            &patterns.reference_links,
+        )?;
+    }
+    if relative.parent() == Some(Path::new(".github/workflows"))
+        && relative
+            .extension()
+            .is_some_and(|extension| extension == "yml" || extension == "yaml")
+    {
+        workflows.push((relative.to_owned(), text.to_owned()));
     }
     Ok(())
 }

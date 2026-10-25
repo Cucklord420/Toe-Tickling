@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    io::Write,
     path::{Component, Path},
 };
 
@@ -68,6 +69,20 @@ pub fn safe_path(root: &Path, relative: &str) -> Result<std::path::PathBuf> {
         )?;
     }
     Ok(path)
+}
+
+fn output_path(root: &Path, relative: &str) -> Result<std::path::PathBuf> {
+    let path = safe_path(root, relative)?;
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.is_file() => Ok(path),
+        Ok(_) => Err(format!(
+            "Generated output is not a regular file: {relative}"
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(path),
+        Err(error) => Err(format!(
+            "Cannot inspect generated output {relative}: {error}"
+        )),
+    }
 }
 fn policy(root: &Path) -> Result<BundlePolicy> {
     let p: BundlePolicy = read_json(&safe_path(root, "policy.json")?)?;
@@ -172,14 +187,28 @@ fn validate_module_ids(ids: &BTreeSet<String>) -> Result<()> {
     Ok(())
 }
 pub fn outputs(root: &Path) -> Result<BTreeMap<String, String>> {
+    outputs_with_rulebook(root, None)
+}
+
+fn outputs_with_rulebook(
+    root: &Path,
+    generated_rulebook: Option<&str>,
+) -> Result<BTreeMap<String, String>> {
     let p = policy(root)?;
     let mut digest = Sha256::new();
     let mut modules = Vec::new();
     let mut ids = BTreeSet::new();
     let pattern = Regex::new(r"(?m)^- \*\*([A-Z]+-\d{3})\*\*").map_err(|e| e.to_string())?;
     for source in &p.sources {
-        let content =
-            fs::read_to_string(safe_path(root, source)?).map_err(|e| format!("{source}: {e}"))?;
+        let content = if source == "RULEBOOK.md" {
+            match generated_rulebook {
+                Some(content) => content.to_owned(),
+                None => fs::read_to_string(safe_path(root, source)?)
+                    .map_err(|e| format!("{source}: {e}"))?,
+            }
+        } else {
+            fs::read_to_string(safe_path(root, source)?).map_err(|e| format!("{source}: {e}"))?
+        };
         digest.update(source.as_bytes());
         digest.update([0]);
         digest.update(content.as_bytes());
@@ -232,35 +261,41 @@ pub fn outputs(root: &Path) -> Result<BTreeMap<String, String>> {
 }
 pub fn build(root: &Path) -> Result<usize> {
     let policy = crate::load_policy(root)?;
-    crate::validate_policy(&policy, time::OffsetDateTime::now_utc().date())?;
+    crate::validate_policy(
+        &policy,
+        crate::policy_date_at(time::OffsetDateTime::now_utc())?,
+    )?;
     let rendered = crate::render(&policy);
-    let mut temporary = tempfile::NamedTempFile::new_in(root).map_err(|e| e.to_string())?;
-    use std::io::Write;
-    temporary
-        .write_all(rendered.as_bytes())
-        .map_err(|e| e.to_string())?;
-    temporary
-        .persist(safe_path(root, "RULEBOOK.md")?)
-        .map_err(|e| e.to_string())?;
-    let outputs = outputs(root)?;
-    for path in outputs.keys() {
-        safe_path(root, path)?;
-    }
-    for (path, text) in &outputs {
-        let destination = safe_path(root, path)?;
-        if let Some(parent) = destination.parent() {
-            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        let mut temporary =
-            tempfile::NamedTempFile::new_in(destination.parent().ok_or("No output parent")?)
-                .map_err(|e| e.to_string())?;
-        use std::io::Write;
+    let mut outputs = outputs_with_rulebook(root, Some(&rendered))?;
+    outputs.insert("RULEBOOK.md".into(), rendered);
+    let destinations: BTreeMap<_, _> = outputs
+        .keys()
+        .map(|relative| Ok((relative.clone(), output_path(root, relative)?)))
+        .collect::<Result<_>>()?;
+    let mut staged = Vec::with_capacity(outputs.len());
+    for (relative, text) in outputs {
+        let destination = &destinations[&relative];
+        let parent = destination.parent().ok_or("No output parent")?;
+        fs::create_dir_all(parent).map_err(|e| format!("{relative}: {e}"))?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)
+            .map_err(|e| format!("Cannot stage {relative}: {e}"))?;
         temporary
             .write_all(text.as_bytes())
-            .map_err(|e| e.to_string())?;
-        temporary.persist(destination).map_err(|e| e.to_string())?;
+            .map_err(|e| format!("Cannot stage {relative}: {e}"))?;
+        temporary
+            .as_file()
+            .sync_all()
+            .map_err(|e| format!("Cannot stage {relative}: {e}"))?;
+        staged.push((relative, temporary));
     }
-    Ok(outputs.len() + 1)
+    let count = staged.len();
+    for (relative, temporary) in staged {
+        let destination = output_path(root, &relative)?;
+        temporary
+            .persist(destination)
+            .map_err(|e| format!("Cannot persist generated output {relative}: {e}"))?;
+    }
+    Ok(count)
 }
 pub fn check(root: &Path) -> Result<()> {
     for (path, expected) in outputs(root)? {

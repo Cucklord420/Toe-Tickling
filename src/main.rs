@@ -67,7 +67,7 @@ fn run() -> Result<()> {
             );
         }
         "check" => {
-            let policy = check_repo(&root, now.date())?;
+            let policy = check_repo(&root, toe_tickling::policy_date_at(now)?)?;
             if !args.is_empty() {
                 if args.len() != 2 || args[0] != "--audit" {
                     return Err("Expected --audit PATH".into());
@@ -89,7 +89,7 @@ fn run() -> Result<()> {
                 return Err("Expected render [--check]".into());
             }
             let policy = load_policy(&root)?;
-            validate_policy(&policy, now.date())?;
+            validate_policy(&policy, toe_tickling::policy_date_at(now)?)?;
             let text = render(&policy);
             let target = root.join("RULEBOOK.md");
             if args == ["--check"] {

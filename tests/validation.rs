@@ -47,13 +47,11 @@ fn fixture() -> TempDir {
             "Fictional fixture",
         ],
     ] {
+        let output = clean_git(dir.path(), &args);
         assert!(
-            Command::new("git")
-                .args(args)
-                .current_dir(dir.path())
-                .status()
-                .unwrap()
-                .success()
+            output.status.success(),
+            "Git fixture operation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
         );
     }
     dir
@@ -118,6 +116,61 @@ fn rust_policy_requires_relevant_official_guidance_and_evidence() {
     assert!(standing.contains("https://doc.rust-lang.org/stable/book/"));
     assert!(standing.contains("https://doc.rust-lang.org/releases.html"));
     assert!(standing.contains("an exhaustive reading of every Reference page is NOT required"));
+}
+
+fn clean_git(root: &Path, args: &[&str]) -> std::process::Output {
+    let mut command = Command::new("git");
+    command.args(args).current_dir(root);
+    for (key, _) in std::env::vars_os() {
+        if key
+            .to_string_lossy()
+            .to_ascii_uppercase()
+            .starts_with("GIT_")
+        {
+            command.env_remove(key);
+        }
+    }
+    command.output().unwrap()
+}
+
+fn add_linked_worktree(repository: &Path, target: &Path) {
+    let target = target.to_string_lossy().into_owned();
+    let output = clean_git(
+        repository,
+        &["worktree", "add", "--detach", &target, "HEAD"],
+    );
+    assert!(
+        output.status.success(),
+        "Linked-worktree fixture failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(Path::new(&target).join(".git").is_file());
+}
+
+fn commit_fixture(root: &Path, name: &str) {
+    for args in [
+        vec!["init", "-q"],
+        vec!["add", "fixture.txt"],
+        vec![
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            name,
+        ],
+    ] {
+        if args.first() == Some(&"add") {
+            fs::write(root.join("fixture.txt"), "Fictional fixture\n").unwrap();
+        }
+        let output = clean_git(root, &args);
+        assert!(
+            output.status.success(),
+            "Git fixture operation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
 
 #[test]
@@ -284,6 +337,128 @@ fn invalid_duplicate_overdue_and_future_review_metadata_fail() {
     future.rules[0].reviewed_on = "2027-01-01".into();
     assert!(validate_policy(&future, now().date()).is_err());
 }
+
+#[test]
+fn policy_date_uses_new_york_calendar_across_summer_and_winter_midnight() {
+    let rfc3339 = time::format_description::well_known::Rfc3339;
+    let cases = [
+        ("2026-07-15T03:59:59Z", "2026-07-14"),
+        ("2026-07-15T04:00:00Z", "2026-07-15"),
+        ("2026-01-01T04:59:59Z", "2025-12-31"),
+        ("2026-01-01T05:00:00Z", "2026-01-01"),
+    ];
+    for (instant, expected_date) in cases {
+        let instant = OffsetDateTime::parse(instant, &rfc3339).unwrap();
+        assert_eq!(policy_date_at(instant).unwrap().to_string(), expected_date);
+    }
+}
+
+#[test]
+fn primary_validator_rejects_missing_stable_verification_rule() {
+    let dir = fixture();
+    let mut policy = load_policy(dir.path()).unwrap();
+    policy.rules.retain(|rule| rule.id != "AUTH-01");
+    assert!(
+        validate_policy(&policy, policy_date_at(now()).unwrap())
+            .unwrap_err()
+            .contains("AUTH-01")
+    );
+}
+
+#[test]
+fn new_audit_binds_the_checkout_head_not_ambient_git_repository_overrides() {
+    let checkout = fixture();
+    let linked_sandbox = tempfile::tempdir().unwrap();
+    let selected = linked_sandbox.path().join("selected-worktree");
+    add_linked_worktree(checkout.path(), &selected);
+    let alternate = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    fs::write(
+        alternate.path().join("README.md"),
+        "Fictional alternate repository\n",
+    )
+    .unwrap();
+    for args in [
+        vec!["init", "-q"],
+        vec!["add", "README.md"],
+        vec![
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "Fictional alternate HEAD",
+        ],
+    ] {
+        assert!(
+            Command::new("git")
+                .args(args)
+                .current_dir(alternate.path())
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let head = |root: &Path| {
+        let output = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+    };
+    let checkout_head = head(&selected);
+    let alternate_head = head(alternate.path());
+    assert_ne!(checkout_head, alternate_head);
+
+    let output_path = outside.path().join("audit.json");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_toe-tickling"));
+    command
+        .env("GIT_DIR", alternate.path().join(".git"))
+        .env("GIT_WORK_TREE", &selected)
+        .env("GIT_COMMON_DIR", alternate.path().join(".git"))
+        .env("GIT_INDEX_FILE", alternate.path().join(".git/index"))
+        .arg("--root")
+        .arg(&selected)
+        .args([
+            "new-audit",
+            "--task",
+            "Fictional isolated Git environment regression",
+            "--output",
+        ])
+        .arg(&output_path);
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let audit: Audit = read_json(&output_path).unwrap();
+    assert_eq!(audit.repository_revision, checkout_head);
+
+    let mut spoofed = complete(&selected);
+    spoofed.repository_revision = alternate_head;
+    let spoofed_path = outside.path().join("spoofed.json");
+    write_json(&spoofed_path, &spoofed).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_toe-tickling"))
+        .arg("--root")
+        .arg(&selected)
+        .arg("check")
+        .arg("--audit")
+        .arg(spoofed_path)
+        .env("GIT_DIR", alternate.path().join(".git"))
+        .env("GIT_WORK_TREE", alternate.path())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("Audit revision does not match checkout HEAD")
+    );
+}
+
 #[test]
 fn every_existing_verification_id_must_survive_policy_updates() {
     let dir = fixture();
@@ -340,6 +515,51 @@ fn stale_manifest_cannot_remove_required_files() {
     write_json(&dir.path().join("policy/reading-manifest.json"), &manifest).unwrap();
     assert!(check_repo(dir.path(), now().date()).is_err());
 }
+
+#[test]
+fn guide_build_failure_does_not_persist_an_earlier_generated_file() {
+    let dir = fixture();
+    let rule_path = dir.path().join("policy/rules.json");
+    let mut register: serde_json::Value = read_json(&rule_path).unwrap();
+    register["rules"][0]["title"] = serde_json::Value::String("Fictional changed title".into());
+    write_json(&rule_path, &register).unwrap();
+    fs::write(dir.path().join("policy.json"), "not valid JSON").unwrap();
+
+    let rulebook_before = fs::read(dir.path().join("RULEBOOK.md")).unwrap();
+    let guide_before = fs::read(dir.path().join("GUIDEBOOK.md")).unwrap();
+    assert!(guide::build(dir.path()).is_err());
+    let rulebook_after = fs::read(dir.path().join("RULEBOOK.md")).unwrap();
+    let guide_after = fs::read(dir.path().join("GUIDEBOOK.md")).unwrap();
+    assert!(
+        rulebook_after == rulebook_before,
+        "failed generation changed RULEBOOK.md"
+    );
+    assert!(
+        guide_after == guide_before,
+        "failed generation changed GUIDEBOOK.md"
+    );
+}
+
+#[test]
+fn guide_build_rejects_output_type_collisions_before_persisting_any_file() {
+    let dir = fixture();
+    let rule_path = dir.path().join("policy/rules.json");
+    let mut register: serde_json::Value = read_json(&rule_path).unwrap();
+    register["rules"][0]["title"] = serde_json::Value::String("Fictional changed title".into());
+    write_json(&rule_path, &register).unwrap();
+    let colliding_output = dir.path().join(".cursor/rules/justin-guidebook.mdc");
+    fs::remove_file(&colliding_output).unwrap();
+    fs::create_dir(&colliding_output).unwrap();
+
+    let rulebook_before = fs::read(dir.path().join("RULEBOOK.md")).unwrap();
+    assert!(guide::build(dir.path()).is_err());
+    let rulebook_after = fs::read(dir.path().join("RULEBOOK.md")).unwrap();
+    assert!(
+        rulebook_after == rulebook_before,
+        "output collision partially changed RULEBOOK.md"
+    );
+}
+
 #[test]
 fn broken_link_and_non_rust_source_are_rejected() {
     let dir = fixture();
@@ -505,4 +725,58 @@ fn adoption_cli_runs_from_an_unrelated_directory_and_path_with_spaces() {
         .output()
         .unwrap();
     assert!(!head.status.success(), "Adoption must not create commits");
+}
+
+#[test]
+fn audit_validation_uses_the_selected_checkout_under_git_redirects() {
+    let source = fixture();
+    let linked_sandbox = tempfile::tempdir().unwrap();
+    let selected = linked_sandbox.path().join("selected-worktree");
+    add_linked_worktree(source.path(), &selected);
+    let audit = complete(&selected);
+    let foreign = tempfile::tempdir().unwrap();
+    commit_fixture(foreign.path(), "Fictional external repository");
+    let output_dir = tempfile::tempdir().unwrap();
+    let receipt_path = output_dir.path().join("receipt.json");
+    write_json(&receipt_path, &audit).unwrap();
+
+    let run = Command::new(env!("CARGO_BIN_EXE_toe-tickling"))
+        .arg("--root")
+        .arg(&selected)
+        .arg("check")
+        .arg("--audit")
+        .arg(&receipt_path)
+        .env("GIT_DIR", foreign.path().join(".git"))
+        .env("GIT_WORK_TREE", &selected)
+        .env("GIT_COMMON_DIR", foreign.path().join(".git"))
+        .output()
+        .unwrap();
+    assert!(
+        run.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&run.stdout),
+        String::from_utf8_lossy(&run.stderr)
+    );
+
+    let alternate_index = Command::new(env!("CARGO_BIN_EXE_toe-tickling"))
+        .arg("--root")
+        .arg(&selected)
+        .arg("check")
+        .arg("--audit")
+        .arg(&receipt_path)
+        .env(
+            "GIT_INDEX_FILE",
+            foreign.path().join(".git/alternate-index"),
+        )
+        .output()
+        .unwrap();
+    let alternate_stderr = String::from_utf8_lossy(&alternate_index.stderr);
+    assert!(
+        !alternate_index.status.success(),
+        "audit validation must fail closed for an alternate Git index"
+    );
+    assert!(
+        alternate_stderr.contains("GIT_INDEX_FILE override"),
+        "unexpected alternate-index result: {alternate_stderr}"
+    );
 }

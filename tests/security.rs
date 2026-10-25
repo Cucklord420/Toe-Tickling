@@ -1,6 +1,9 @@
 use std::{fs, path::Path, process::Command};
 use tempfile::TempDir;
-use toe_tickling::security::{check, checked_root};
+use toe_tickling::security::check;
+#[cfg(unix)]
+use toe_tickling::security::checked_root;
+use toe_tickling::{READING_FILES, current_manifest, guide, load_policy, render, write_json};
 
 const WORKFLOW: &str = "name: audit\npermissions:\n  contents: read\njobs:\n  audit:\n    runs-on: ubuntu-latest\n    timeout-minutes: 10\n    steps:\n      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683\n        with:\n          persist-credentials: false\n      - run: cargo test --locked\n";
 
@@ -18,6 +21,39 @@ fn fixture() -> TempDir {
         "README.md",
         "# Fictional public fixture\n",
     );
+    directory
+}
+
+fn full_fixture() -> TempDir {
+    let directory = tempfile::tempdir().unwrap();
+    let source = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for path in READING_FILES.iter().chain(guide::SOURCES.iter()) {
+        let target = directory.path().join(path);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::copy(source.join(path), target).unwrap();
+    }
+    for file in [
+        "LICENSE",
+        "LICENSE-SCOPE.md",
+        "CHANGELOG.md",
+        ".github/workflows/validate.yml",
+        "docs/VALIDATION.md",
+        "docs/archive/INITIAL_INSTRUCTION_AUDIT.md",
+        "docs/archive/INITIAL_VALIDATION.md",
+    ] {
+        let target = directory.path().join(file);
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::copy(source.join(file), target).unwrap();
+    }
+    fs::write(directory.path().join(".gitignore"), "/README.md\n").unwrap();
+    let policy = load_policy(directory.path()).unwrap();
+    fs::write(directory.path().join("RULEBOOK.md"), render(&policy)).unwrap();
+    guide::build(directory.path()).unwrap();
+    write_json(
+        &directory.path().join("policy/reading-manifest.json"),
+        &current_manifest(directory.path()).unwrap(),
+    )
+    .unwrap();
     directory
 }
 
@@ -69,6 +105,23 @@ fn alternative_executable_formats_and_unknown_files_are_rejected() {
     }
 }
 
+fn git_isolated(root: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_INDEX_FILE")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "Git fixture operation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn git_ignored_local_context_is_never_scanned() {
     let directory = fixture();
@@ -101,9 +154,14 @@ fn tracked_private_paths_remain_rejected_even_when_ignored() {
         ".private/context.md",
         ".local/context.md",
         "PRIVATE.local.md",
+        "PRIVATE.Local.md",
         "CLAUDE.local.md",
+        "claude.local.md",
         ".env",
         ".env.production",
+        ".ENV.md",
+        ".ENV",
+        ".ENV.example",
     ] {
         let directory = fixture();
         git(directory.path(), &["init", "-q"]);
@@ -124,19 +182,141 @@ fn tracked_private_paths_remain_rejected_even_when_ignored() {
 }
 
 #[test]
-fn unignored_untracked_private_context_is_rejected() {
+fn ambient_git_redirects_cannot_hide_tracked_ignored_private_files() {
+    if let Some(root) = std::env::var_os("TOE_TICKLING_SECURITY_CHILD_ROOT") {
+        let result = check(Path::new(&root));
+        let expected_error = if std::env::var_os("GIT_INDEX_FILE").is_some() {
+            "GIT_INDEX_FILE override"
+        } else {
+            "Private path"
+        };
+        assert!(
+            result
+                .as_ref()
+                .is_err_and(|error| error.contains(expected_error)),
+            "expected {expected_error} rejection, got {result:?}"
+        );
+        return;
+    }
+
     let directory = fixture();
-    git(directory.path(), &["init", "-q"]);
-    write(
+    git_isolated(directory.path(), &["init", "-q"]);
+    write(directory.path(), ".gitignore", "/.env\n");
+    write(directory.path(), ".env", "Fictional private fixture\n");
+    git_isolated(directory.path(), &["add", "."]);
+    git_isolated(directory.path(), &["add", "--force", ".env"]);
+    git_isolated(
         directory.path(),
-        "private/context.md",
-        "Fictional placeholder",
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-m",
+            "synthetic private fixture",
+        ],
+    );
+
+    let linked_sandbox = tempfile::tempdir().unwrap();
+    let linked = linked_sandbox.path().join("selected-worktree");
+    let linked_path = linked.to_string_lossy().into_owned();
+    git_isolated(
+        directory.path(),
+        &["worktree", "add", "--detach", &linked_path, "HEAD"],
     );
     assert!(
-        check(directory.path())
-            .unwrap_err()
-            .contains("Private path")
+        linked.join(".git").is_file(),
+        "fixture is not a linked worktree"
     );
+
+    let foreign = tempfile::tempdir().unwrap();
+    git_isolated(foreign.path(), &["init", "-q"]);
+    for redirect in ["git-dir", "work-tree", "common-dir", "index-file"] {
+        let mut child = Command::new(std::env::current_exe().unwrap());
+        child
+            .args([
+                "--exact",
+                "ambient_git_redirects_cannot_hide_tracked_ignored_private_files",
+                "--nocapture",
+            ])
+            .env("TOE_TICKLING_SECURITY_CHILD_ROOT", &linked)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .env_remove("GIT_COMMON_DIR")
+            .env_remove("GIT_INDEX_FILE")
+            .env_remove("GIT_CONFIG_COUNT")
+            .env_remove("GIT_CONFIG_KEY_0")
+            .env_remove("GIT_CONFIG_VALUE_0");
+        match redirect {
+            "git-dir" => {
+                child
+                    .env("GIT_DIR", foreign.path().join(".git"))
+                    .env("GIT_WORK_TREE", &linked);
+            }
+            "work-tree" => {
+                child.env("GIT_WORK_TREE", foreign.path());
+            }
+            "common-dir" => {
+                child.env("GIT_COMMON_DIR", foreign.path().join(".git"));
+            }
+            "index-file" => {
+                child.env(
+                    "GIT_INDEX_FILE",
+                    foreign.path().join(".git/alternate-index"),
+                );
+            }
+            _ => unreachable!(),
+        }
+        let output = child.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{redirect} child failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "ambient_git_redirects_cannot_hide_tracked_ignored_private_files",
+            "--nocapture",
+        ])
+        .env("TOE_TICKLING_SECURITY_CHILD_ROOT", &linked)
+        .env("GIT_CONFIG_COUNT", "1")
+        .env("GIT_CONFIG_KEY_0", "core.worktree")
+        .env("GIT_CONFIG_VALUE_0", foreign.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "config redirect child failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn unignored_untracked_private_context_is_rejected() {
+    for path in [
+        "private/context.md",
+        "PRIVATE.Local.md",
+        "claude.local.md",
+        ".ENV.md",
+        ".ENV",
+        ".ENV.example",
+    ] {
+        let directory = fixture();
+        git(directory.path(), &["init", "-q"]);
+        write(directory.path(), path, "Fictional placeholder");
+        assert!(
+            check(directory.path())
+                .unwrap_err()
+                .contains("Private path"),
+            "Accepted untracked private path {path}"
+        );
+    }
 }
 
 #[test]
@@ -156,6 +336,298 @@ fn git_enumerates_new_public_files_and_skips_tracked_deletions() {
         check(directory.path())
             .unwrap_err()
             .contains("Executable source must be Rust")
+    );
+}
+
+#[test]
+fn staged_credentials_are_rejected_after_the_worktree_is_cleaned_or_removed() {
+    let fictional_token = ["ghp_", "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"].concat();
+    for remove_worktree_file in [false, true] {
+        let directory = fixture();
+        git(directory.path(), &["init", "-q"]);
+        git(directory.path(), &["add", "."]);
+        write(
+            directory.path(),
+            "README.md",
+            &format!("Fictional credential {fictional_token}\n"),
+        );
+        git(directory.path(), &["add", "README.md"]);
+        if remove_worktree_file {
+            fs::remove_file(directory.path().join("README.md")).unwrap();
+        } else {
+            write(
+                directory.path(),
+                "README.md",
+                "Harmless public documentation.\n",
+            );
+        }
+        let error = check(directory.path()).unwrap_err();
+        assert!(error.contains("Potential private credential/contact"));
+        assert!(!error.contains(&fictional_token));
+    }
+}
+
+#[test]
+fn staged_renamed_file_is_checked_from_its_index_blob() {
+    let fictional_token = ["ghp_", "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"].concat();
+    let directory = fixture();
+    git_isolated(directory.path(), &["init", "-q"]);
+    git_isolated(directory.path(), &["add", "."]);
+    git_isolated(
+        directory.path(),
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "Fictional baseline",
+        ],
+    );
+
+    write(
+        directory.path(),
+        "README.md",
+        &format!("Fictional public fixture\n{fictional_token}\n"),
+    );
+    git_isolated(directory.path(), &["add", "README.md"]);
+    git_isolated(directory.path(), &["mv", "README.md", "renamed.md"]);
+    write(directory.path(), "renamed.md", "Fictional public fixture\n");
+
+    let error = check(directory.path()).unwrap_err();
+    assert!(error.contains("Potential private credential/contact"));
+    assert!(!error.contains(&fictional_token));
+}
+
+#[test]
+fn staged_symlink_mode_is_rejected_even_when_worktree_is_regular() {
+    let directory = fixture();
+    git_isolated(directory.path(), &["init", "-q"]);
+    git_isolated(directory.path(), &["add", "."]);
+    git_isolated(
+        directory.path(),
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "Fictional baseline",
+        ],
+    );
+
+    let blob = Command::new("git")
+        .args(["hash-object", "-w", "README.md"])
+        .current_dir(directory.path())
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_COMMON_DIR")
+        .env_remove("GIT_INDEX_FILE")
+        .output()
+        .unwrap();
+    assert!(blob.status.success());
+    let oid = String::from_utf8(blob.stdout).unwrap().trim().to_owned();
+    let cache_info = format!("120000,{oid},README.md");
+    git_isolated(
+        directory.path(),
+        &["update-index", "--add", "--cacheinfo", &cache_info],
+    );
+
+    let error = check(directory.path()).unwrap_err();
+    assert!(error.contains("regular file, not a symlink or special entry"));
+}
+
+#[test]
+fn scanner_fails_closed_on_ambient_git_index_override() {
+    let fictional_token = ["ghp_", "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"].concat();
+    let directory = full_fixture();
+    git(directory.path(), &["init", "-q"]);
+    git(directory.path(), &["add", "."]);
+    write(
+        directory.path(),
+        "README.md",
+        &format!("Fictional credential {fictional_token}\n"),
+    );
+    write_json(
+        &directory.path().join("policy/reading-manifest.json"),
+        &current_manifest(directory.path()).unwrap(),
+    )
+    .unwrap();
+    git(directory.path(), &["add", "policy/reading-manifest.json"]);
+    git(directory.path(), &["add", "--force", "README.md"]);
+    let alternate_index_dir = tempfile::tempdir().unwrap();
+    let alternate_index = alternate_index_dir.path().join("index");
+    assert!(
+        Command::new("git")
+            .args(["read-tree", "--empty"])
+            .current_dir(directory.path())
+            .env("GIT_INDEX_FILE", &alternate_index)
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_toe-tickling"))
+        .arg("check")
+        .current_dir(directory.path())
+        .env("GIT_INDEX_FILE", alternate_index)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        !output.status.success(),
+        "alternate index hid tracked content"
+    );
+    assert!(
+        stderr.contains("GIT_INDEX_FILE override"),
+        "unexpected scanner result: {stderr}"
+    );
+    assert!(!stderr.contains(&fictional_token));
+}
+
+#[test]
+fn alternate_index_only_staged_credentials_fail_closed() {
+    let fictional_token = ["ghp_", "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"].concat();
+    let directory = full_fixture();
+    git_isolated(directory.path(), &["init", "-q"]);
+    git_isolated(directory.path(), &["add", "."]);
+    git_isolated(directory.path(), &["add", "--force", "README.md"]);
+
+    let alternate_index_dir = tempfile::tempdir().unwrap();
+    let alternate_index = alternate_index_dir.path().join("index");
+    fs::copy(directory.path().join(".git/index"), &alternate_index).unwrap();
+
+    let readme = directory.path().join("README.md");
+    let original = fs::read(&readme).unwrap();
+    fs::write(&readme, format!("Fictional credential {fictional_token}\n")).unwrap();
+    let mut stage_alternate = Command::new("git");
+    stage_alternate
+        .args(["add", "--force", "README.md"])
+        .current_dir(directory.path());
+    for variable in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_NAMESPACE",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    ] {
+        stage_alternate.env_remove(variable);
+    }
+    assert!(
+        stage_alternate
+            .env("GIT_INDEX_FILE", &alternate_index)
+            .status()
+            .unwrap()
+            .success()
+    );
+    fs::write(&readme, original).unwrap();
+
+    let mut scan = Command::new(env!("CARGO_BIN_EXE_toe-tickling"));
+    scan.arg("check").current_dir(directory.path());
+    for variable in [
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_COMMON_DIR",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_NAMESPACE",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    ] {
+        scan.env_remove(variable);
+    }
+    let output = scan
+        .env("GIT_INDEX_FILE", &alternate_index)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        !output.status.success(),
+        "alternate-index-only staged content must fail closed"
+    );
+    assert!(
+        stderr.contains("GIT_INDEX_FILE override"),
+        "unexpected scanner result: {stderr}"
+    );
+    assert!(!stderr.contains(&fictional_token));
+}
+
+#[test]
+fn reference_style_local_markdown_links_are_validated() {
+    let directory = fixture();
+    write(
+        directory.path(),
+        "guide.md",
+        "[guide]: existing.md\n\n[guide]\n",
+    );
+    write(directory.path(), "existing.md", "Fictional target\n");
+    check(directory.path()).unwrap();
+
+    write(
+        directory.path(),
+        "guide.md",
+        "[guide]: missing.md\n\n[guide]\n",
+    );
+    assert!(
+        check(directory.path())
+            .unwrap_err()
+            .contains("Broken or escaping local Markdown link")
+    );
+}
+
+#[test]
+fn staged_workflow_is_checked_even_when_worktree_workflow_is_safe() {
+    let directory = fixture();
+    git(directory.path(), &["init", "-q"]);
+    git(directory.path(), &["add", "."]);
+    let staged_unsafe = WORKFLOW.replace("contents: read", "contents: write");
+    write(
+        directory.path(),
+        ".github/workflows/validate.yml",
+        &staged_unsafe,
+    );
+    git(directory.path(), &["add", ".github/workflows/validate.yml"]);
+    write(directory.path(), ".github/workflows/validate.yml", WORKFLOW);
+    assert!(
+        check(directory.path())
+            .unwrap_err()
+            .contains("explicit read-only contents permissions")
+    );
+}
+
+#[test]
+fn staged_workflow_deletion_is_not_hidden_by_an_unstaged_copy() {
+    let directory = fixture();
+    git(directory.path(), &["init", "-q"]);
+    git(directory.path(), &["add", "."]);
+    git(
+        directory.path(),
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "-qm",
+            "Fictional baseline",
+        ],
+    );
+    git(
+        directory.path(),
+        &["rm", "--cached", "--", ".github/workflows/validate.yml"],
+    );
+
+    assert!(
+        check(directory.path())
+            .unwrap_err()
+            .contains("staged deletion of required CI workflow")
     );
 }
 
