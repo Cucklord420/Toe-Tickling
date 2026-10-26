@@ -15,8 +15,8 @@ This repository is a living policy constitution, not a final static artifact. Th
 - Classify trigger: user correction / defect / technology change / provider integration / failed probe / security issue / improved verified evidence.
 - Identify exact source and existing rule IDs. Preserve stable IDs, user preferences, old history and original authority; propose new policy only when genuinely user-directed.
 - Make changes on a reviewable branch if another agent is working, with a pinned base commit. Do not rewrite their branch or force merge. Compare head again before publication.
-- Update rules/* or public profile only when authorized; bump policy version and changelog; regenerate GUIDEBOOK.md, guidebook-lock.json and model adapters through scripts/guidebook.py build.
-- Run Python check and suite, Rust read-only audit and suite, public data checks, source/final diff review, and high-risk semantic/behavioral probes. A CI config existing is not a passing run.
+- Update rules/* or public profile only when authorized; bump policy version and changelog; regenerate GUIDEBOOK.md, guidebook-lock.json and model adapters through `cargo run --locked -- build`.
+- Run the Rust checker and complete workspace suite, the independent Rust source-byte audit, public data checks, source/final diff review, and high-risk semantic/behavioral probes. A CI config existing is not a passing run.
 - Record a finding ID and evidence for each material defect, then test the fix. If behavior remains unverified, mark it unverified rather than calling the guide complete.
 - Merge only after checking actual CI for the proposed commit and reconciling updates from other agents. Keep rollback and a concise checkpoint.
 - Revalidate platform assumptions when documentation or observed behavior changes. Nothing is "set forever"; do not churn stable rules without evidence.
@@ -45,4 +45,4 @@ Provider model/API tool changes; new or deprecated platform instruction file sem
 
 This public repository can store reusable user-approved preferences, synthetic fixtures and non-sensitive methodology. It is not an archive of private chats, connected files, financial records, medical information, code from private repositories, real network details or customer data. Preserve specialized rules in their own repositories without silently broadening them into universal policy.
 
-The Python builder and installer remain canonical until each Rust equivalent is actually compiled, behaviorally compared and tested on relevant platforms; keep both while moving incrementally. Zero required software/subscription TCO for the added local tooling, excluding compute and discretionary model usage.
+The Rust builder, validator, audit receipts, safe adopter, and independent Rust audit are the current implementations. The user explicitly superseded all Python maintenance exceptions. Preserve baseline behavior and rollback through Git history; do not keep a non-Rust executable fallback in the current tree. Required software/subscription cost is zero; compute, energy, developer time, and any paid model usage are separate.

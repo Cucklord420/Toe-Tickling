@@ -1,30 +1,44 @@
-# Validation history
+# Rust validation
 
-**Historical baseline:** The measurements below are for guidebook v1.0.0 at commit `0bdc6fed00c35cec4ff3bf756da9d1f9dbb0c3a9`, not an assertion about later policy versions. The 125-rule count, 45 Python tests and recorded SHA-256 hashes are intentionally retained as historical evidence.
+## Policy 1.2.3 — local evidence, 10-16-2026
 
-## Later v1.1.1 verification (10-15-2026)
+Base: `4f519c3ea1ed120d36aefea014fbf31bc0593304`; review branch `audit/preserve-verification-history`. Linux x86_64, Rust 1.99.1, Cargo edition 2024. The official release notes retrieved on this date also identify 1.99.1 as stable; no compiler or dependency update was made. Consulted the official Rust Book's testing guidance and relevant standard-library/Cargo/Clippy/rustfmt/edition documentation for the focused validator change; no exhaustive Reference read or performance claim is made.
 
-Canonical main v1.1.1 baseline: `796ee24f9d0042e0c5883b42f4185bfaf4bedc81` (158 rules). The separate legal/security audit branch and its Python/Rust/100-pass evidence are tracked at [pull request #6](https://github.com/Cucklord420/Toe-Tickling/pull/6). Consult the exact head commit and its Actions status; do not infer that this dated record certifies future revisions. Automated validation is not independent proof of copyright ownership or an external model obeying policy.
+The new removal regression failed before the repair with `silently deleted AUTH-01`. After repair, `cargo test --workspace --locked` passed **87 tests**: 12 independent-auditor, 24 adoption, 26 security, and 25 validation tests, with no failures or ignored cases. `cargo fmt --all -- --check` and strict workspace Clippy also passed. After regeneration and manifest refresh, `cargo run --locked -- check` and `cargo run --locked -p guidebook-audit -- check .` passed with 159 standing and 46 verification rules. Remote CI evidence for the delivered commit belongs in its PR; the earlier workflow below validates only its explicitly identified tree.
 
-## Original v1.0.0 observations
+The removal checks protect stable-ID retention and explicit evolution. They do not establish semantic truth, full historical source review, live model behavior, native Windows/macOS behavior, or deployment. The earlier migration and operational limits still apply.
 
+## Policy 1.2.2 — prior GitHub Actions evidence
 
-Measured on 10-15-2026 using Python 3.12.14, Git, and Linux x86_64. This is not a claim that prose can enforce model behavior.
+This prior report records observed checks on 10-16-2026, plus explicitly historical evidence. At its tested revision the canonical standing policy was version **1.2.2** with **159 standing rules** and **46 active verification rules**. Earlier Python results remain historical; see [the initial validation report](archive/INITIAL_VALIDATION.md).
 
-- `python3 scripts/guidebook.py build`: generated nine deterministic model/bundle artifacts.
-- `python3 scripts/guidebook.py check`: passed; 125 stable rule IDs, 39 public repository files, matching source/bundle digests, valid local links, selected private-data patterns, and immutable/read-only CI configuration. The complete model guide contains 7,308 words.
-- `python3 -m unittest discover -s tests -v`: 45 tests passed with no skipped tests in the final local run (6.677 seconds). CLI regressions invoke real child Python/Git processes in temporary directories, including unrelated working directories and paths with spaces. One additional unit case injects an I/O replacement failure to check preservation and temporary-file cleanup; it is not represented as a physical storage failure test.
-- Python's AST parser accepted both Python files with the Python 3.10 grammar. This is syntax verification, not a claim of native execution on Python 3.10.
-- The existing repository's AGPL license was preserved byte-for-byte: Git blob `0ad25db4bd1d86c452db3f9602ccdbe172438f52` and SHA-256 `8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef`.
+## Exact GitHub Actions evidence
 
-Coverage includes real CLI startup/build/check, deterministic output, generated-file drift, source changes/missing sources, dates/versions/unique IDs, required instruction-audit sources/rules/adapters, path traversal, symlinks and ancestors, broken/escaping local links, selected credential/contact patterns, ignored local context versus forced tracked private files, mutable action pins, token permissions, preview without mutation, full snapshot/digest installation, preserving existing instructions/gitignore/adapters, repeat-install idempotency, malformed/reversed managed markers, tampered/unmanaged snapshots, invalid/non-root targets, non-directory parents, safe updates, injected replacement failure cleanup, and confirming the installer creates no commit.
+- **Tested PR:** [#14](https://github.com/Cucklord420/Toe-Tickling/pull/14), head `80f66b98e0f3193e49ce58951d8d417d49275e29`.
+- **Successful workflow:** [Rule book audit run 38917082012](https://github.com/Cucklord420/Toe-Tickling/actions/runs/38917082012), on the pull-request merge commit `db1e54f342fe9987f6bef83c0640e131cb8ccda8`.
+- **Merged main commit:** `ef959c387bcd4700bb9c2311adaed44823559c78`. The tested synthetic merge commit and the final squash-merged commit both have the **identical Git tree** `ead086107b4cd423ac8b7fea2c2d371c9cbf394f`; this is a verified content-identity comparison, not a claim that the commit IDs are identical.
+- **Runner:** GitHub-hosted Ubuntu Linux x86_64; pinned Rust **1.99.1**, as upgraded in merged [PR #10](https://github.com/Cucklord420/Toe-Tickling/pull/10).
 
-Validated guidebook SHA-256: `7e7ea0e5fd53fb6d8e89bf8c7a72b915dc3c555d2af9c949412d75b2aadcf887`.
+The successful workflow executed:
 
-Validated maintenance script SHA-256: `e80694f6d6a0a3686c79eed8b10da0892394f5f0d65f04f423cf815b4dc28552`.
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --locked --all-targets -- -D warnings
+cargo test --workspace --locked
+cargo run --locked -- check
+cargo run --locked -p guidebook-audit -- check .
+```
 
-Validated regression test source SHA-256: `76a318489752c80f28dc7980e25a6ed27b8e6ea221ac1ffb624a048974dfb6b4`.
+The CI logs show format and Clippy passed, with all **84 distinct Rust tests passing**: 11 independent-auditor unit tests, 24 adoption/integration tests, 26 security/CI tests, and 23 validation/policy/receipt tests. All had zero reported failures or ignored cases. The primary CLI reported 159 standing rules and 46 verification rules. The independent audit reported 14 modules and the same policy counts. These results prove the covered structural and executable checks for the tested tree, **not** actual compliance by AI models.
 
-Limits: no provider-specific live model compliance tests, no account-global settings or cross-session memory writes, and no native Windows/macOS execution in this local environment. Local instruction tests use disposable Git projects and synthetic text; they do not touch client data or production repositories. Pattern checks are incomplete by nature and were supplemented by a review of the public contents.
+## Migration and operational limits
 
-Remote CI is configured in `.github/workflows/validate.yml`; its actual status must be read from GitHub Actions for the published commit. Local passes do not establish a remote pass. Publication and durable platform memory are separate from these local tests.
+The Rust toolchain and Cargo.lock are pinned. The Rust application is the current maintenance/build/validation path. The original Python implementation's complete behavioral parity was **not** established by the latest workflow: the test suite covers selected functional requirements using synthetic fixtures, not a comprehensive side-by-side Python/Rust differential run on every original behavior.
+
+There is no verified native Windows or macOS run, destructive hardware/storage run, true model-provider instruction-loading/compliance experiment, production deployment, account-global rule installation, or durable provider-memory write. No status or GitHub CI pass can prove a model read or applied instructions semantically. Local link/privacy pattern checks are limited safeguards, not guaranteed secret absence.
+
+The original AGPL-3.0-only license remains intact. Generated SHA-256 digests identify exact content, not truth, permission, or origin authority. The source of each new compliance claim must remain the actual revision, dated observation, and corresponding logs.
+
+## Older evidence
+
+The 10-15-2026 policy 1.2.0 run with Rust 1.99.0 and 83 reported tests is superseded for current CI status, but preserved in repository history. Do not carry that test count forward to policy 1.2.2. Reverify this report when implementation, policy meaning, toolchain, or the checked tree changes.

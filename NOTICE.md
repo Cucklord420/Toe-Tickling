@@ -10,6 +10,8 @@ Names of models, tools, services, and instruction formats identify compatibility
 
 Copying the guidebook does not itself apply its license to another project's unrelated code. Preserve the actual upstream and dependency licenses of every project.
 
+The license grant applies only to legally copyrightable contributions in which the contributor holds the applicable rights. AI assistance is not a warranty of originality, authorship, copyrightability, or third-party rights clearance. Preserve provenance and applicable inherited grants; passing software checks does not establish legal clearance.
+
 ## AI assistance and rights limitations
 
 This project has received AI-assisted drafting and code contributions. The copyright notice above refers only to legally copyrightable material in which the identified rights holder owns the applicable rights; it does not claim that every AI-generated expression is copyrighted, or that an AI provider's contribution automatically confers ownership.

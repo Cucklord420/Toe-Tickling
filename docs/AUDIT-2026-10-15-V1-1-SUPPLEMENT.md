@@ -51,6 +51,12 @@ This is a manual semantic/security audit supported by selected automated regress
 
 The owner reconfirmed a **copyleft-for-public-work** policy, not an instruction to waive copyright or change the existing license. U.S. Copyright Office guidance (01-29-2025) distinguishes unprotectable purely AI-generated expression from sufficiently human-authored creative selections, arrangements and modifications of AI-assisted material. GNU describes copyleft as copyright-dependent. Existing AGPL-3.0-only is preserved without declaring all AI output copyrightable. See [COPYLEFT_AI_LEGAL_REVIEW.md](COPYLEFT_AI_LEGAL_REVIEW.md). This analysis does not establish actual human authorship, ownership, derivative-work status, or court enforceability for each file.
 
-## New v1.1.1 native Rust audit
+## Historical v1.1.1 native Rust audit
 
-Current main contains a separate Rust read-only validator and its tests. This branch fixes a semantic spoofing gap in its rule-ID recognition. Python remains the reference generator/installer; Rust is an additional check, not a parity-complete replacement. Validate the exact final branch with real Rust compilation and unit tests; a source inspection or a historical CI badge is insufficient.
+At the 10-15-2026 audit baseline, `main` contained a Rust read-only validator and this branch proposed fixes to rule-ID recognition and the validation harness. The current repository has since migrated its builder, validator, and regression suite to Rust. The current main-branch Rust checker contains the declaration-only rule parsing and stable-ID coverage checks relevant to these findings; see `docs/VALIDATION.md` for current verification evidence. This historical section does not claim that the old branch code is still present or that its earlier check results validate current `main`.
+
+## Disposition after the v1.2.4 Rust migration — 10-26-2026
+
+This report documents the v1.1.1 audit baseline and is historical. After `main` advanced to v1.2.4 at `0ee9e4428670209a3700a315d8a3957013d1b2f6`, the current Rust builder, validator, and Rust regression suite superseded the Python builder/validator, the proposed Python 100-pass runner, and this branch's smaller Rust checker. Those old executable and test files are not reintroduced by this documentation change. Current Rust validation is recorded in `docs/VALIDATION.md`; see the current main-branch results there.
+
+The independently useful legal analysis and dated audit findings remain in this report and `docs/COPYLEFT_AI_LEGAL_REVIEW.md`. They do not constitute legal advice or establish rights clearance for every file.

@@ -1,27 +1,32 @@
-name: Validate guidebook
-
+name: Rule book audit
 on:
   push:
   pull_request:
+  schedule:
+    - cron: '23 12 * * 1'
   workflow_dispatch:
-
 permissions:
   contents: read
-
 concurrency:
   group: guidebook-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-
 jobs:
   validate:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Check out source
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5, resolved 10-15-2026
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5, inherited inspected pin
         with:
           persist-credentials: false
-      - name: Check policy, generated files, links, and selected privacy patterns
-        run: python3 scripts/guidebook.py check
-      - name: Run real CLI and safe adoption regressions
-        run: python3 -m unittest discover -s tests -v
+      - name: Install the pinned Rust toolchain
+        run: rustup show
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Lint
+        run: cargo clippy --workspace --locked --all-targets -- -D warnings
+      - name: Regression tests
+        run: cargo test --workspace --locked
+      - name: Structural policy and freshness audit
+        run: cargo run --locked -- check
+      - name: Independent Rust source-byte audit
+        run: cargo run --locked -p guidebook-audit -- check .

@@ -9,10 +9,10 @@ The following requirements recur in applicable project instruction files and hav
 - Keep private data private: avoid exporting or copying client/workplace data, credentials, personal archives, finance data or hidden infrastructure into a public guide.
 - Backups must be restored in an isolated test before claiming recoverability; migration requires verified parity and exact artifact/output checks.
 - Treat cross-account and provider access as capability-bound; a plan for an integration is not an installed or executed integration.
-- Rust-first is a verified incremental migration preference, not a mandate to delete a working portable implementation before parity.
+- Rust is mandatory for all newly authored executable code and tests. Preserve existing behavior and verify authorized migrations before replacement; keep rollback revisions in Git history.
 - Automation needs real scheduling/permissions, bounded outputs, observable results, no invented monitoring or durable memory.
 - Model and artifact audits need independently verifiable evidence; a model's own statement that it complied is insufficient.
 
 Private material and repository identities were deliberately excluded. Applicable specialized instructions should remain local to those projects, and current explicit user requests continue to govern their scope. Future reviews should incrementally expand verified coverage without leaking source details.
 
-Open risks: provider-specific instruction-loading behavior has not been measured across every AI environment; archives and historical private rules were not exhaustively reconciled; the staged Rust checker compiled and passed its 13 tests and guidebook check on PR #2 (10-15-2026), but Rust is not a complete port and new revisions still need their own checks.
+Open risks: provider-specific instruction loading has not been measured across every AI environment, and private archives and historical rules have not been exhaustively reconciled. Earlier staged-Rust metrics are historical; the current full Rust replacement and workspace checks are reported in VALIDATION.md.

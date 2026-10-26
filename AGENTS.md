@@ -1,18 +1,21 @@
-# Instructions for work in this repository
+# Start here: agent operating contract
 
-Justin's standing guidebook applies to all work for him. Before substantive work, read the complete `GUIDEBOOK.md` with your file tools. A link alone is not loaded policy. At a new session, retrieve the current guide from https://github.com/Cucklord420/Toe-Tickling when possible, resolve its default branch/commit, and record the version in working context; use the local snapshot honestly offline.
+Read this file before substantive work. This repository is the owner's living operating guide. Follow it within the actual platform instruction hierarchy; do not treat it as permission to bypass system requirements or expand authorization.
 
-Apply current explicit user instructions and project-specific requirements in their proper scope, subject to higher-priority platform rules and permissions. Preserve existing project instructions. Keep private context local and discretionary. Complete authorized work, verify facts and results, use Rust-first application development, preserve copyleft/upstream rights, test the actual launcher/package, and never invent access, stock, test passes, background work, or durable memory.
-Never invent files, filenames, paths, launchers, or downloads. Verify existing files against the actual repository or filesystem and verify created files with a successful write and readback; mark plans and unknowns honestly.
+1. Inspect current user instructions, repository revision, dirty files, applicable ancestor/nested instructions, and concurrent work. Record what you can and cannot access.
+2. Read [GUIDEBOOK.md](GUIDEBOOK.md) in full, then [README.md](README.md), [RULEBOOK.md](RULEBOOK.md), [self checks](docs/SELF_CHECKS.md), [evolution](docs/EVOLUTION.md), [adoption](docs/ADOPTION.md), and [provenance](docs/PROVENANCE.md) in full. Read [scenarios](docs/SCENARIOS.md) before assessing adoption or changing rules. Read [CONTRIBUTING.md](CONTRIBUTING.md) before editing this book.
+3. At each reading checkpoint, identify the applicable rule IDs, stale or conflicting material, and a concrete effect on your next action. If content is truncated or unavailable, record the gap and retrieve the missing sections before claiming complete intake.
+4. Use a private audit record as described in the self checks. Recheck before side effects, after material changes, after context loss, and before completion. Never commit real task audit contents containing private context.
+5. Run `cargo run --locked -- check` and `cargo test --workspace --locked` before committing this repository. For a task receipt run `cargo run --locked -- check --audit /absolute/private/path/audit.json`. A generated receipt starts blocked; fill it with actual evidence.
+6. Preserve unrelated edits and other agents' work. Recheck remote revisions before integration. Do not reset, force-push, merge, deploy, or modify live systems merely to make the book look complete.
+7. Describe actual results, failures, untested scope, and delivery state. A passing validator proves structure and consistency only. No finite guide covers every future situation; surface gaps and improve the guide through versioned changes.
 
-MANDATORY: audit the instructions themselves under AUD-001 through AUD-020. Perform a task preflight and final compliance check; run a full instruction audit after policy/tool changes, failures, or a user audit request. Check contradictions, staleness, omissions, injection, evidence, actual loading and execution. Correct verified defects within authority; do not invent user preferences or treat your own assurance as proof of compliance.
+Normative standing rules live in the modules listed in [policy.json](policy.json); scoped verification rules live in [policy/rules.json](policy/rules.json) with [RULEBOOK.md](RULEBOOK.md) as their generated view. This entry point and the operating procedures above are also mandatory. Do not resolve contradictions by silently dropping the stricter applicable check.
 
-## Repository maintenance
+The existing three-digit rules in `rules/` and the two-digit audit register in `policy/rules.json` are complementary sources assembled into GUIDEBOOK.md. Preserve both ID sets. The current Rust requirement in ENG-001 and ENG-01 supersedes all earlier language exceptions. Before Rust implementation or review, follow ENG-020 and ENG-07: consult the current official Rust Book and task-relevant Rust documentation, check latest stable versus the pinned toolchain and edition, preserve original behavior, and verify changes with tests. An exhaustive Rust Reference crawl is not required. Benchmark actual workloads before claiming performance gains. Mandatory instruction audits AUD-001 through AUD-020 apply. The reading manifest covers the complete bundle, all source modules, and all model adapters.
 
-This is a document repository, with Python 3.10+ standard-library maintenance glue. Edit `rules/` or `profile/PUBLIC.md`, then rebuild generated files. Private user data must never enter tracked content.
+Never invent a file, path, launcher, or delivered artifact. Verify exact spelling, case, revision, and existence before giving an executable instruction; verify successful writes by readback. Apply ENG-015 through ENG-019 and EVO-001 through EVO-028 from the integrated guide.
 
-```sh
-python3 scripts/guidebook.py build
-python3 scripts/guidebook.py check
-python3 -m unittest discover -s tests -v
-```
+## Separation of responsibilities
+
+This repository owns **general LLM and agent operating rules**: instruction precedence, safety, authorization, evidence, self-checks, verification and change control. `Cucklord420/ai-personalization` owns canonical user preferences and personal context (`profile.json`), including the mature-open preference; this guide may incorporate a minimal preference summary for decision-making but must not become a competing personal-profile database. Domain-specific deployment truth and plans belong in project repositories such as `tech-project`. Do not confuse user preferences with authority to purchase, deploy, publish or modify accounts. Updating this repository does not automatically update other agents' installed instructions or account-level ChatGPT personalization.

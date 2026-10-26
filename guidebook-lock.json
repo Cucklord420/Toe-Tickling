@@ -1,9 +1,10 @@
 {
-  "policy_version": "1.1.1",
+  "policy_version": "1.2.4",
   "source_repo": "https://github.com/Cucklord420/Toe-Tickling",
-  "source_sha256": "aabc65eb2f2421737f6355c3f402b7a50925e2965b4349d4d2f39f8e6f366715",
-  "guidebook_sha256": "89693355f94206064e68aff7b8de30b700f4ef0bca57d9fdd2038660ceb1903c",
-  "rule_count": 158,
+  "source_sha256": "d4de83f1cf56a9bf318f34d848871ff03857c9e3311f1c63383c45acc20372ce",
+  "guidebook_sha256": "7a103b43e701bfda238caad10f10495ae6a1325c0b55c6a650f43d6bbf3ea001",
+  "rule_count": 160,
+  "verification_rule_count": 46,
   "sources": [
     "rules/00-authority.md",
     "rules/05-execution-contract.md",
@@ -15,6 +16,9 @@
     "rules/60-instruction-audits.md",
     "rules/65-continuous-evolution.md",
     "rules/70-task-playbooks.md",
-    "profile/PUBLIC.md"
+    "profile/PUBLIC.md",
+    "RULEBOOK.md",
+    "docs/SELF_CHECKS.md",
+    "docs/EVOLUTION.md"
   ]
 }

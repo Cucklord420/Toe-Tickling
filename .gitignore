@@ -1,11 +1,12 @@
-__pycache__/
-*.py[cod]
+/target/
+/private/
+/local-data/
+*.audit.json
 .env
 .env.*
 !.env.example
 PRIVATE.local.md
 CLAUDE.local.md
-private/
 .private/
 .local/
 *.local.json
