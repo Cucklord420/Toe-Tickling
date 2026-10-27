@@ -390,7 +390,11 @@ fn git_version_is_supported(output: &str) -> bool {
     let Some(minor) = components.next().and_then(|part| part.parse::<u64>().ok()) else {
         return false;
     };
-    let Some(patch) = components.next().and_then(|part| part.parse::<u64>().ok()) else {
+    let Some(patch) = components
+        .next()
+        .and_then(|part| part.split_whitespace().next())
+        .and_then(|part| part.parse::<u64>().ok())
+    else {
         return false;
     };
     (major, minor, patch) >= (2, 36, 0)
