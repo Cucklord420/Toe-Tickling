@@ -1,4 +1,5 @@
 //! Public-tree checks. Diagnostics identify the file, never the matched private value.
+use pulldown_cmark::{Event, Parser, Tag};
 use regex::Regex;
 use serde_yaml_ng::{Mapping, Value};
 use std::{
@@ -330,44 +331,47 @@ fn percent_decode(value: &str) -> Result<String> {
     String::from_utf8(decoded).map_err(|_| "Local Markdown link is not valid UTF-8".into())
 }
 
-fn local_links(
-    root: &Path,
-    relative: &Path,
-    text: &str,
-    inline_links: &Regex,
-    reference_links: &Regex,
-) -> Result<()> {
-    for matched in inline_links
-        .captures_iter(text)
-        .chain(reference_links.captures_iter(text))
-    {
-        let target = matched.get(1).or_else(|| matched.get(2)).unwrap().as_str();
-        let scheme = target.split_once(':').is_some_and(|(scheme, _)| {
-            scheme.starts_with(|character: char| character.is_ascii_alphabetic())
-                && scheme.chars().all(|character| {
-                    character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.')
-                })
-        });
-        if scheme || target.starts_with('#') || target.starts_with("//") {
-            continue;
-        }
-        // Split URI delimiters before decoding: an encoded # belongs to a filename.
-        let raw = target.split(['?', '#']).next().unwrap_or("");
-        if raw.is_empty() {
-            continue;
-        }
-        let decoded = percent_decode(raw)
-            .map_err(|_| fail("Invalid local Markdown link encoding", relative))?;
-        let link = Path::new(&decoded);
-        if link.is_absolute() || decoded.contains(['\\', '\0']) {
-            return Err(fail("Broken or escaping local Markdown link", relative));
-        }
-        let joined = root.join(relative).parent().unwrap_or(root).join(link);
-        no_symlink_ancestors(&joined)?;
-        let canonical = fs::canonicalize(joined)
-            .map_err(|_| fail("Broken or escaping local Markdown link", relative))?;
-        if !canonical.starts_with(root) {
-            return Err(fail("Broken or escaping local Markdown link", relative));
+fn local_link(root: &Path, relative: &Path, target: &str) -> Result<()> {
+    let scheme = target.split_once(':').is_some_and(|(scheme, _)| {
+        scheme.starts_with(|character: char| character.is_ascii_alphabetic())
+            && scheme.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '+' | '-' | '.')
+            })
+    });
+    if scheme || target.starts_with('#') || target.starts_with("//") {
+        return Ok(());
+    }
+    // Split URI delimiters before decoding: an encoded # belongs to a filename.
+    let raw = target.split(['?', '#']).next().unwrap_or("");
+    if raw.is_empty() {
+        return Ok(());
+    }
+    let decoded =
+        percent_decode(raw).map_err(|_| fail("Invalid local Markdown link encoding", relative))?;
+    let link = Path::new(&decoded);
+    if link.is_absolute() || decoded.contains(['\\', '\0']) {
+        return Err(fail("Broken or escaping local Markdown link", relative));
+    }
+    let joined = root.join(relative).parent().unwrap_or(root).join(link);
+    no_symlink_ancestors(&joined)?;
+    let canonical = fs::canonicalize(joined)
+        .map_err(|_| fail("Broken or escaping local Markdown link", relative))?;
+    if !canonical.starts_with(root) {
+        return Err(fail("Broken or escaping local Markdown link", relative));
+    }
+    Ok(())
+}
+
+fn local_links(root: &Path, relative: &Path, text: &str) -> Result<()> {
+    let parser = Parser::new(text);
+    // Definitions are not events. Inspect them even when no usage refers to them.
+    // The parser supplies CommonMark label normalization and decoded escapes.
+    for (_, definition) in parser.reference_definitions().iter() {
+        local_link(root, relative, &definition.dest)?;
+    }
+    for event in parser {
+        if let Event::Start(Tag::Link { dest_url, .. } | Tag::Image { dest_url, .. }) = event {
+            local_link(root, relative, &dest_url)?;
         }
     }
     Ok(())
@@ -376,8 +380,6 @@ fn local_links(
 struct TextPatterns {
     secrets: Regex,
     emails: Regex,
-    inline_links: Regex,
-    reference_links: Regex,
 }
 
 fn field<'a>(mapping: &'a Mapping, key: &str) -> Option<&'a Value> {
@@ -575,14 +577,6 @@ pub fn check(root: &Path) -> Result<()> {
         .map_err(|_| "Invalid credential scanner expression")?,
         emails: Regex::new(r"[\w.+-]+@([\w-]+(?:\.[\w-]+)+)")
             .map_err(|_| "Invalid contact scanner expression")?,
-        inline_links: Regex::new(
-            r#"\[[^\]\n]*\]\(\s*(?:<([^>\n]+)>|([^\s)]+))(?:\s+"[^"\n]*")?\s*\)"#,
-        )
-        .map_err(|_| "Invalid Markdown scanner expression")?,
-        reference_links: Regex::new(
-            r"(?m)^[ \t]{0,3}\[[^\]\n]+\]:[ \t]*(?:<([^>\n]+)>|([^\s]+))",
-        )
-        .map_err(|_| "Invalid Markdown reference scanner expression")?,
     };
     let secret_context = Regex::new(r"\$\{\{[^}]*\bsecrets\b")
         .map_err(|_| "Invalid CI secret context expression")?;
@@ -656,13 +650,7 @@ fn inspect_text(
         .extension()
         .is_some_and(|extension| extension == "md")
     {
-        local_links(
-            root,
-            relative,
-            text,
-            &patterns.inline_links,
-            &patterns.reference_links,
-        )?;
+        local_links(root, relative, text)?;
     }
     if relative.parent() == Some(Path::new(".github/workflows"))
         && relative
