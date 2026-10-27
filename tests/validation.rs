@@ -15,6 +15,7 @@ fn fixture() -> TempDir {
         fs::copy(source.join(path), target).unwrap();
     }
     for file in [
+        ".gitignore",
         "LICENSE",
         "LICENSE-SCOPE.md",
         "CHANGELOG.md",
@@ -26,6 +27,12 @@ fn fixture() -> TempDir {
         fs::create_dir_all(dir.path().join(file).parent().unwrap()).unwrap();
         fs::copy(source.join(file), dir.path().join(file)).unwrap();
     }
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(
+        dir.path().join("src/fixture.rs"),
+        "pub const VALUE: u8 = 1;\n",
+    )
+    .unwrap();
     let policy = load_policy(dir.path()).unwrap();
     fs::write(dir.path().join("RULEBOOK.md"), render(&policy)).unwrap();
     guide::build(dir.path()).unwrap();
@@ -189,6 +196,141 @@ fn baseline_and_declared_receipt_pass() {
     );
     validate_audit(dir.path(), &policy, &audit, now()).unwrap();
 }
+
+fn assert_source_change_rejects_audits(path: &str, staged: bool) {
+    let dir = fixture();
+    assert!(
+        clean_git(dir.path(), &["config", "status.showUntrackedFiles", "no"])
+            .status
+            .success()
+    );
+    let policy = load_policy(dir.path()).unwrap();
+    let audit = complete(dir.path());
+    validate_audit(dir.path(), &policy, &audit, now()).unwrap();
+    let manifest = current_manifest(dir.path()).unwrap();
+    let changed_content = "// FICTIONAL_PRIVATE_SOURCE_VALUE\npub const VALUE: u8 = 2;\n";
+    fs::write(dir.path().join(path), changed_content).unwrap();
+    if staged {
+        assert!(clean_git(dir.path(), &["add", "--", path]).status.success());
+    }
+    let head = clean_git(dir.path(), &["rev-parse", "HEAD"]);
+    assert!(head.status.success());
+    assert_eq!(
+        String::from_utf8(head.stdout).unwrap().trim(),
+        audit.repository_revision
+    );
+    assert_eq!(
+        current_manifest(dir.path()).unwrap().documents,
+        manifest.documents
+    );
+
+    for error in [
+        new_audit(dir.path(), "Fictional dirty-source task".into()).unwrap_err(),
+        validate_audit(dir.path(), &policy, &audit, now()).unwrap_err(),
+    ] {
+        assert!(
+            error.contains("clean"),
+            "Unexpected audit rejection: {error}"
+        );
+        assert!(!error.contains(path));
+        assert!(!error.contains(Path::new(path).file_name().unwrap().to_str().unwrap()));
+        assert!(!error.contains(dir.path().to_string_lossy().as_ref()));
+        for line in changed_content.lines() {
+            assert!(!error.contains(line));
+        }
+        for status in [" M ", "M  ", "?? "] {
+            assert!(!error.contains(status));
+        }
+    }
+}
+
+#[test]
+fn staged_source_changes_reject_creation_and_invalidate_existing_receipts() {
+    assert_source_change_rejects_audits("src/fixture.rs", true);
+}
+
+#[test]
+fn unstaged_source_changes_reject_creation_and_invalidate_existing_receipts() {
+    assert_source_change_rejects_audits("src/fixture.rs", false);
+}
+
+#[test]
+fn untracked_source_changes_reject_creation_and_invalidate_existing_receipts() {
+    assert_source_change_rejects_audits("src/private-untracked-fixture.rs", false);
+}
+
+fn assert_hidden_source_change_rejects_audits(index_flag: &str) {
+    let dir = fixture();
+    let policy = load_policy(dir.path()).unwrap();
+    let audit = complete(dir.path());
+    let path = "src/fixture.rs";
+    let changed_content = "// FICTIONAL_PRIVATE_SOURCE_VALUE\npub const VALUE: u8 = 2;\n";
+    assert!(
+        clean_git(dir.path(), &["update-index", index_flag, "--", path])
+            .status
+            .success()
+    );
+    fs::write(dir.path().join(path), changed_content).unwrap();
+
+    // Git's ordinary status hides this tracked change when either index flag is set.
+    let status = clean_git(
+        dir.path(),
+        &[
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+        ],
+    );
+    assert!(status.status.success());
+    assert!(status.stdout.is_empty());
+
+    for error in [
+        new_audit(dir.path(), "Fictional hidden-source task".into()).unwrap_err(),
+        validate_audit(dir.path(), &policy, &audit, now()).unwrap_err(),
+    ] {
+        assert!(
+            error.contains("complete Git checkout"),
+            "Unexpected audit rejection: {error}"
+        );
+        assert!(!error.contains(path));
+        assert!(!error.contains("FICTIONAL_PRIVATE_SOURCE_VALUE"));
+        assert!(!error.contains(dir.path().to_string_lossy().as_ref()));
+    }
+}
+
+#[test]
+fn assume_unchanged_source_changes_reject_creation_and_invalidate_receipts() {
+    assert_hidden_source_change_rejects_audits("--assume-unchanged");
+}
+
+#[test]
+fn skip_worktree_source_changes_reject_creation_and_invalidate_receipts() {
+    assert_hidden_source_change_rejects_audits("--skip-worktree");
+}
+
+#[test]
+fn clean_source_tree_allows_audits_with_ignored_private_and_build_outputs() {
+    let dir = fixture();
+    let policy = load_policy(dir.path()).unwrap();
+    fs::write(dir.path().join(".env"), "FICTIONAL_IGNORED_PRIVATE_VALUE\n").unwrap();
+    fs::create_dir_all(dir.path().join("target")).unwrap();
+    fs::write(
+        dir.path().join("target/fixture-output"),
+        "Fictional output\n",
+    )
+    .unwrap();
+    let status = clean_git(
+        dir.path(),
+        &["status", "--porcelain=v1", "--untracked-files=all"],
+    );
+    assert!(status.status.success());
+    assert!(status.stdout.is_empty());
+    let audit = complete(dir.path());
+    assert_eq!(audit.schema_version, 1);
+    validate_audit(dir.path(), &policy, &audit, now()).unwrap();
+}
+
 #[test]
 fn template_is_never_completion() {
     let dir = fixture();
@@ -200,13 +342,38 @@ fn template_is_never_completion() {
 fn changed_guidance_invalidates_manifest_and_receipt() {
     let dir = fixture();
     let policy = load_policy(dir.path()).unwrap();
-    let audit = complete(dir.path());
+    let mut audit = complete(dir.path());
     fs::write(dir.path().join("AGENTS.md"), "# Changed instructions\n").unwrap();
     assert!(
         check_repo(dir.path(), now().date())
             .unwrap_err()
             .contains("manifest")
     );
+    // Keep the receipt's HEAD current so this isolates the reading-hash check.
+    assert!(
+        clean_git(dir.path(), &["add", "AGENTS.md"])
+            .status
+            .success()
+    );
+    assert!(
+        clean_git(
+            dir.path(),
+            &[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-qm",
+                "Fictional changed guidance",
+            ],
+        )
+        .status
+        .success()
+    );
+    let head = clean_git(dir.path(), &["rev-parse", "HEAD"]);
+    assert!(head.status.success());
+    audit.repository_revision = String::from_utf8(head.stdout).unwrap().trim().to_owned();
     assert!(
         validate_audit(dir.path(), &policy, &audit, now())
             .unwrap_err()

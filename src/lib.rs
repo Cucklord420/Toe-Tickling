@@ -377,7 +377,64 @@ fn check_disposition(
     }
     Ok(())
 }
+
+// Source state covers tracked files and non-ignored untracked files. Ignored
+// private data and build outputs intentionally remain outside this contract.
+fn require_complete_audit_checkout(root: &Path) -> Result<()> {
+    let index = git_command(root)
+        .args(["--no-optional-locks", "ls-files", "-v", "-z"])
+        .output()
+        .map_err(|_| "Cannot verify audit checkout state".to_string())?;
+    require(index.status.success(), "Cannot verify audit checkout state")?;
+    // Lowercase tags mean assume-unchanged; S means skip-worktree. Both can
+    // make ordinary `git status` omit tracked source changes.
+    let hidden_tracked_files = index.stdout.split(|byte| *byte == 0).any(|entry| {
+        entry
+            .first()
+            .is_some_and(|tag| tag.is_ascii_lowercase() || *tag == b'S')
+    });
+    require(
+        !hidden_tracked_files,
+        "Audit requires a complete Git checkout",
+    )
+}
+
+fn require_clean_audit_worktree(root: &Path) -> Result<()> {
+    require_complete_audit_checkout(root)?;
+    let status = git_command(root)
+        .args([
+            "--no-optional-locks",
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+        ])
+        .output()
+        .map_err(|_| "Cannot verify audit worktree state".to_string())?;
+    require(
+        status.status.success(),
+        "Cannot verify audit worktree state",
+    )?;
+    // Status can contain private paths. Only inspect whether it is empty.
+    require(
+        status.stdout.is_empty(),
+        "Audit requires a clean Git worktree",
+    )
+}
+
+fn require_audit_head(root: &Path, revision: &str) -> Result<()> {
+    let head = git_command(root)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .map_err(|_| "Cannot identify repository HEAD".to_string())?;
+    require(
+        head.status.success() && String::from_utf8_lossy(&head.stdout).trim() == revision,
+        "Audit revision does not match checkout HEAD",
+    )
+}
+
 pub fn validate_audit(root: &Path, policy: &Policy, a: &Audit, now: OffsetDateTime) -> Result<()> {
+    require_clean_audit_worktree(root)?;
     require(a.schema_version == 1, "Unsupported audit schema")?;
     require(useful(&a.task), "Task missing or placeholder")?;
     require(a.outcome == "complete", "Audit outcome is not complete")?;
@@ -393,15 +450,7 @@ pub fn validate_audit(root: &Path, policy: &Policy, a: &Audit, now: OffsetDateTi
         "Expected full Git revision",
     )?;
     // Bind the declared revision to this checkout, not an arbitrary plausible SHA.
-    let head = git_command(root)
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .map_err(|e| e.to_string())?;
-    require(
-        head.status.success()
-            && String::from_utf8_lossy(&head.stdout).trim() == a.repository_revision,
-        "Audit revision does not match checkout HEAD",
-    )?;
+    require_audit_head(root, &a.repository_revision)?;
     let expected = current_manifest(root)?;
     let mut seen = BTreeSet::new();
     for reading in &a.reading {
@@ -470,16 +519,18 @@ pub fn validate_audit(root: &Path, policy: &Policy, a: &Audit, now: OffsetDateTi
             format!("Unresolved acceptance condition {}", c.id),
         )?;
     }
-    Ok(())
+    require_audit_head(root, &a.repository_revision)?;
+    require_clean_audit_worktree(root)
 }
 pub fn new_audit(root: &Path, task: String) -> Result<Audit> {
+    require_clean_audit_worktree(root)?;
     let policy = load_policy(root)?;
     let head = git_command(root)
         .args(["rev-parse", "HEAD"])
         .output()
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| "Cannot identify repository HEAD".to_string())?;
     require(head.status.success(), "Cannot identify repository HEAD")?;
-    Ok(Audit {
+    let audit = Audit {
         schema_version: 1,
         task,
         outcome: "in-progress".into(),
@@ -520,5 +571,8 @@ pub fn new_audit(root: &Path, task: String) -> Result<Audit> {
             reason: "UNFILLED: replace with actual task acceptance conditions".into(),
             evidence: vec![],
         }],
-    })
+    };
+    require_audit_head(root, &audit.repository_revision)?;
+    require_clean_audit_worktree(root)?;
+    Ok(audit)
 }
