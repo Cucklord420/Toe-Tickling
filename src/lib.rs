@@ -747,6 +747,9 @@ mod git_version_tests {
     fn audit_git_version_gate_accepts_supported_releases_and_fails_closed() {
         assert!(git_version_is_supported("git version 2.36.0"));
         assert!(git_version_is_supported("git version 2.53.0.windows.3"));
+        assert!(git_version_is_supported(
+            "git version 2.39.5 (Apple Git-154)"
+        ));
         assert!(!git_version_is_supported("git version 2.35.9"));
         assert!(!git_version_is_supported("git version 2.36.0-rc1"));
         assert!(!git_version_is_supported("unrecognized version"));

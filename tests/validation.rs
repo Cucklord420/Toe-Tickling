@@ -423,10 +423,9 @@ fn assert_hidden_source_change_rejects_audits(index_flag: &str) {
 #[test]
 fn active_clean_filter_is_rejected_before_content_hashing() {
     let dir = fixture();
-    let attributes = fs::read_to_string(dir.path().join(".gitattributes")).unwrap();
     fs::write(
         dir.path().join(".gitattributes"),
-        format!("{attributes}*.rs filter=audit-probe\n"),
+        "*.rs filter=audit-probe\n",
     )
     .unwrap();
     assert!(
