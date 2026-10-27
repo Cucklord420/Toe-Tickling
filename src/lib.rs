@@ -443,7 +443,13 @@ fn relative_git_path(path: &[u8]) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn require_index_content_matches_worktree(root: &Path) -> Result<()> {
+struct IndexedFile {
+    mode: String,
+    object_id: String,
+    path: PathBuf,
+}
+
+fn read_indexed_files(root: &Path) -> Result<Vec<IndexedFile>> {
     let index = git_command(root)
         .args([
             "-c",
@@ -457,6 +463,7 @@ fn require_index_content_matches_worktree(root: &Path) -> Result<()> {
         .map_err(|_| "Cannot verify audit checkout state".to_string())?;
     require(index.status.success(), "Cannot verify audit checkout state")?;
 
+    let mut files = Vec::new();
     for entry in index
         .stdout
         .split(|byte| *byte == 0)
@@ -484,11 +491,77 @@ fn require_index_content_matches_worktree(root: &Path) -> Result<()> {
             "Audit requires a complete Git checkout",
         )?;
         let object_id = std::str::from_utf8(object_id)
-            .map_err(|_| "Audit requires a complete Git checkout".to_string())?;
+            .map_err(|_| "Audit requires a complete Git checkout".to_string())?
+            .to_owned();
         let mode = std::str::from_utf8(mode)
-            .map_err(|_| "Audit requires a complete Git checkout".to_string())?;
+            .map_err(|_| "Audit requires a complete Git checkout".to_string())?
+            .to_owned();
         let path = relative_git_path(&entry[separator + 1..])?;
-        let metadata = fs::symlink_metadata(root.join(&path))
+        files.push(IndexedFile {
+            mode,
+            object_id,
+            path,
+        });
+    }
+    Ok(files)
+}
+
+fn require_no_external_clean_filter(root: &Path, path: &Path, cached: bool) -> Result<()> {
+    let mut command = git_command(root);
+    command.args([
+        "-c",
+        "core.fsmonitor=false",
+        "--no-optional-locks",
+        "check-attr",
+    ]);
+    if cached {
+        command.arg("--cached");
+    }
+    let attributes = command
+        .args(["-z", "filter", "--"])
+        .arg(path)
+        .output()
+        .map_err(|_| "Cannot verify audit checkout state".to_string())?;
+    require(
+        attributes.status.success(),
+        "Cannot verify audit checkout state",
+    )?;
+
+    let mut fields = attributes.stdout.split(|byte| *byte == 0);
+    let path = fields
+        .next()
+        .ok_or_else(|| "Audit requires a complete Git checkout".to_string())?;
+    let attribute = fields
+        .next()
+        .ok_or_else(|| "Audit requires a complete Git checkout".to_string())?;
+    let value = fields
+        .next()
+        .ok_or_else(|| "Audit requires a complete Git checkout".to_string())?;
+    let terminator = fields
+        .next()
+        .ok_or_else(|| "Audit requires a complete Git checkout".to_string())?;
+    require(
+        !path.is_empty()
+            && attribute == b"filter"
+            && matches!(value, b"unspecified" | b"unset")
+            && terminator.is_empty()
+            && fields.next().is_none(),
+        "Audit requires a complete Git checkout",
+    )
+}
+
+fn require_no_active_clean_filters(root: &Path, files: &[IndexedFile]) -> Result<()> {
+    for file in files {
+        require_no_external_clean_filter(root, &file.path, false)?;
+        require_no_external_clean_filter(root, &file.path, true)?;
+    }
+    Ok(())
+}
+
+fn require_index_content_matches_worktree(root: &Path, files: &[IndexedFile]) -> Result<()> {
+    for file in files {
+        let path = &file.path;
+        let metadata = fs::symlink_metadata(root.join(path))
             .map_err(|_| "Audit requires a complete Git checkout".to_string())?;
         require(
             metadata.file_type().is_file(),
@@ -498,7 +571,7 @@ fn require_index_content_matches_worktree(root: &Path) -> Result<()> {
         {
             use std::os::unix::fs::PermissionsExt;
             require(
-                (metadata.permissions().mode() & 0o111 != 0) == (mode == "100755"),
+                (metadata.permissions().mode() & 0o111 != 0) == (file.mode == "100755"),
                 "Audit requires a clean Git worktree",
             )?;
         }
@@ -514,7 +587,7 @@ fn require_index_content_matches_worktree(root: &Path) -> Result<()> {
             ])
             .arg(path_option)
             .arg("--")
-            .arg(&path)
+            .arg(path)
             .output()
             .map_err(|_| "Cannot verify audit checkout state".to_string())?;
         require(
@@ -524,7 +597,10 @@ fn require_index_content_matches_worktree(root: &Path) -> Result<()> {
         let actual = std::str::from_utf8(&actual.stdout)
             .map_err(|_| "Cannot verify audit checkout state".to_string())?
             .trim();
-        require(actual == object_id, "Audit requires a clean Git worktree")?;
+        require(
+            actual == file.object_id,
+            "Audit requires a clean Git worktree",
+        )?;
     }
     Ok(())
 }
@@ -562,6 +638,10 @@ fn require_complete_audit_checkout(root: &Path) -> Result<()> {
 
 fn require_clean_audit_worktree(root: &Path) -> Result<()> {
     require_complete_audit_checkout(root)?;
+    let indexed_files = read_indexed_files(root)?;
+    // Check both attribute views before either status or hash-object can apply
+    // an external clean filter.
+    require_no_active_clean_filters(root, &indexed_files)?;
     let status = git_command(root)
         .args([
             "-c",
@@ -585,7 +665,7 @@ fn require_clean_audit_worktree(root: &Path) -> Result<()> {
         status.stdout.is_empty(),
         "Audit requires a clean Git worktree",
     )?;
-    require_index_content_matches_worktree(root)
+    require_index_content_matches_worktree(root, &indexed_files)
 }
 
 fn require_audit_head(root: &Path, revision: &str) -> Result<()> {

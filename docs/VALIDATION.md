@@ -2,9 +2,11 @@
 
 ## Audit receipt working-tree guard
 
-Audit receipt creation and validation require Git 2.36.0 or newer. Older versions can interpret core.fsmonitor=false as a hook path rather than the boolean setting. The guard compares each tracked stage-zero regular file's filtered git hash-object --path=<path> digest with its index object ID, in addition to Git status checks. It rejects symlinks, submodules, and unmerged index entries when it cannot verify them safely. hash-object does not write objects unless -w is supplied.
+Audit receipt creation and validation require Git 2.36.0 or newer. Older versions can interpret core.fsmonitor=false as a hook path rather than the boolean setting.
 
-See [Git configuration](https://git-scm.com/docs/git-config#Documentation/git-config.txt-corefsmonitor) and [git hash-object](https://git-scm.com/docs/git-hash-object).
+Before `git status` or hashing, the guard checks tracked paths against both working-tree and cached filter attributes and rejects any path whose `filter` attribute is set. This prevents status or hashing from invoking configured clean-filter commands. For other tracked stage-zero regular files, it compares the `git hash-object --path` digest with the index object ID, in addition to Git status checks. Symlinks, submodules, and unmerged index entries fail closed. `hash-object` does not write objects unless `-w` is supplied.
+
+See [Git configuration](https://git-scm.com/docs/git-config#Documentation/git-config.txt-corefsmonitor), [git check-attr](https://git-scm.com/docs/git-check-attr), and [git hash-object](https://git-scm.com/docs/git-hash-object).
 
 ## Policy 1.2.3 — local evidence, 10-16-2026
 
