@@ -390,14 +390,44 @@ fn git_version_is_supported(output: &str) -> bool {
     let Some(minor) = components.next().and_then(|part| part.parse::<u64>().ok()) else {
         return false;
     };
-    let Some(patch) = components
-        .next()
-        .and_then(|part| part.split_whitespace().next())
+    let Some(patch_component) = components.next() else {
+        return false;
+    };
+    let patch_length = patch_component
+        .bytes()
+        .take_while(u8::is_ascii_digit)
+        .count();
+    let Some(patch) = patch_component
+        .get(..patch_length)
         .and_then(|part| part.parse::<u64>().ok())
     else {
         return false;
     };
+    let patch_suffix = &patch_component[patch_length..];
+    let remaining: Vec<_> = components.collect();
+    let supported_vendor_suffix = if patch_suffix.is_empty() {
+        remaining.is_empty()
+            || (remaining.len() == 2
+                && remaining[0] == "windows"
+                && remaining[1].parse::<u64>().is_ok())
+    } else {
+        remaining.is_empty() && is_apple_git_suffix(patch_suffix)
+    };
+    if !supported_vendor_suffix {
+        return false;
+    }
     (major, minor, patch) >= (2, 36, 0)
+}
+
+fn is_apple_git_suffix(suffix: &str) -> bool {
+    let Some(build) = suffix
+        .trim_start_matches(char::is_whitespace)
+        .strip_prefix("(Apple Git-")
+        .and_then(|suffix| suffix.strip_suffix(')'))
+    else {
+        return false;
+    };
+    !build.is_empty() && build.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 fn require_supported_git(root: &Path) -> Result<()> {
@@ -506,7 +536,25 @@ fn read_indexed_files(root: &Path) -> Result<Vec<IndexedFile>> {
     Ok(files)
 }
 
-fn require_no_external_clean_filter(root: &Path, path: &Path, cached: bool) -> Result<()> {
+// Keep the command line well below platform limits, including Windows.
+const MAX_CHECK_ATTR_BATCH_ARGUMENT_SIZE: usize = 8 * 1024;
+
+fn git_path_argument_size(path: &Path) -> usize {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        path.as_os_str().encode_wide().count()
+    }
+    #[cfg(not(windows))]
+    {
+        path.as_os_str().as_encoded_bytes().len()
+    }
+}
+
+fn require_filter_attribute_is_unset(root: &Path, paths: &[&Path], cached: bool) -> Result<()> {
+    if paths.is_empty() {
+        return Ok(());
+    }
     let mut command = git_command(root);
     command.args([
         "-c",
@@ -519,7 +567,7 @@ fn require_no_external_clean_filter(root: &Path, path: &Path, cached: bool) -> R
     }
     let attributes = command
         .args(["-z", "filter", "--"])
-        .arg(path)
+        .args(paths)
         .output()
         .map_err(|_| "Cannot verify audit checkout state".to_string())?;
     require(
@@ -528,32 +576,54 @@ fn require_no_external_clean_filter(root: &Path, path: &Path, cached: bool) -> R
     )?;
 
     let mut fields = attributes.stdout.split(|byte| *byte == 0);
-    let path = fields
-        .next()
-        .ok_or_else(|| "Audit requires a complete Git checkout".to_string())?;
-    let attribute = fields
-        .next()
-        .ok_or_else(|| "Audit requires a complete Git checkout".to_string())?;
-    let value = fields
-        .next()
-        .ok_or_else(|| "Audit requires a complete Git checkout".to_string())?;
+    for _ in paths {
+        let path = fields
+            .next()
+            .ok_or_else(|| "Audit requires a complete Git checkout".to_string())?;
+        let attribute = fields
+            .next()
+            .ok_or_else(|| "Audit requires a complete Git checkout".to_string())?;
+        let value = fields
+            .next()
+            .ok_or_else(|| "Audit requires a complete Git checkout".to_string())?;
+        require(
+            !path.is_empty()
+                && attribute == b"filter"
+                && matches!(value, b"unspecified" | b"unset"),
+            "Audit requires a complete Git checkout",
+        )?;
+    }
     let terminator = fields
         .next()
         .ok_or_else(|| "Audit requires a complete Git checkout".to_string())?;
     require(
-        !path.is_empty()
-            && attribute == b"filter"
-            && matches!(value, b"unspecified" | b"unset")
-            && terminator.is_empty()
-            && fields.next().is_none(),
+        terminator.is_empty() && fields.next().is_none(),
         "Audit requires a complete Git checkout",
     )
 }
 
 fn require_no_active_clean_filters(root: &Path, files: &[IndexedFile]) -> Result<()> {
-    for file in files {
-        require_no_external_clean_filter(root, &file.path, false)?;
-        require_no_external_clean_filter(root, &file.path, true)?;
+    for cached in [false, true] {
+        let mut paths = Vec::new();
+        let mut batch_size = 0usize;
+        for file in files {
+            let path = file.path.as_path();
+            let path_size = git_path_argument_size(path).saturating_add(1);
+            if !paths.is_empty()
+                && batch_size.saturating_add(path_size) > MAX_CHECK_ATTR_BATCH_ARGUMENT_SIZE
+            {
+                require_filter_attribute_is_unset(root, &paths, cached)?;
+                paths.clear();
+                batch_size = 0;
+            }
+            if path_size > MAX_CHECK_ATTR_BATCH_ARGUMENT_SIZE {
+                require_filter_attribute_is_unset(root, &[path], cached)?;
+            } else {
+                paths.push(path);
+                batch_size = batch_size.saturating_add(path_size);
+            }
+        }
+        require_filter_attribute_is_unset(root, &paths, cached)?;
     }
     Ok(())
 }
@@ -836,6 +906,7 @@ mod git_version_tests {
         ));
         assert!(!git_version_is_supported("git version 2.35.9"));
         assert!(!git_version_is_supported("git version 2.36.0-rc1"));
+        assert!(!git_version_is_supported("git version 2.36.0.rc1"));
         assert!(!git_version_is_supported("unrecognized version"));
     }
 }

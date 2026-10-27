@@ -425,6 +425,7 @@ fn active_clean_filter_is_rejected_before_git_status_or_hashing() {
     let dir = fixture();
     install_filter_attributes(&dir, "*.rs filter=audit-probe\n");
     configure_audit_filter_probe(dir.path());
+    modify_filtered_source(dir.path());
 
     assert_audit_rejects_active_filter(dir.path());
 }
@@ -436,6 +437,7 @@ fn active_clean_filter_invalidates_receipt_before_git_status() {
     let audit = complete(dir.path());
     install_filter_attributes(&dir, "*.rs filter=audit-probe\n");
     configure_audit_filter_probe(dir.path());
+    modify_filtered_source(dir.path());
 
     let result = validate_audit(dir.path(), &policy, &audit, now());
     assert!(
@@ -470,6 +472,7 @@ fn worktree_clean_filter_is_rejected_before_git_status() {
     )
     .unwrap();
     configure_audit_filter_probe(dir.path());
+    modify_filtered_source(dir.path());
 
     assert_audit_rejects_active_filter(dir.path());
 }
@@ -517,6 +520,10 @@ fn configure_audit_filter_probe(root: &Path) {
             .status
             .success()
     );
+}
+
+fn modify_filtered_source(root: &Path) {
+    fs::write(root.join("src/fixture.rs"), "pub const VALUE: u8 = 2;\n").unwrap();
 }
 
 fn assert_audit_rejects_active_filter(root: &Path) {
