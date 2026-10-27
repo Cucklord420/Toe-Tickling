@@ -750,10 +750,11 @@ fn broken_link_and_non_rust_source_are_rejected() {
 #[test]
 fn malformed_or_unknown_schema_fields_fail_closed() {
     let dir = fixture();
+    let audit = complete(dir.path());
     let path = dir.path().join("bad.json");
     fs::write(&path, "{truncated").unwrap();
     assert!(read_json::<Audit>(&path).is_err());
-    let mut value = serde_json::to_value(complete(dir.path())).unwrap();
+    let mut value = serde_json::to_value(audit).unwrap();
     value["waive_failures"] = true.into();
     write_json(&path, &value).unwrap();
     assert!(read_json::<Audit>(&path).is_err());
