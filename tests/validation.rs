@@ -421,6 +421,40 @@ fn assert_hidden_source_change_rejects_audits(index_flag: &str) {
 }
 
 #[test]
+fn active_clean_filter_is_rejected_before_content_hashing() {
+    let dir = fixture();
+    let attributes = fs::read_to_string(dir.path().join(".gitattributes")).unwrap();
+    fs::write(
+        dir.path().join(".gitattributes"),
+        format!("{attributes}*.rs filter=audit-probe\n"),
+    )
+    .unwrap();
+    assert!(
+        clean_git(dir.path(), &["add", "--", ".gitattributes"])
+            .status
+            .success()
+    );
+    assert!(
+        clean_git(dir.path(), &["commit", "-qm", "Fictional filter fixture"])
+            .status
+            .success()
+    );
+    assert!(
+        clean_git(dir.path(), &["config", "filter.audit-probe.clean", "false"])
+            .status
+            .success()
+    );
+
+    let error = new_audit(dir.path(), "Fictional filter task".into()).unwrap_err();
+    assert!(
+        error.contains("complete Git checkout"),
+        "Active external filter should fail closed before hashing: {error}"
+    );
+    assert!(!error.contains("src/fixture.rs"));
+    assert!(!error.contains(dir.path().to_string_lossy().as_ref()));
+}
+
+#[test]
 fn assume_unchanged_source_changes_reject_creation_and_invalidate_receipts() {
     assert_hidden_source_change_rejects_audits("--assume-unchanged");
 }
