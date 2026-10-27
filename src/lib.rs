@@ -3,8 +3,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    ffi::OsString,
     fs,
-    path::Path,
+    path::{Component, Path, PathBuf},
 };
 use time::{Date, Month, OffsetDateTime, format_description::well_known::Rfc3339};
 
@@ -378,9 +379,156 @@ fn check_disposition(
     Ok(())
 }
 
+fn git_version_is_supported(output: &str) -> bool {
+    let Some(version) = output.trim().strip_prefix("git version ") else {
+        return false;
+    };
+    let mut components = version.split('.');
+    let Some(major) = components.next().and_then(|part| part.parse::<u64>().ok()) else {
+        return false;
+    };
+    let Some(minor) = components.next().and_then(|part| part.parse::<u64>().ok()) else {
+        return false;
+    };
+    let Some(patch) = components.next().and_then(|part| part.parse::<u64>().ok()) else {
+        return false;
+    };
+    (major, minor, patch) >= (2, 36, 0)
+}
+
+fn require_supported_git(root: &Path) -> Result<()> {
+    let version = git_command(root)
+        .arg("--version")
+        .output()
+        .map_err(|_| "Cannot verify audit checkout state".to_string())?;
+    require(
+        version.status.success()
+            && std::str::from_utf8(&version.stdout)
+                .ok()
+                .is_some_and(git_version_is_supported),
+        "Audit requires Git 2.36.0 or newer",
+    )
+}
+
+fn relative_git_path(path: &[u8]) -> Result<PathBuf> {
+    #[cfg(unix)]
+    let path = {
+        use std::os::unix::ffi::OsStringExt;
+        OsString::from_vec(path.to_vec())
+    };
+    #[cfg(windows)]
+    let path = OsString::from(
+        std::str::from_utf8(path)
+            .map_err(|_| "Audit requires a complete Git checkout".to_string())?,
+    );
+    #[cfg(not(any(unix, windows)))]
+    let path = OsString::from(
+        std::str::from_utf8(path)
+            .map_err(|_| "Audit requires a complete Git checkout".to_string())?,
+    );
+
+    let path = PathBuf::from(path);
+    require(
+        !path.as_os_str().is_empty()
+            && path.is_relative()
+            && path
+                .components()
+                .all(|component| matches!(component, Component::Normal(_))),
+        "Audit requires a complete Git checkout",
+    )?;
+    Ok(path)
+}
+
+fn require_index_content_matches_worktree(root: &Path) -> Result<()> {
+    let index = git_command(root)
+        .args([
+            "-c",
+            "core.fsmonitor=false",
+            "--no-optional-locks",
+            "ls-files",
+            "--stage",
+            "-z",
+        ])
+        .output()
+        .map_err(|_| "Cannot verify audit checkout state".to_string())?;
+    require(index.status.success(), "Cannot verify audit checkout state")?;
+
+    for entry in index
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+    {
+        let Some(separator) = entry.iter().position(|byte| *byte == b'\t') else {
+            return Err("Audit requires a complete Git checkout".into());
+        };
+        let mut fields = entry[..separator].split(|byte| *byte == b' ');
+        let Some(mode) = fields.next() else {
+            return Err("Audit requires a complete Git checkout".into());
+        };
+        let Some(object_id) = fields.next() else {
+            return Err("Audit requires a complete Git checkout".into());
+        };
+        let Some(stage) = fields.next() else {
+            return Err("Audit requires a complete Git checkout".into());
+        };
+        require(
+            fields.next().is_none()
+                && matches!(mode, b"100644" | b"100755")
+                && stage == b"0"
+                && matches!(object_id.len(), 40 | 64)
+                && object_id.iter().all(u8::is_ascii_hexdigit),
+            "Audit requires a complete Git checkout",
+        )?;
+        let object_id = std::str::from_utf8(object_id)
+            .map_err(|_| "Audit requires a complete Git checkout".to_string())?;
+        let mode = std::str::from_utf8(mode)
+            .map_err(|_| "Audit requires a complete Git checkout".to_string())?;
+        let path = relative_git_path(&entry[separator + 1..])?;
+        let metadata = fs::symlink_metadata(root.join(&path))
+            .map_err(|_| "Audit requires a complete Git checkout".to_string())?;
+        require(
+            metadata.file_type().is_file(),
+            "Audit requires a complete Git checkout",
+        )?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            require(
+                (metadata.permissions().mode() & 0o111 != 0) == (mode == "100755"),
+                "Audit requires a clean Git worktree",
+            )?;
+        }
+
+        let mut path_option = OsString::from("--path=");
+        path_option.push(path.as_os_str());
+        let actual = git_command(root)
+            .args([
+                "-c",
+                "core.fsmonitor=false",
+                "--no-optional-locks",
+                "hash-object",
+            ])
+            .arg(path_option)
+            .arg("--")
+            .arg(&path)
+            .output()
+            .map_err(|_| "Cannot verify audit checkout state".to_string())?;
+        require(
+            actual.status.success(),
+            "Cannot verify audit checkout state",
+        )?;
+        let actual = std::str::from_utf8(&actual.stdout)
+            .map_err(|_| "Cannot verify audit checkout state".to_string())?
+            .trim();
+        require(actual == object_id, "Audit requires a clean Git worktree")?;
+    }
+    Ok(())
+}
+
 // Source state covers tracked files and non-ignored untracked files. Ignored
 // private data and build outputs intentionally remain outside this contract.
 fn require_complete_audit_checkout(root: &Path) -> Result<()> {
+    require_supported_git(root)?;
     // Force status to inspect the worktree instead of trusting FSMonitor or
     // untracked-cache entries that can hide source changes.
     let index = git_command(root)
@@ -432,7 +580,8 @@ fn require_clean_audit_worktree(root: &Path) -> Result<()> {
     require(
         status.stdout.is_empty(),
         "Audit requires a clean Git worktree",
-    )
+    )?;
+    require_index_content_matches_worktree(root)
 }
 
 fn require_audit_head(root: &Path, revision: &str) -> Result<()> {

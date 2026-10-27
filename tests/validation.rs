@@ -146,13 +146,36 @@ fn clean_git(root: &Path, args: &[&str]) -> std::process::Output {
     command.output().unwrap()
 }
 
-fn fsmonitor_hook_command(path: &Path) -> String {
-    let path = path.to_string_lossy().replace('\\', "/");
-    #[cfg(windows)]
-    let path = {
-        let (drive, rest) = path.split_once(":/").unwrap();
-        format!("/{}/{}", drive.to_ascii_lowercase(), rest)
+fn normalize_fsmonitor_path(path: &str) -> String {
+    let path = path.replace('\\', "/");
+    let path = if path
+        .get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("//?/UNC/"))
+    {
+        format!("//{}", &path[8..])
+    } else if path
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("//?/"))
+    {
+        path[4..].to_owned()
+    } else {
+        path
     };
+
+    let bytes = path.as_bytes();
+    if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/' {
+        format!(
+            "/{}/{}",
+            (bytes[0] as char).to_ascii_lowercase(),
+            &path[3..]
+        )
+    } else {
+        path
+    }
+}
+
+fn fsmonitor_hook_command(path: &Path) -> String {
+    let path = normalize_fsmonitor_path(&path.to_string_lossy());
     format!("sh '{}'", path.replace('\'', "'\\''"))
 }
 
