@@ -589,3 +589,17 @@ pub fn new_audit(root: &Path, task: String) -> Result<Audit> {
     require_clean_audit_worktree(root)?;
     Ok(audit)
 }
+
+#[cfg(test)]
+mod git_version_tests {
+    use super::git_version_is_supported;
+
+    #[test]
+    fn audit_git_version_gate_accepts_supported_releases_and_fails_closed() {
+        assert!(git_version_is_supported("git version 2.36.0"));
+        assert!(git_version_is_supported("git version 2.53.0.windows.3"));
+        assert!(!git_version_is_supported("git version 2.35.9"));
+        assert!(!git_version_is_supported("git version 2.36.0-rc1"));
+        assert!(!git_version_is_supported("unrecognized version"));
+    }
+}
