@@ -551,7 +551,7 @@ fn git_path_argument_size(path: &Path) -> usize {
     }
 }
 
-fn require_no_selected_filter_attribute(root: &Path, paths: &[&Path], cached: bool) -> Result<()> {
+fn require_filter_attribute_is_unset(root: &Path, paths: &[&Path], cached: bool) -> Result<()> {
     if paths.is_empty() {
         return Ok(());
     }
@@ -561,16 +561,12 @@ fn require_no_selected_filter_attribute(root: &Path, paths: &[&Path], cached: bo
         "core.fsmonitor=false",
         "--no-optional-locks",
         "check-attr",
-        "--all",
     ]);
     if cached {
         command.arg("--cached");
     }
-    // The single-attribute form conflates literal filter names "unspecified"
-    // and "unset" with non-active states. `--all` omits non-active states but
-    // includes those literal values, so any listed filter attribute is active.
     let attributes = command
-        .args(["-z", "--"])
+        .args(["-z", "filter", "--"])
         .args(paths)
         .output()
         .map_err(|_| "Cannot verify audit checkout state".to_string())?;
@@ -579,42 +575,31 @@ fn require_no_selected_filter_attribute(root: &Path, paths: &[&Path], cached: bo
         "Cannot verify audit checkout state",
     )?;
 
-    let requested_paths: BTreeSet<_> = paths
-        .iter()
-        .map(|path| {
-            path.to_str()
-                .ok_or_else(|| "Cannot verify audit checkout state".to_string())
-        })
-        .collect::<Result<_>>()?;
-    if attributes.stdout.is_empty() {
-        return Ok(());
-    }
-    require(
-        attributes.stdout.ends_with(&[0]),
-        "Audit requires a complete Git checkout",
-    )?;
-    let output = &attributes.stdout[..attributes.stdout.len() - 1];
-    require(!output.is_empty(), "Audit requires a complete Git checkout")?;
-    let mut fields = output.split(|byte| *byte == 0);
-    while let Some(path) = fields.next() {
+    let mut fields = attributes.stdout.split(|byte| *byte == 0);
+    for _ in paths {
+        let path = fields
+            .next()
+            .ok_or_else(|| "Audit requires a complete Git checkout".to_string())?;
         let attribute = fields
             .next()
             .ok_or_else(|| "Audit requires a complete Git checkout".to_string())?;
-        let _value = fields
+        let value = fields
             .next()
             .ok_or_else(|| "Audit requires a complete Git checkout".to_string())?;
-        let path = std::str::from_utf8(path)
-            .map_err(|_| "Audit requires a complete Git checkout".to_string())?;
         require(
-            requested_paths.contains(path) && !attribute.is_empty(),
-            "Audit requires a complete Git checkout",
-        )?;
-        require(
-            attribute != b"filter",
+            !path.is_empty()
+                && attribute == b"filter"
+                && matches!(value, b"unspecified" | b"unset"),
             "Audit requires a complete Git checkout",
         )?;
     }
-    Ok(())
+    let terminator = fields
+        .next()
+        .ok_or_else(|| "Audit requires a complete Git checkout".to_string())?;
+    require(
+        terminator.is_empty() && fields.next().is_none(),
+        "Audit requires a complete Git checkout",
+    )
 }
 
 fn require_no_active_clean_filters(root: &Path, files: &[IndexedFile]) -> Result<()> {
@@ -627,20 +612,36 @@ fn require_no_active_clean_filters(root: &Path, files: &[IndexedFile]) -> Result
             if !paths.is_empty()
                 && batch_size.saturating_add(path_size) > MAX_CHECK_ATTR_BATCH_ARGUMENT_SIZE
             {
-                require_no_selected_filter_attribute(root, &paths, cached)?;
+                require_filter_attribute_is_unset(root, &paths, cached)?;
                 paths.clear();
                 batch_size = 0;
             }
             if path_size > MAX_CHECK_ATTR_BATCH_ARGUMENT_SIZE {
-                require_no_selected_filter_attribute(root, &[path], cached)?;
+                require_filter_attribute_is_unset(root, &[path], cached)?;
             } else {
                 paths.push(path);
                 batch_size = batch_size.saturating_add(path_size);
             }
         }
-        require_no_selected_filter_attribute(root, &paths, cached)?;
+        require_filter_attribute_is_unset(root, &paths, cached)?;
     }
     Ok(())
+}
+
+fn disable_ambiguous_filter_commands(command: &mut std::process::Command) {
+    // `check-attr` cannot distinguish these literal driver names from its
+    // special inactive states, so neutralize both execution mechanisms before
+    // status or path-aware hashing can consult them.
+    command.args([
+        "-c",
+        "filter.unspecified.clean=",
+        "-c",
+        "filter.unspecified.process=",
+        "-c",
+        "filter.unset.clean=",
+        "-c",
+        "filter.unset.process=",
+    ]);
 }
 
 fn require_index_content_matches_worktree(root: &Path, files: &[IndexedFile]) -> Result<()> {
@@ -663,13 +664,11 @@ fn require_index_content_matches_worktree(root: &Path, files: &[IndexedFile]) ->
 
         let mut path_option = OsString::from("--path=");
         path_option.push(path.as_os_str());
-        let actual = git_command(root)
-            .args([
-                "-c",
-                "core.fsmonitor=false",
-                "--no-optional-locks",
-                "hash-object",
-            ])
+        let mut hash_command = git_command(root);
+        hash_command.args(["-c", "core.fsmonitor=false"]);
+        disable_ambiguous_filter_commands(&mut hash_command);
+        let actual = hash_command
+            .args(["--no-optional-locks", "hash-object"])
             .arg(path_option)
             .arg("--")
             .arg(path)
@@ -727,10 +726,11 @@ fn require_clean_audit_worktree(root: &Path) -> Result<()> {
     // Check both attribute views before either status or hash-object can apply
     // an external clean filter.
     require_no_active_clean_filters(root, &indexed_files)?;
-    let status = git_command(root)
+    let mut status_command = git_command(root);
+    status_command.args(["-c", "core.fsmonitor=false"]);
+    disable_ambiguous_filter_commands(&mut status_command);
+    let status = status_command
         .args([
-            "-c",
-            "core.fsmonitor=false",
             "-c",
             "core.untrackedCache=false",
             "--no-optional-locks",

@@ -435,23 +435,45 @@ fn active_clean_filter_is_rejected_before_git_status_or_hashing() {
 }
 
 #[test]
-fn ambiguous_filter_driver_names_are_rejected_before_git_status_or_hashing() {
+fn ambiguous_filter_clean_commands_are_neutralized_before_status_or_hashing() {
     for driver in ["unspecified", "unset"] {
         let dir = fixture();
         install_filter_attributes(&dir, &format!("*.rs filter={driver}\n"));
         hide_same_size_tracked_change_from_stat_cache(dir.path());
         configure_audit_filter_probe(dir.path(), driver);
 
-        assert_audit_rejects_active_filter(dir.path());
+        let result = new_audit(dir.path(), "Fictional ambiguous-filter task".into());
+        assert!(
+            !dir.path().join(".git/filter-probe-ran").exists(),
+            "Audit invoked the ambiguous {driver} clean filter"
+        );
+        let error = result.unwrap_err();
+        assert!(!error.contains("src/fixture.rs"));
+        assert!(!error.contains("pub const VALUE"));
+        assert!(!error.contains(dir.path().to_string_lossy().as_ref()));
     }
 }
 
 #[test]
-fn unset_filter_attribute_does_not_block_a_clean_audit() {
-    let dir = fixture();
-    install_filter_attributes(&dir, "*.rs -filter\n");
+fn inactive_ambiguous_filter_states_do_not_run_configured_drivers() {
+    for (attributes, driver) in [
+        ("*.rs -filter\n", "unset"),
+        ("*.rs !filter\n", "unspecified"),
+    ] {
+        let dir = fixture();
+        install_filter_attributes(&dir, attributes);
+        configure_audit_filter_probe(dir.path(), driver);
 
-    assert!(new_audit(dir.path(), "Fictional unset-filter task".into()).is_ok());
+        let result = new_audit(dir.path(), "Fictional inactive-filter task".into());
+        assert!(
+            !dir.path().join(".git/filter-probe-ran").exists(),
+            "Inactive {driver} filter unexpectedly ran"
+        );
+        assert!(
+            result.is_ok(),
+            "Inactive {driver} state blocked a clean audit"
+        );
+    }
 }
 
 #[test]
@@ -477,25 +499,23 @@ fn active_clean_filter_invalidates_receipt_before_git_status() {
 }
 
 #[test]
-fn ambiguous_filter_driver_names_invalidate_receipts_without_running_filters() {
+fn ambiguous_filter_process_commands_do_not_run_during_receipt_validation() {
     for driver in ["unspecified", "unset"] {
         let dir = fixture();
         let policy = load_policy(dir.path()).unwrap();
         let audit = complete(dir.path());
         install_filter_attributes(&dir, &format!("*.rs filter={driver}\n"));
         hide_same_size_tracked_change_from_stat_cache(dir.path());
-        configure_audit_filter_probe(dir.path(), driver);
+        configure_audit_process_filter_probe(dir.path(), driver);
 
         let result = validate_audit(dir.path(), &policy, &audit, now());
         assert!(
-            !dir.path().join(".git/filter-probe-ran").exists(),
-            "Audit validation invoked the ambiguous {driver} clean filter"
+            !dir.path().join(".git/filter-process-probe-ran").exists(),
+            "Audit validation invoked the ambiguous {driver} process filter"
         );
         let error = result.unwrap_err();
-        assert!(
-            error.contains("complete Git checkout"),
-            "Ambiguous external filter should invalidate the receipt: {error}"
-        );
+        assert!(!error.contains("src/fixture.rs"));
+        assert!(!error.contains("pub const VALUE"));
         assert!(!error.contains(dir.path().to_string_lossy().as_ref()));
     }
 }
@@ -560,6 +580,28 @@ fn configure_audit_filter_probe(root: &Path, driver: &str) {
                 "config",
                 clean_key.as_str(),
                 "echo ran >> .git/filter-probe-ran && cat",
+            ],
+        )
+        .status
+        .success()
+    );
+    assert!(
+        clean_git(root, &["config", required_key.as_str(), "true"])
+            .status
+            .success()
+    );
+}
+
+fn configure_audit_process_filter_probe(root: &Path, driver: &str) {
+    let process_key = format!("filter.{driver}.process");
+    let required_key = format!("filter.{driver}.required");
+    assert!(
+        clean_git(
+            root,
+            &[
+                "config",
+                process_key.as_str(),
+                "echo ran >> .git/filter-process-probe-ran && exit 1",
             ],
         )
         .status
