@@ -1,5 +1,13 @@
 # Rust validation
 
+## Audit receipt working-tree guard
+
+Audit receipt creation and validation require Git 2.36.0 or newer. Older versions can interpret core.fsmonitor=false as a hook path rather than the boolean setting.
+
+Before `git status` or hashing, the guard checks tracked paths against both working-tree and cached filter attributes and rejects any path whose `filter` attribute is set. This prevents status or hashing from invoking configured clean-filter commands. For other tracked stage-zero regular files, it compares the `git hash-object --path` digest with the index object ID, in addition to Git status checks. Symlinks, submodules, and unmerged index entries fail closed. `hash-object` does not write objects unless `-w` is supplied.
+
+See [Git configuration](https://git-scm.com/docs/git-config#Documentation/git-config.txt-corefsmonitor), [git check-attr](https://git-scm.com/docs/git-check-attr), and [git hash-object](https://git-scm.com/docs/git-hash-object).
+
 ## Policy 1.2.3 — local evidence, 10-16-2026
 
 Base: `4f519c3ea1ed120d36aefea014fbf31bc0593304`; review branch `audit/preserve-verification-history`. Linux x86_64, Rust 1.99.1, Cargo edition 2024. The official release notes retrieved on this date also identify 1.99.1 as stable; no compiler or dependency update was made. Consulted the official Rust Book's testing guidance and relevant standard-library/Cargo/Clippy/rustfmt/edition documentation for the focused validator change; no exhaustive Reference read or performance claim is made.

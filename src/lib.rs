@@ -3,8 +3,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    ffi::OsString,
     fs,
-    path::Path,
+    path::{Component, Path, PathBuf},
 };
 use time::{Date, Month, OffsetDateTime, format_description::well_known::Rfc3339};
 
@@ -377,7 +378,394 @@ fn check_disposition(
     }
     Ok(())
 }
+
+fn git_version_is_supported(output: &str) -> bool {
+    let Some(version) = output.trim().strip_prefix("git version ") else {
+        return false;
+    };
+    let mut components = version.split('.');
+    let Some(major) = components.next().and_then(|part| part.parse::<u64>().ok()) else {
+        return false;
+    };
+    let Some(minor) = components.next().and_then(|part| part.parse::<u64>().ok()) else {
+        return false;
+    };
+    let Some(patch_component) = components.next() else {
+        return false;
+    };
+    let patch_length = patch_component
+        .bytes()
+        .take_while(u8::is_ascii_digit)
+        .count();
+    let Some(patch) = patch_component
+        .get(..patch_length)
+        .and_then(|part| part.parse::<u64>().ok())
+    else {
+        return false;
+    };
+    let patch_suffix = &patch_component[patch_length..];
+    let remaining: Vec<_> = components.collect();
+    let supported_vendor_suffix = if patch_suffix.is_empty() {
+        remaining.is_empty()
+            || (remaining.len() == 2
+                && remaining[0] == "windows"
+                && remaining[1].parse::<u64>().is_ok())
+    } else {
+        remaining.is_empty() && is_apple_git_suffix(patch_suffix)
+    };
+    if !supported_vendor_suffix {
+        return false;
+    }
+    (major, minor, patch) >= (2, 36, 0)
+}
+
+fn is_apple_git_suffix(suffix: &str) -> bool {
+    let Some(build) = suffix
+        .trim_start_matches(char::is_whitespace)
+        .strip_prefix("(Apple Git-")
+        .and_then(|suffix| suffix.strip_suffix(')'))
+    else {
+        return false;
+    };
+    !build.is_empty() && build.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn require_supported_git(root: &Path) -> Result<()> {
+    let version = git_command(root)
+        .arg("--version")
+        .output()
+        .map_err(|_| "Cannot verify audit checkout state".to_string())?;
+    require(
+        version.status.success()
+            && std::str::from_utf8(&version.stdout)
+                .ok()
+                .is_some_and(git_version_is_supported),
+        "Audit requires Git 2.36.0 or newer",
+    )
+}
+
+fn relative_git_path(path: &[u8]) -> Result<PathBuf> {
+    #[cfg(unix)]
+    let path = {
+        use std::os::unix::ffi::OsStringExt;
+        OsString::from_vec(path.to_vec())
+    };
+    #[cfg(windows)]
+    let path = OsString::from(
+        std::str::from_utf8(path)
+            .map_err(|_| "Audit requires a complete Git checkout".to_string())?,
+    );
+    #[cfg(not(any(unix, windows)))]
+    let path = OsString::from(
+        std::str::from_utf8(path)
+            .map_err(|_| "Audit requires a complete Git checkout".to_string())?,
+    );
+
+    let path = PathBuf::from(path);
+    require(
+        !path.as_os_str().is_empty()
+            && path.is_relative()
+            && path
+                .components()
+                .all(|component| matches!(component, Component::Normal(_))),
+        "Audit requires a complete Git checkout",
+    )?;
+    Ok(path)
+}
+
+struct IndexedFile {
+    mode: String,
+    object_id: String,
+    path: PathBuf,
+}
+
+fn read_indexed_files(root: &Path) -> Result<Vec<IndexedFile>> {
+    let index = git_command(root)
+        .args([
+            "-c",
+            "core.fsmonitor=false",
+            "--no-optional-locks",
+            "ls-files",
+            "--stage",
+            "-z",
+        ])
+        .output()
+        .map_err(|_| "Cannot verify audit checkout state".to_string())?;
+    require(index.status.success(), "Cannot verify audit checkout state")?;
+
+    let mut files = Vec::new();
+    for entry in index
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+    {
+        let Some(separator) = entry.iter().position(|byte| *byte == b'\t') else {
+            return Err("Audit requires a complete Git checkout".into());
+        };
+        let mut fields = entry[..separator].split(|byte| *byte == b' ');
+        let Some(mode) = fields.next() else {
+            return Err("Audit requires a complete Git checkout".into());
+        };
+        let Some(object_id) = fields.next() else {
+            return Err("Audit requires a complete Git checkout".into());
+        };
+        let Some(stage) = fields.next() else {
+            return Err("Audit requires a complete Git checkout".into());
+        };
+        require(
+            fields.next().is_none()
+                && matches!(mode, b"100644" | b"100755")
+                && stage == b"0"
+                && matches!(object_id.len(), 40 | 64)
+                && object_id.iter().all(u8::is_ascii_hexdigit),
+            "Audit requires a complete Git checkout",
+        )?;
+        let object_id = std::str::from_utf8(object_id)
+            .map_err(|_| "Audit requires a complete Git checkout".to_string())?
+            .to_owned();
+        let mode = std::str::from_utf8(mode)
+            .map_err(|_| "Audit requires a complete Git checkout".to_string())?
+            .to_owned();
+        let path = relative_git_path(&entry[separator + 1..])?;
+        files.push(IndexedFile {
+            mode,
+            object_id,
+            path,
+        });
+    }
+    Ok(files)
+}
+
+// Keep the command line well below platform limits, including Windows.
+const MAX_CHECK_ATTR_BATCH_ARGUMENT_SIZE: usize = 8 * 1024;
+
+fn git_path_argument_size(path: &Path) -> usize {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        path.as_os_str().encode_wide().count()
+    }
+    #[cfg(not(windows))]
+    {
+        path.as_os_str().as_encoded_bytes().len()
+    }
+}
+
+fn require_filter_attribute_is_unset(root: &Path, paths: &[&Path], cached: bool) -> Result<()> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    let mut command = git_command(root);
+    command.args([
+        "-c",
+        "core.fsmonitor=false",
+        "--no-optional-locks",
+        "check-attr",
+    ]);
+    if cached {
+        command.arg("--cached");
+    }
+    let attributes = command
+        .args(["-z", "filter", "--"])
+        .args(paths)
+        .output()
+        .map_err(|_| "Cannot verify audit checkout state".to_string())?;
+    require(
+        attributes.status.success(),
+        "Cannot verify audit checkout state",
+    )?;
+
+    let mut fields = attributes.stdout.split(|byte| *byte == 0);
+    for _ in paths {
+        let path = fields
+            .next()
+            .ok_or_else(|| "Audit requires a complete Git checkout".to_string())?;
+        let attribute = fields
+            .next()
+            .ok_or_else(|| "Audit requires a complete Git checkout".to_string())?;
+        let value = fields
+            .next()
+            .ok_or_else(|| "Audit requires a complete Git checkout".to_string())?;
+        require(
+            !path.is_empty()
+                && attribute == b"filter"
+                && matches!(value, b"unspecified" | b"unset"),
+            "Audit requires a complete Git checkout",
+        )?;
+    }
+    let terminator = fields
+        .next()
+        .ok_or_else(|| "Audit requires a complete Git checkout".to_string())?;
+    require(
+        terminator.is_empty() && fields.next().is_none(),
+        "Audit requires a complete Git checkout",
+    )
+}
+
+fn require_no_active_clean_filters(root: &Path, files: &[IndexedFile]) -> Result<()> {
+    for cached in [false, true] {
+        let mut paths = Vec::new();
+        let mut batch_size = 0usize;
+        for file in files {
+            let path = file.path.as_path();
+            let path_size = git_path_argument_size(path).saturating_add(1);
+            if !paths.is_empty()
+                && batch_size.saturating_add(path_size) > MAX_CHECK_ATTR_BATCH_ARGUMENT_SIZE
+            {
+                require_filter_attribute_is_unset(root, &paths, cached)?;
+                paths.clear();
+                batch_size = 0;
+            }
+            if path_size > MAX_CHECK_ATTR_BATCH_ARGUMENT_SIZE {
+                require_filter_attribute_is_unset(root, &[path], cached)?;
+            } else {
+                paths.push(path);
+                batch_size = batch_size.saturating_add(path_size);
+            }
+        }
+        require_filter_attribute_is_unset(root, &paths, cached)?;
+    }
+    Ok(())
+}
+
+fn disable_ambiguous_filter_commands(command: &mut std::process::Command) {
+    // `check-attr` cannot distinguish these literal driver names from its
+    // special inactive states, so neutralize both execution mechanisms before
+    // status or path-aware hashing can consult them.
+    command.args([
+        "-c",
+        "filter.unspecified.clean=",
+        "-c",
+        "filter.unspecified.process=",
+        "-c",
+        "filter.unset.clean=",
+        "-c",
+        "filter.unset.process=",
+    ]);
+}
+
+fn require_index_content_matches_worktree(root: &Path, files: &[IndexedFile]) -> Result<()> {
+    for file in files {
+        let path = &file.path;
+        let metadata = fs::symlink_metadata(root.join(path))
+            .map_err(|_| "Audit requires a complete Git checkout".to_string())?;
+        require(
+            metadata.file_type().is_file(),
+            "Audit requires a complete Git checkout",
+        )?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            require(
+                (metadata.permissions().mode() & 0o111 != 0) == (file.mode == "100755"),
+                "Audit requires a clean Git worktree",
+            )?;
+        }
+
+        let mut path_option = OsString::from("--path=");
+        path_option.push(path.as_os_str());
+        let mut hash_command = git_command(root);
+        hash_command.args(["-c", "core.fsmonitor=false"]);
+        disable_ambiguous_filter_commands(&mut hash_command);
+        let actual = hash_command
+            .args(["--no-optional-locks", "hash-object"])
+            .arg(path_option)
+            .arg("--")
+            .arg(path)
+            .output()
+            .map_err(|_| "Cannot verify audit checkout state".to_string())?;
+        require(
+            actual.status.success(),
+            "Cannot verify audit checkout state",
+        )?;
+        let actual = std::str::from_utf8(&actual.stdout)
+            .map_err(|_| "Cannot verify audit checkout state".to_string())?
+            .trim();
+        require(
+            actual == file.object_id,
+            "Audit requires a clean Git worktree",
+        )?;
+    }
+    Ok(())
+}
+
+// Source state covers tracked files and non-ignored untracked files. Ignored
+// private data and build outputs intentionally remain outside this contract.
+fn require_complete_audit_checkout(root: &Path) -> Result<()> {
+    require_supported_git(root)?;
+    // Force status to inspect the worktree instead of trusting FSMonitor or
+    // untracked-cache entries that can hide source changes.
+    let index = git_command(root)
+        .args([
+            "-c",
+            "core.fsmonitor=false",
+            "--no-optional-locks",
+            "ls-files",
+            "-v",
+            "-z",
+        ])
+        .output()
+        .map_err(|_| "Cannot verify audit checkout state".to_string())?;
+    require(index.status.success(), "Cannot verify audit checkout state")?;
+    // Lowercase tags mean assume-unchanged; S means skip-worktree. Both can
+    // make ordinary `git status` omit tracked source changes.
+    let hidden_tracked_files = index.stdout.split(|byte| *byte == 0).any(|entry| {
+        entry
+            .first()
+            .is_some_and(|tag| tag.is_ascii_lowercase() || *tag == b'S')
+    });
+    require(
+        !hidden_tracked_files,
+        "Audit requires a complete Git checkout",
+    )
+}
+
+fn require_clean_audit_worktree(root: &Path) -> Result<()> {
+    require_complete_audit_checkout(root)?;
+    let indexed_files = read_indexed_files(root)?;
+    // Check both attribute views before either status or hash-object can apply
+    // an external clean filter.
+    require_no_active_clean_filters(root, &indexed_files)?;
+    let mut status_command = git_command(root);
+    status_command.args(["-c", "core.fsmonitor=false"]);
+    disable_ambiguous_filter_commands(&mut status_command);
+    let status = status_command
+        .args([
+            "-c",
+            "core.untrackedCache=false",
+            "--no-optional-locks",
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+        ])
+        .output()
+        .map_err(|_| "Cannot verify audit worktree state".to_string())?;
+    require(
+        status.status.success(),
+        "Cannot verify audit worktree state",
+    )?;
+    // Status can contain private paths. Only inspect whether it is empty.
+    require(
+        status.stdout.is_empty(),
+        "Audit requires a clean Git worktree",
+    )?;
+    require_index_content_matches_worktree(root, &indexed_files)
+}
+
+fn require_audit_head(root: &Path, revision: &str) -> Result<()> {
+    let head = git_command(root)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .map_err(|_| "Cannot identify repository HEAD".to_string())?;
+    require(
+        head.status.success() && String::from_utf8_lossy(&head.stdout).trim() == revision,
+        "Audit revision does not match checkout HEAD",
+    )
+}
+
 pub fn validate_audit(root: &Path, policy: &Policy, a: &Audit, now: OffsetDateTime) -> Result<()> {
+    require_clean_audit_worktree(root)?;
     require(a.schema_version == 1, "Unsupported audit schema")?;
     require(useful(&a.task), "Task missing or placeholder")?;
     require(a.outcome == "complete", "Audit outcome is not complete")?;
@@ -393,15 +781,7 @@ pub fn validate_audit(root: &Path, policy: &Policy, a: &Audit, now: OffsetDateTi
         "Expected full Git revision",
     )?;
     // Bind the declared revision to this checkout, not an arbitrary plausible SHA.
-    let head = git_command(root)
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .map_err(|e| e.to_string())?;
-    require(
-        head.status.success()
-            && String::from_utf8_lossy(&head.stdout).trim() == a.repository_revision,
-        "Audit revision does not match checkout HEAD",
-    )?;
+    require_audit_head(root, &a.repository_revision)?;
     let expected = current_manifest(root)?;
     let mut seen = BTreeSet::new();
     for reading in &a.reading {
@@ -470,16 +850,18 @@ pub fn validate_audit(root: &Path, policy: &Policy, a: &Audit, now: OffsetDateTi
             format!("Unresolved acceptance condition {}", c.id),
         )?;
     }
-    Ok(())
+    require_audit_head(root, &a.repository_revision)?;
+    require_clean_audit_worktree(root)
 }
 pub fn new_audit(root: &Path, task: String) -> Result<Audit> {
+    require_clean_audit_worktree(root)?;
     let policy = load_policy(root)?;
     let head = git_command(root)
         .args(["rev-parse", "HEAD"])
         .output()
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| "Cannot identify repository HEAD".to_string())?;
     require(head.status.success(), "Cannot identify repository HEAD")?;
-    Ok(Audit {
+    let audit = Audit {
         schema_version: 1,
         task,
         outcome: "in-progress".into(),
@@ -520,5 +902,26 @@ pub fn new_audit(root: &Path, task: String) -> Result<Audit> {
             reason: "UNFILLED: replace with actual task acceptance conditions".into(),
             evidence: vec![],
         }],
-    })
+    };
+    require_audit_head(root, &audit.repository_revision)?;
+    require_clean_audit_worktree(root)?;
+    Ok(audit)
+}
+
+#[cfg(test)]
+mod git_version_tests {
+    use super::git_version_is_supported;
+
+    #[test]
+    fn audit_git_version_gate_accepts_supported_releases_and_fails_closed() {
+        assert!(git_version_is_supported("git version 2.36.0"));
+        assert!(git_version_is_supported("git version 2.53.0.windows.3"));
+        assert!(git_version_is_supported(
+            "git version 2.39.5 (Apple Git-154)"
+        ));
+        assert!(!git_version_is_supported("git version 2.35.9"));
+        assert!(!git_version_is_supported("git version 2.36.0-rc1"));
+        assert!(!git_version_is_supported("git version 2.36.0.rc1"));
+        assert!(!git_version_is_supported("unrecognized version"));
+    }
 }

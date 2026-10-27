@@ -1,4 +1,12 @@
-use std::{collections::BTreeMap, fs, path::Path, process::Command};
+use std::{
+    collections::BTreeMap,
+    fs,
+    io::Write,
+    path::Path,
+    process::{Command, Stdio},
+    sync::OnceLock,
+    time::{Duration, SystemTime},
+};
 use tempfile::TempDir;
 use time::OffsetDateTime;
 use toe_tickling::*;
@@ -15,6 +23,7 @@ fn fixture() -> TempDir {
         fs::copy(source.join(path), target).unwrap();
     }
     for file in [
+        ".gitignore",
         "LICENSE",
         "LICENSE-SCOPE.md",
         "CHANGELOG.md",
@@ -26,6 +35,12 @@ fn fixture() -> TempDir {
         fs::create_dir_all(dir.path().join(file).parent().unwrap()).unwrap();
         fs::copy(source.join(file), dir.path().join(file)).unwrap();
     }
+    fs::create_dir_all(dir.path().join("src")).unwrap();
+    fs::write(
+        dir.path().join("src/fixture.rs"),
+        "pub const VALUE: u8 = 1;\n",
+    )
+    .unwrap();
     let policy = load_policy(dir.path()).unwrap();
     fs::write(dir.path().join("RULEBOOK.md"), render(&policy)).unwrap();
     guide::build(dir.path()).unwrap();
@@ -133,6 +148,131 @@ fn clean_git(root: &Path, args: &[&str]) -> std::process::Output {
     command.output().unwrap()
 }
 
+fn normalize_fsmonitor_path(path: &str) -> String {
+    let path = path.replace('\\', "/");
+    let path = if path
+        .get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("//?/UNC/"))
+    {
+        format!("//{}", &path[8..])
+    } else if path
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("//?/"))
+    {
+        path[4..].to_owned()
+    } else {
+        path
+    };
+
+    let bytes = path.as_bytes();
+    if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/' {
+        format!(
+            "/{}/{}",
+            (bytes[0] as char).to_ascii_lowercase(),
+            &path[3..]
+        )
+    } else {
+        path
+    }
+}
+
+fn git_test_helper_command(path: &Path, mode: &str) -> String {
+    let path = normalize_fsmonitor_path(&path.to_string_lossy());
+    format!("'{}' {mode}", path.replace('\'', "'\\''"))
+}
+
+#[test]
+fn git_test_helper_command_normalizes_windows_drive_unc_and_extended_paths() {
+    for (path, expected) in [
+        (
+            r"C:\Task Dir\git-test-helper.exe",
+            "'/c/Task Dir/git-test-helper.exe' fsmonitor",
+        ),
+        (
+            r"\\server\share\Task Dir\git-test-helper.exe",
+            "'//server/share/Task Dir/git-test-helper.exe' fsmonitor",
+        ),
+        (
+            r"\\?\C:\Task Dir\git-test-helper.exe",
+            "'/c/Task Dir/git-test-helper.exe' fsmonitor",
+        ),
+        (
+            r"\\?\UNC\server\share\Task Dir\git-test-helper.exe",
+            "'//server/share/Task Dir/git-test-helper.exe' fsmonitor",
+        ),
+    ] {
+        assert_eq!(
+            git_test_helper_command(Path::new(path), "fsmonitor"),
+            expected
+        );
+    }
+}
+
+fn git_test_helper_binary() -> &'static Path {
+    static HELPER: OnceLock<(TempDir, std::path::PathBuf)> = OnceLock::new();
+    let (_, executable) = HELPER.get_or_init(|| {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join(if cfg!(windows) {
+            "git-test-helper.exe"
+        } else {
+            "git-test-helper"
+        });
+        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("support")
+            .join("git-test-helper.rs");
+        let compilation = Command::new("rustc")
+            .args(["--edition=2024"])
+            .arg(source)
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .unwrap();
+        assert!(
+            compilation.status.success(),
+            "Rust Git test helper compilation failed: {}",
+            String::from_utf8_lossy(&compilation.stderr)
+        );
+        (directory, executable)
+    });
+    executable.as_path()
+}
+
+#[test]
+fn rust_git_test_helper_supports_clean_process_and_fsmonitor_modes() {
+    let dir = fixture();
+    let helper = git_test_helper_binary();
+    let payload = b"Fictional filter payload\n";
+    let mut clean = Command::new(helper)
+        .arg("clean")
+        .current_dir(dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    clean.stdin.take().unwrap().write_all(payload).unwrap();
+    let clean = clean.wait_with_output().unwrap();
+    assert!(clean.status.success());
+    assert_eq!(clean.stdout, payload);
+    assert!(dir.path().join(".git/filter-probe-ran").is_file());
+
+    let process = Command::new(helper)
+        .arg("process")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(!process.status.success());
+    assert!(dir.path().join(".git/filter-process-probe-ran").is_file());
+
+    let fsmonitor = Command::new(helper)
+        .arg("fsmonitor")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(fsmonitor.status.success());
+    assert_eq!(fsmonitor.stdout, b"noop\0");
+}
+
 fn add_linked_worktree(repository: &Path, target: &Path) {
     let target = target.to_string_lossy().into_owned();
     let output = clean_git(
@@ -189,6 +329,477 @@ fn baseline_and_declared_receipt_pass() {
     );
     validate_audit(dir.path(), &policy, &audit, now()).unwrap();
 }
+
+fn assert_source_change_rejects_audits(path: &str, staged: bool) {
+    let dir = fixture();
+    assert!(
+        clean_git(dir.path(), &["config", "status.showUntrackedFiles", "no"])
+            .status
+            .success()
+    );
+    let policy = load_policy(dir.path()).unwrap();
+    let audit = complete(dir.path());
+    validate_audit(dir.path(), &policy, &audit, now()).unwrap();
+    let manifest = current_manifest(dir.path()).unwrap();
+    let changed_content = "// FICTIONAL_PRIVATE_SOURCE_VALUE\npub const VALUE: u8 = 2;\n";
+    fs::write(dir.path().join(path), changed_content).unwrap();
+    if staged {
+        assert!(clean_git(dir.path(), &["add", "--", path]).status.success());
+    }
+    let head = clean_git(dir.path(), &["rev-parse", "HEAD"]);
+    assert!(head.status.success());
+    assert_eq!(
+        String::from_utf8(head.stdout).unwrap().trim(),
+        audit.repository_revision
+    );
+    assert_eq!(
+        current_manifest(dir.path()).unwrap().documents,
+        manifest.documents
+    );
+
+    for error in [
+        new_audit(dir.path(), "Fictional dirty-source task".into()).unwrap_err(),
+        validate_audit(dir.path(), &policy, &audit, now()).unwrap_err(),
+    ] {
+        assert!(
+            error.contains("clean"),
+            "Unexpected audit rejection: {error}"
+        );
+        assert!(!error.contains(path));
+        assert!(!error.contains(Path::new(path).file_name().unwrap().to_str().unwrap()));
+        assert!(!error.contains(dir.path().to_string_lossy().as_ref()));
+        for line in changed_content.lines() {
+            assert!(!error.contains(line));
+        }
+        for status in [" M ", "M  ", "?? "] {
+            assert!(!error.contains(status));
+        }
+    }
+}
+
+#[test]
+fn staged_source_changes_reject_creation_and_invalidate_existing_receipts() {
+    assert_source_change_rejects_audits("src/fixture.rs", true);
+}
+
+#[test]
+fn unstaged_source_changes_reject_creation_and_invalidate_existing_receipts() {
+    assert_source_change_rejects_audits("src/fixture.rs", false);
+}
+
+#[test]
+fn untracked_source_changes_reject_creation_and_invalidate_existing_receipts() {
+    assert_source_change_rejects_audits("src/private-untracked-fixture.rs", false);
+}
+
+#[test]
+fn same_size_tracked_changes_reject_audits_when_git_stat_cache_matches() {
+    let dir = fixture();
+    let policy = load_policy(dir.path()).unwrap();
+    let audit = complete(dir.path());
+    hide_same_size_tracked_change_from_stat_cache(dir.path());
+
+    for error in [
+        new_audit(dir.path(), "Fictional stat-cache task".into()).unwrap_err(),
+        validate_audit(dir.path(), &policy, &audit, now()).unwrap_err(),
+    ] {
+        assert!(error.contains("clean"), "Unexpected audit error: {error}");
+        assert!(!error.contains("src/fixture.rs"));
+        assert!(!error.contains("pub const VALUE"));
+        assert!(!error.contains(dir.path().to_string_lossy().as_ref()));
+    }
+}
+
+fn hide_same_size_tracked_change_from_stat_cache(root: &Path) {
+    let tracked = root.join("src/fixture.rs");
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&tracked)
+        .unwrap();
+    let cached_modified = SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_000);
+    file.set_times(fs::FileTimes::new().set_modified(cached_modified))
+        .unwrap();
+    assert!(
+        clean_git(root, &["config", "core.trustctime", "false"])
+            .status
+            .success()
+    );
+    let refreshed = clean_git(root, &["update-index", "--refresh"]);
+    assert!(
+        refreshed.status.success(),
+        "Index refresh failed: {}",
+        String::from_utf8_lossy(&refreshed.stderr)
+    );
+    let cached_modified = fs::metadata(&tracked).unwrap().modified().unwrap();
+
+    fs::write(&tracked, "pub const VALUE: u8 = 2;\n").unwrap();
+    fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&tracked)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(cached_modified))
+        .unwrap();
+
+    let ordinary_status = clean_git(
+        root,
+        &[
+            "-c",
+            "core.trustctime=false",
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+        ],
+    );
+    assert!(ordinary_status.status.success());
+    assert!(
+        ordinary_status.stdout.is_empty(),
+        "Fixture did not reproduce the Git stat-cache blind spot: {}",
+        String::from_utf8_lossy(&ordinary_status.stdout)
+    );
+}
+
+fn assert_hidden_source_change_rejects_audits(index_flag: &str) {
+    let dir = fixture();
+    let policy = load_policy(dir.path()).unwrap();
+    let audit = complete(dir.path());
+    let path = "src/fixture.rs";
+    let changed_content = "// FICTIONAL_PRIVATE_SOURCE_VALUE\npub const VALUE: u8 = 2;\n";
+    assert!(
+        clean_git(dir.path(), &["update-index", index_flag, "--", path])
+            .status
+            .success()
+    );
+    fs::write(dir.path().join(path), changed_content).unwrap();
+
+    // Git's ordinary status hides this tracked change when either index flag is set.
+    let status = clean_git(
+        dir.path(),
+        &[
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+        ],
+    );
+    assert!(status.status.success());
+    assert!(status.stdout.is_empty());
+
+    for error in [
+        new_audit(dir.path(), "Fictional hidden-source task".into()).unwrap_err(),
+        validate_audit(dir.path(), &policy, &audit, now()).unwrap_err(),
+    ] {
+        assert!(
+            error.contains("complete Git checkout"),
+            "Unexpected audit rejection: {error}"
+        );
+        assert!(!error.contains(path));
+        assert!(!error.contains("FICTIONAL_PRIVATE_SOURCE_VALUE"));
+        assert!(!error.contains(dir.path().to_string_lossy().as_ref()));
+    }
+}
+
+#[test]
+fn active_clean_filter_is_rejected_before_git_status_or_hashing() {
+    let dir = fixture();
+    install_filter_attributes(&dir, "*.rs filter=audit-probe\n");
+    configure_audit_filter_probe(dir.path(), "audit-probe");
+    modify_filtered_source(dir.path());
+
+    assert_audit_rejects_active_filter(dir.path());
+}
+
+#[test]
+fn ambiguous_filter_clean_commands_are_neutralized_before_status_or_hashing() {
+    for driver in ["unspecified", "unset"] {
+        let dir = fixture();
+        install_filter_attributes(&dir, &format!("*.rs filter={driver}\n"));
+        hide_same_size_tracked_change_from_stat_cache(dir.path());
+        configure_audit_filter_probe(dir.path(), driver);
+
+        let result = new_audit(dir.path(), "Fictional ambiguous-filter task".into());
+        assert!(
+            !dir.path().join(".git/filter-probe-ran").exists(),
+            "Audit invoked the ambiguous {driver} clean filter"
+        );
+        let error = result.unwrap_err();
+        assert!(!error.contains("src/fixture.rs"));
+        assert!(!error.contains("pub const VALUE"));
+        assert!(!error.contains(dir.path().to_string_lossy().as_ref()));
+    }
+}
+
+#[test]
+fn inactive_ambiguous_filter_states_do_not_run_configured_drivers() {
+    for (attributes, driver) in [
+        ("*.rs -filter\n", "unset"),
+        ("*.rs !filter\n", "unspecified"),
+    ] {
+        let dir = fixture();
+        install_filter_attributes(&dir, attributes);
+        configure_audit_filter_probe(dir.path(), driver);
+
+        let result = new_audit(dir.path(), "Fictional inactive-filter task".into());
+        assert!(
+            !dir.path().join(".git/filter-probe-ran").exists(),
+            "Inactive {driver} filter unexpectedly ran"
+        );
+        assert!(
+            result.is_ok(),
+            "Inactive {driver} state blocked a clean audit"
+        );
+    }
+}
+
+#[test]
+fn active_clean_filter_invalidates_receipt_before_git_status() {
+    let dir = fixture();
+    let policy = load_policy(dir.path()).unwrap();
+    let audit = complete(dir.path());
+    install_filter_attributes(&dir, "*.rs filter=audit-probe\n");
+    configure_audit_filter_probe(dir.path(), "audit-probe");
+    modify_filtered_source(dir.path());
+
+    let result = validate_audit(dir.path(), &policy, &audit, now());
+    assert!(
+        !dir.path().join(".git/filter-probe-ran").exists(),
+        "Audit validation invoked an external clean filter"
+    );
+    let error = result.unwrap_err();
+    assert!(
+        error.contains("complete Git checkout"),
+        "Active external filter should invalidate the receipt: {error}"
+    );
+    assert!(!error.contains(dir.path().to_string_lossy().as_ref()));
+}
+
+#[test]
+fn ambiguous_filter_process_commands_do_not_run_during_receipt_validation() {
+    for driver in ["unspecified", "unset"] {
+        let dir = fixture();
+        let policy = load_policy(dir.path()).unwrap();
+        let audit = complete(dir.path());
+        install_filter_attributes(&dir, &format!("*.rs filter={driver}\n"));
+        hide_same_size_tracked_change_from_stat_cache(dir.path());
+        configure_audit_process_filter_probe(dir.path(), driver);
+
+        let result = validate_audit(dir.path(), &policy, &audit, now());
+        assert!(
+            !dir.path().join(".git/filter-process-probe-ran").exists(),
+            "Audit validation invoked the ambiguous {driver} process filter"
+        );
+        let error = result.unwrap_err();
+        assert!(!error.contains("src/fixture.rs"));
+        assert!(!error.contains("pub const VALUE"));
+        assert!(!error.contains(dir.path().to_string_lossy().as_ref()));
+    }
+}
+
+#[test]
+fn cached_clean_filter_is_rejected_even_when_worktree_attribute_disables_it() {
+    let dir = fixture();
+    install_filter_attributes(&dir, "*.rs filter=audit-probe\n");
+    fs::write(dir.path().join(".gitattributes"), "*.rs -filter\n").unwrap();
+    configure_audit_filter_probe(dir.path(), "audit-probe");
+
+    assert_audit_rejects_active_filter(dir.path());
+}
+
+#[test]
+fn worktree_clean_filter_is_rejected_before_git_status() {
+    let dir = fixture();
+    install_filter_attributes(&dir, "*.rs -filter\n");
+    fs::write(
+        dir.path().join(".gitattributes"),
+        "*.rs filter=audit-probe\n",
+    )
+    .unwrap();
+    configure_audit_filter_probe(dir.path(), "audit-probe");
+    modify_filtered_source(dir.path());
+
+    assert_audit_rejects_active_filter(dir.path());
+}
+
+fn install_filter_attributes(dir: &TempDir, attributes: &str) {
+    fs::write(dir.path().join(".gitattributes"), attributes).unwrap();
+    assert!(
+        clean_git(dir.path(), &["add", "--", ".gitattributes"])
+            .status
+            .success()
+    );
+    assert!(
+        clean_git(
+            dir.path(),
+            &[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-qm",
+                "Fictional filter fixture",
+            ],
+        )
+        .status
+        .success()
+    );
+}
+
+fn configure_audit_filter_probe(root: &Path, driver: &str) {
+    let clean_key = format!("filter.{driver}.clean");
+    let required_key = format!("filter.{driver}.required");
+    let clean_command = git_test_helper_command(git_test_helper_binary(), "clean");
+    assert!(
+        clean_git(
+            root,
+            &["config", clean_key.as_str(), clean_command.as_str()]
+        )
+        .status
+        .success()
+    );
+    assert!(
+        clean_git(root, &["config", required_key.as_str(), "true"])
+            .status
+            .success()
+    );
+}
+
+fn configure_audit_process_filter_probe(root: &Path, driver: &str) {
+    let process_key = format!("filter.{driver}.process");
+    let required_key = format!("filter.{driver}.required");
+    let process_command = git_test_helper_command(git_test_helper_binary(), "process");
+    assert!(
+        clean_git(
+            root,
+            &["config", process_key.as_str(), process_command.as_str()],
+        )
+        .status
+        .success()
+    );
+    assert!(
+        clean_git(root, &["config", required_key.as_str(), "true"])
+            .status
+            .success()
+    );
+}
+
+fn modify_filtered_source(root: &Path) {
+    fs::write(root.join("src/fixture.rs"), "pub const VALUE: u8 = 22;\n").unwrap();
+}
+
+fn assert_audit_rejects_active_filter(root: &Path) {
+    let result = new_audit(root, "Fictional filter task".into());
+    assert!(
+        !root.join(".git/filter-probe-ran").exists(),
+        "Audit invoked an external clean filter"
+    );
+    let error = result.unwrap_err();
+    assert!(
+        error.contains("complete Git checkout"),
+        "Active filter attribute should fail closed before status or hashing: {error}"
+    );
+    assert!(!error.contains("src/fixture.rs"));
+    assert!(!error.contains(root.to_string_lossy().as_ref()));
+}
+
+#[test]
+fn assume_unchanged_source_changes_reject_creation_and_invalidate_receipts() {
+    assert_hidden_source_change_rejects_audits("--assume-unchanged");
+}
+
+#[test]
+fn skip_worktree_source_changes_reject_creation_and_invalidate_receipts() {
+    assert_hidden_source_change_rejects_audits("--skip-worktree");
+}
+
+#[test]
+fn fsmonitor_valid_source_changes_reject_creation_and_invalidate_receipts() {
+    let dir = fixture();
+    let policy = load_policy(dir.path()).unwrap();
+    let audit = complete(dir.path());
+    let path = "src/fixture.rs";
+    let hook_command = git_test_helper_command(git_test_helper_binary(), "fsmonitor");
+    assert!(
+        clean_git(dir.path(), &["config", "core.fsmonitorHookVersion", "2"])
+            .status
+            .success()
+    );
+    assert!(
+        clean_git(
+            dir.path(),
+            &["config", "core.fsmonitor", hook_command.as_str()],
+        )
+        .status
+        .success()
+    );
+    assert!(
+        clean_git(dir.path(), &["update-index", "--fsmonitor"])
+            .status
+            .success()
+    );
+    assert!(
+        clean_git(
+            dir.path(),
+            &["update-index", "--fsmonitor-valid", "--", path]
+        )
+        .status
+        .success()
+    );
+    let flag = clean_git(dir.path(), &["ls-files", "-f", "--", path]);
+    assert!(flag.status.success());
+    assert!(String::from_utf8_lossy(&flag.stdout).starts_with("h "));
+
+    let changed_content = "// FICTIONAL_PRIVATE_SOURCE_VALUE\npub const VALUE: u8 = 2;\n";
+    fs::write(dir.path().join(path), changed_content).unwrap();
+    let ordinary_status = clean_git(
+        dir.path(),
+        &[
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+        ],
+    );
+    assert!(ordinary_status.status.success());
+    assert!(ordinary_status.stdout.is_empty());
+
+    for error in [
+        new_audit(dir.path(), "Fictional fsmonitor-hidden task".into()).unwrap_err(),
+        validate_audit(dir.path(), &policy, &audit, now()).unwrap_err(),
+    ] {
+        assert!(
+            error.contains("clean"),
+            "Unexpected audit rejection: {error}"
+        );
+        assert!(!error.contains(path));
+        assert!(!error.contains("FICTIONAL_PRIVATE_SOURCE_VALUE"));
+        assert!(!error.contains(dir.path().to_string_lossy().as_ref()));
+    }
+}
+
+#[test]
+fn clean_source_tree_allows_audits_with_ignored_private_and_build_outputs() {
+    let dir = fixture();
+    let policy = load_policy(dir.path()).unwrap();
+    fs::write(dir.path().join(".env"), "FICTIONAL_IGNORED_PRIVATE_VALUE\n").unwrap();
+    fs::create_dir_all(dir.path().join("target")).unwrap();
+    fs::write(
+        dir.path().join("target/fixture-output"),
+        "Fictional output\n",
+    )
+    .unwrap();
+    let status = clean_git(
+        dir.path(),
+        &["status", "--porcelain=v1", "--untracked-files=all"],
+    );
+    assert!(status.status.success());
+    assert!(status.stdout.is_empty());
+    let audit = complete(dir.path());
+    assert_eq!(audit.schema_version, 1);
+    validate_audit(dir.path(), &policy, &audit, now()).unwrap();
+}
+
 #[test]
 fn template_is_never_completion() {
     let dir = fixture();
@@ -200,13 +811,38 @@ fn template_is_never_completion() {
 fn changed_guidance_invalidates_manifest_and_receipt() {
     let dir = fixture();
     let policy = load_policy(dir.path()).unwrap();
-    let audit = complete(dir.path());
+    let mut audit = complete(dir.path());
     fs::write(dir.path().join("AGENTS.md"), "# Changed instructions\n").unwrap();
     assert!(
         check_repo(dir.path(), now().date())
             .unwrap_err()
             .contains("manifest")
     );
+    // Keep the receipt's HEAD current so this isolates the reading-hash check.
+    assert!(
+        clean_git(dir.path(), &["add", "AGENTS.md"])
+            .status
+            .success()
+    );
+    assert!(
+        clean_git(
+            dir.path(),
+            &[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-qm",
+                "Fictional changed guidance",
+            ],
+        )
+        .status
+        .success()
+    );
+    let head = clean_git(dir.path(), &["rev-parse", "HEAD"]);
+    assert!(head.status.success());
+    audit.repository_revision = String::from_utf8(head.stdout).unwrap().trim().to_owned();
     assert!(
         validate_audit(dir.path(), &policy, &audit, now())
             .unwrap_err()
@@ -583,10 +1219,11 @@ fn broken_link_and_non_rust_source_are_rejected() {
 #[test]
 fn malformed_or_unknown_schema_fields_fail_closed() {
     let dir = fixture();
+    let audit = complete(dir.path());
     let path = dir.path().join("bad.json");
     fs::write(&path, "{truncated").unwrap();
     assert!(read_json::<Audit>(&path).is_err());
-    let mut value = serde_json::to_value(complete(dir.path())).unwrap();
+    let mut value = serde_json::to_value(audit).unwrap();
     value["waive_failures"] = true.into();
     write_json(&path, &value).unwrap();
     assert!(read_json::<Audit>(&path).is_err());
