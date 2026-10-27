@@ -551,7 +551,7 @@ fn git_path_argument_size(path: &Path) -> usize {
     }
 }
 
-fn require_filter_attribute_is_unset(root: &Path, paths: &[&Path], cached: bool) -> Result<()> {
+fn require_no_selected_filter_attribute(root: &Path, paths: &[&Path], cached: bool) -> Result<()> {
     if paths.is_empty() {
         return Ok(());
     }
@@ -561,12 +561,16 @@ fn require_filter_attribute_is_unset(root: &Path, paths: &[&Path], cached: bool)
         "core.fsmonitor=false",
         "--no-optional-locks",
         "check-attr",
+        "--all",
     ]);
     if cached {
         command.arg("--cached");
     }
+    // The single-attribute form conflates literal filter names "unspecified"
+    // and "unset" with non-active states. `--all` omits non-active states but
+    // includes those literal values, so any listed filter attribute is active.
     let attributes = command
-        .args(["-z", "filter", "--"])
+        .args(["-z", "--"])
         .args(paths)
         .output()
         .map_err(|_| "Cannot verify audit checkout state".to_string())?;
@@ -575,31 +579,42 @@ fn require_filter_attribute_is_unset(root: &Path, paths: &[&Path], cached: bool)
         "Cannot verify audit checkout state",
     )?;
 
-    let mut fields = attributes.stdout.split(|byte| *byte == 0);
-    for _ in paths {
-        let path = fields
-            .next()
-            .ok_or_else(|| "Audit requires a complete Git checkout".to_string())?;
+    let requested_paths: BTreeSet<_> = paths
+        .iter()
+        .map(|path| {
+            path.to_str()
+                .ok_or_else(|| "Cannot verify audit checkout state".to_string())
+        })
+        .collect::<Result<_>>()?;
+    if attributes.stdout.is_empty() {
+        return Ok(());
+    }
+    require(
+        attributes.stdout.ends_with(&[0]),
+        "Audit requires a complete Git checkout",
+    )?;
+    let output = &attributes.stdout[..attributes.stdout.len() - 1];
+    require(!output.is_empty(), "Audit requires a complete Git checkout")?;
+    let mut fields = output.split(|byte| *byte == 0);
+    while let Some(path) = fields.next() {
         let attribute = fields
             .next()
             .ok_or_else(|| "Audit requires a complete Git checkout".to_string())?;
-        let value = fields
+        let _value = fields
             .next()
             .ok_or_else(|| "Audit requires a complete Git checkout".to_string())?;
+        let path = std::str::from_utf8(path)
+            .map_err(|_| "Audit requires a complete Git checkout".to_string())?;
         require(
-            !path.is_empty()
-                && attribute == b"filter"
-                && matches!(value, b"unspecified" | b"unset"),
+            requested_paths.contains(path) && !attribute.is_empty(),
+            "Audit requires a complete Git checkout",
+        )?;
+        require(
+            attribute != b"filter",
             "Audit requires a complete Git checkout",
         )?;
     }
-    let terminator = fields
-        .next()
-        .ok_or_else(|| "Audit requires a complete Git checkout".to_string())?;
-    require(
-        terminator.is_empty() && fields.next().is_none(),
-        "Audit requires a complete Git checkout",
-    )
+    Ok(())
 }
 
 fn require_no_active_clean_filters(root: &Path, files: &[IndexedFile]) -> Result<()> {
@@ -612,18 +627,18 @@ fn require_no_active_clean_filters(root: &Path, files: &[IndexedFile]) -> Result
             if !paths.is_empty()
                 && batch_size.saturating_add(path_size) > MAX_CHECK_ATTR_BATCH_ARGUMENT_SIZE
             {
-                require_filter_attribute_is_unset(root, &paths, cached)?;
+                require_no_selected_filter_attribute(root, &paths, cached)?;
                 paths.clear();
                 batch_size = 0;
             }
             if path_size > MAX_CHECK_ATTR_BATCH_ARGUMENT_SIZE {
-                require_filter_attribute_is_unset(root, &[path], cached)?;
+                require_no_selected_filter_attribute(root, &[path], cached)?;
             } else {
                 paths.push(path);
                 batch_size = batch_size.saturating_add(path_size);
             }
         }
-        require_filter_attribute_is_unset(root, &paths, cached)?;
+        require_no_selected_filter_attribute(root, &paths, cached)?;
     }
     Ok(())
 }

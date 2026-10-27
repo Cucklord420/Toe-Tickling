@@ -447,6 +447,14 @@ fn ambiguous_filter_driver_names_are_rejected_before_git_status_or_hashing() {
 }
 
 #[test]
+fn unset_filter_attribute_does_not_block_a_clean_audit() {
+    let dir = fixture();
+    install_filter_attributes(&dir, "*.rs -filter\n");
+
+    assert!(new_audit(dir.path(), "Fictional unset-filter task".into()).is_ok());
+}
+
+#[test]
 fn active_clean_filter_invalidates_receipt_before_git_status() {
     let dir = fixture();
     let policy = load_policy(dir.path()).unwrap();
