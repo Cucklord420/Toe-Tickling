@@ -523,7 +523,7 @@ fn configure_audit_filter_probe(root: &Path) {
 }
 
 fn modify_filtered_source(root: &Path) {
-    fs::write(root.join("src/fixture.rs"), "pub const VALUE: u8 = 2;\n").unwrap();
+    fs::write(root.join("src/fixture.rs"), "pub const VALUE: u8 = 22;\n").unwrap();
 }
 
 fn assert_audit_rejects_active_filter(root: &Path) {
