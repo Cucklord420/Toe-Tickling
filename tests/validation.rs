@@ -423,34 +423,77 @@ fn assert_hidden_source_change_rejects_audits(index_flag: &str) {
 #[test]
 fn active_clean_filter_is_rejected_before_content_hashing() {
     let dir = fixture();
+    install_filter_attributes(&dir, "*.rs filter=audit-probe\n");
+    configure_failing_audit_filter(dir.path());
+
+    assert_audit_rejects_active_filter(dir.path());
+}
+
+#[test]
+fn cached_clean_filter_is_rejected_even_when_worktree_attribute_disables_it() {
+    let dir = fixture();
+    install_filter_attributes(&dir, "*.rs filter=audit-probe\n");
+    fs::write(dir.path().join(".gitattributes"), "*.rs -filter\n").unwrap();
+    configure_failing_audit_filter(dir.path());
+
+    assert_audit_rejects_active_filter(dir.path());
+}
+
+#[test]
+fn worktree_clean_filter_is_rejected_before_git_status() {
+    let dir = fixture();
+    install_filter_attributes(&dir, "*.rs -filter\n");
     fs::write(
         dir.path().join(".gitattributes"),
         "*.rs filter=audit-probe\n",
     )
     .unwrap();
+    configure_failing_audit_filter(dir.path());
+
+    assert_audit_rejects_active_filter(dir.path());
+}
+
+fn install_filter_attributes(dir: &TempDir, attributes: &str) {
+    fs::write(dir.path().join(".gitattributes"), attributes).unwrap();
     assert!(
         clean_git(dir.path(), &["add", "--", ".gitattributes"])
             .status
             .success()
     );
     assert!(
-        clean_git(dir.path(), &["commit", "-qm", "Fictional filter fixture"])
-            .status
-            .success()
+        clean_git(
+            dir.path(),
+            &[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-qm",
+                "Fictional filter fixture",
+            ],
+        )
+        .status
+        .success()
     );
-    assert!(
-        clean_git(dir.path(), &["config", "filter.audit-probe.clean", "false"])
-            .status
-            .success()
-    );
+}
 
-    let error = new_audit(dir.path(), "Fictional filter task".into()).unwrap_err();
+fn configure_failing_audit_filter(root: &Path) {
+    assert!(
+        clean_git(root, &["config", "filter.audit-probe.clean", "false"])
+            .status
+            .success()
+    );
+}
+
+fn assert_audit_rejects_active_filter(root: &Path) {
+    let error = new_audit(root, "Fictional filter task".into()).unwrap_err();
     assert!(
         error.contains("complete Git checkout"),
         "Active external filter should fail closed before hashing: {error}"
     );
     assert!(!error.contains("src/fixture.rs"));
-    assert!(!error.contains(dir.path().to_string_lossy().as_ref()));
+    assert!(!error.contains(root.to_string_lossy().as_ref()));
 }
 
 #[test]
