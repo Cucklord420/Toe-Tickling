@@ -353,6 +353,11 @@ mod build_transaction_tests {
         let existing_c = root.path().join("c-existing.txt");
         fs::write(&existing_a, b"old a\n").unwrap();
         fs::write(&existing_c, b"old c\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&existing_a, fs::Permissions::from_mode(0o640)).unwrap();
+        }
 
         let outputs = BTreeMap::from([
             ("a-existing.txt".to_owned(), "new a\n".to_owned()),
@@ -376,8 +381,70 @@ mod build_transaction_tests {
         let error = result.unwrap_err();
         assert!(error.contains("injected later output failure"), "{error}");
         assert_eq!(fs::read(&existing_a).unwrap(), b"old a\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&existing_a).unwrap().permissions().mode() & 0o777,
+                0o640
+            );
+        }
         assert!(!absent_b.exists(), "new file survived a rolled-back build");
         assert_eq!(fs::read(&existing_c).unwrap(), b"old c\n");
         assert_eq!(fs::read_dir(root.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn rollback_preserves_concurrent_change_and_retains_recovery_backup() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("output.txt");
+        fs::write(&destination, b"original\n").unwrap();
+        let outputs = BTreeMap::from([("output.txt".to_owned(), "generated\n".to_owned())]);
+        let destinations = BTreeMap::from([("output.txt".to_owned(), destination.clone())]);
+        let staged = stage_outputs(outputs, destinations).unwrap();
+
+        let result = commit_outputs(staged, |_, _| {
+            fs::write(&destination, b"concurrent\n").unwrap();
+            Err("injected failure after concurrent change".into())
+        });
+
+        let error = result.unwrap_err();
+        assert!(
+            error.contains("injected failure after concurrent change"),
+            "{error}"
+        );
+        assert_eq!(fs::read(&destination).unwrap(), b"concurrent\n");
+        let retained = fs::read_dir(root.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path != &destination)
+            .find(|path| fs::read(path).is_ok_and(|bytes| bytes == b"original\n"))
+            .expect("original bytes were not retained in a recovery backup");
+        let retained_path = retained.display().to_string();
+        assert!(error.contains(retained_path.as_str()), "{error}");
+    }
+
+    #[test]
+    fn commit_detects_preexisting_concurrent_change_and_retains_recovery_backup() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("output.txt");
+        fs::write(&destination, b"original\n").unwrap();
+        let outputs = BTreeMap::from([("output.txt".to_owned(), "generated\n".to_owned())]);
+        let destinations = BTreeMap::from([("output.txt".to_owned(), destination.clone())]);
+        let staged = stage_outputs(outputs, destinations).unwrap();
+        fs::write(&destination, b"concurrent\n").unwrap();
+
+        let error = commit_outputs(staged, |_, _| Ok(())).unwrap_err();
+
+        assert!(error.to_lowercase().contains("changed"), "{error}");
+        assert_eq!(fs::read(&destination).unwrap(), b"concurrent\n");
+        let retained = fs::read_dir(root.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path != &destination)
+            .find(|path| fs::read(path).is_ok_and(|bytes| bytes == b"original\n"))
+            .expect("original bytes were not retained in a recovery backup");
+        let retained_path = retained.display().to_string();
+        assert!(error.contains(retained_path.as_str()), "{error}");
     }
 }
