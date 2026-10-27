@@ -1,8 +1,10 @@
 use std::{
     collections::BTreeMap,
     fs,
+    io::Write,
     path::Path,
-    process::Command,
+    process::{Command, Stdio},
+    sync::OnceLock,
     time::{Duration, SystemTime},
 };
 use tempfile::TempDir;
@@ -174,27 +176,101 @@ fn normalize_fsmonitor_path(path: &str) -> String {
     }
 }
 
-fn fsmonitor_hook_command(path: &Path) -> String {
+fn git_test_helper_command(path: &Path, mode: &str) -> String {
     let path = normalize_fsmonitor_path(&path.to_string_lossy());
-    format!("sh '{}'", path.replace('\'', "'\\''"))
+    format!("'{}' {mode}", path.replace('\'', "'\\''"))
 }
 
 #[test]
-fn fsmonitor_hook_command_normalizes_windows_drive_unc_and_extended_paths() {
+fn git_test_helper_command_normalizes_windows_drive_unc_and_extended_paths() {
     for (path, expected) in [
-        (r"C:\Task Dir\hook.sh", "sh '/c/Task Dir/hook.sh'"),
         (
-            r"\\server\share\Task Dir\hook.sh",
-            "sh '//server/share/Task Dir/hook.sh'",
+            r"C:\Task Dir\git-test-helper.exe",
+            "'/c/Task Dir/git-test-helper.exe' fsmonitor",
         ),
-        (r"\\?\C:\Task Dir\hook.sh", "sh '/c/Task Dir/hook.sh'"),
         (
-            r"\\?\UNC\server\share\Task Dir\hook.sh",
-            "sh '//server/share/Task Dir/hook.sh'",
+            r"\\server\share\Task Dir\git-test-helper.exe",
+            "'//server/share/Task Dir/git-test-helper.exe' fsmonitor",
+        ),
+        (
+            r"\\?\C:\Task Dir\git-test-helper.exe",
+            "'/c/Task Dir/git-test-helper.exe' fsmonitor",
+        ),
+        (
+            r"\\?\UNC\server\share\Task Dir\git-test-helper.exe",
+            "'//server/share/Task Dir/git-test-helper.exe' fsmonitor",
         ),
     ] {
-        assert_eq!(fsmonitor_hook_command(Path::new(path)), expected);
+        assert_eq!(
+            git_test_helper_command(Path::new(path), "fsmonitor"),
+            expected
+        );
     }
+}
+
+fn git_test_helper_binary() -> &'static Path {
+    static HELPER: OnceLock<(TempDir, std::path::PathBuf)> = OnceLock::new();
+    let (_, executable) = HELPER.get_or_init(|| {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join(if cfg!(windows) {
+            "git-test-helper.exe"
+        } else {
+            "git-test-helper"
+        });
+        let source = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("support")
+            .join("git-test-helper.rs");
+        let compilation = Command::new("rustc")
+            .args(["--edition=2024"])
+            .arg(source)
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .unwrap();
+        assert!(
+            compilation.status.success(),
+            "Rust Git test helper compilation failed: {}",
+            String::from_utf8_lossy(&compilation.stderr)
+        );
+        (directory, executable)
+    });
+    executable.as_path()
+}
+
+#[test]
+fn rust_git_test_helper_supports_clean_process_and_fsmonitor_modes() {
+    let dir = fixture();
+    let helper = git_test_helper_binary();
+    let payload = b"Fictional filter payload\n";
+    let mut clean = Command::new(helper)
+        .arg("clean")
+        .current_dir(dir.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    clean.stdin.take().unwrap().write_all(payload).unwrap();
+    let clean = clean.wait_with_output().unwrap();
+    assert!(clean.status.success());
+    assert_eq!(clean.stdout, payload);
+    assert!(dir.path().join(".git/filter-probe-ran").is_file());
+
+    let process = Command::new(helper)
+        .arg("process")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(!process.status.success());
+    assert!(dir.path().join(".git/filter-process-probe-ran").is_file());
+
+    let fsmonitor = Command::new(helper)
+        .arg("fsmonitor")
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(fsmonitor.status.success());
+    assert_eq!(fsmonitor.stdout, b"noop\0");
 }
 
 fn add_linked_worktree(repository: &Path, target: &Path) {
@@ -573,14 +649,11 @@ fn install_filter_attributes(dir: &TempDir, attributes: &str) {
 fn configure_audit_filter_probe(root: &Path, driver: &str) {
     let clean_key = format!("filter.{driver}.clean");
     let required_key = format!("filter.{driver}.required");
+    let clean_command = git_test_helper_command(git_test_helper_binary(), "clean");
     assert!(
         clean_git(
             root,
-            &[
-                "config",
-                clean_key.as_str(),
-                "echo ran >> .git/filter-probe-ran && cat",
-            ],
+            &["config", clean_key.as_str(), clean_command.as_str()]
         )
         .status
         .success()
@@ -595,14 +668,11 @@ fn configure_audit_filter_probe(root: &Path, driver: &str) {
 fn configure_audit_process_filter_probe(root: &Path, driver: &str) {
     let process_key = format!("filter.{driver}.process");
     let required_key = format!("filter.{driver}.required");
+    let process_command = git_test_helper_command(git_test_helper_binary(), "process");
     assert!(
         clean_git(
             root,
-            &[
-                "config",
-                process_key.as_str(),
-                "echo ran >> .git/filter-process-probe-ran && exit 1",
-            ],
+            &["config", process_key.as_str(), process_command.as_str()],
         )
         .status
         .success()
@@ -649,19 +719,19 @@ fn fsmonitor_valid_source_changes_reject_creation_and_invalidate_receipts() {
     let policy = load_policy(dir.path()).unwrap();
     let audit = complete(dir.path());
     let path = "src/fixture.rs";
-    let monitor = tempfile::tempdir().unwrap();
-    let hook = monitor.path().join("no-changes.sh");
-    fs::write(&hook, b"printf 'noop\\000'\n").unwrap();
-    let hook_command = fsmonitor_hook_command(&hook);
+    let hook_command = git_test_helper_command(git_test_helper_binary(), "fsmonitor");
     assert!(
         clean_git(dir.path(), &["config", "core.fsmonitorHookVersion", "2"])
             .status
             .success()
     );
     assert!(
-        clean_git(dir.path(), &["config", "core.fsmonitor", &hook_command])
-            .status
-            .success()
+        clean_git(
+            dir.path(),
+            &["config", "core.fsmonitor", hook_command.as_str()],
+        )
+        .status
+        .success()
     );
     assert!(
         clean_git(dir.path(), &["update-index", "--fsmonitor"])
