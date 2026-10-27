@@ -321,7 +321,21 @@ fn same_size_tracked_changes_reject_audits_when_git_stat_cache_matches() {
     let dir = fixture();
     let policy = load_policy(dir.path()).unwrap();
     let audit = complete(dir.path());
-    let tracked = dir.path().join("src/fixture.rs");
+    hide_same_size_tracked_change_from_stat_cache(dir.path());
+
+    for error in [
+        new_audit(dir.path(), "Fictional stat-cache task".into()).unwrap_err(),
+        validate_audit(dir.path(), &policy, &audit, now()).unwrap_err(),
+    ] {
+        assert!(error.contains("clean"), "Unexpected audit error: {error}");
+        assert!(!error.contains("src/fixture.rs"));
+        assert!(!error.contains("pub const VALUE"));
+        assert!(!error.contains(dir.path().to_string_lossy().as_ref()));
+    }
+}
+
+fn hide_same_size_tracked_change_from_stat_cache(root: &Path) {
+    let tracked = root.join("src/fixture.rs");
     let file = fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -331,11 +345,11 @@ fn same_size_tracked_changes_reject_audits_when_git_stat_cache_matches() {
     file.set_times(fs::FileTimes::new().set_modified(cached_modified))
         .unwrap();
     assert!(
-        clean_git(dir.path(), &["config", "core.trustctime", "false"])
+        clean_git(root, &["config", "core.trustctime", "false"])
             .status
             .success()
     );
-    let refreshed = clean_git(dir.path(), &["update-index", "--refresh"]);
+    let refreshed = clean_git(root, &["update-index", "--refresh"]);
     assert!(
         refreshed.status.success(),
         "Index refresh failed: {}",
@@ -353,7 +367,7 @@ fn same_size_tracked_changes_reject_audits_when_git_stat_cache_matches() {
         .unwrap();
 
     let ordinary_status = clean_git(
-        dir.path(),
+        root,
         &[
             "-c",
             "core.trustctime=false",
@@ -368,16 +382,6 @@ fn same_size_tracked_changes_reject_audits_when_git_stat_cache_matches() {
         "Fixture did not reproduce the Git stat-cache blind spot: {}",
         String::from_utf8_lossy(&ordinary_status.stdout)
     );
-
-    for error in [
-        new_audit(dir.path(), "Fictional stat-cache task".into()).unwrap_err(),
-        validate_audit(dir.path(), &policy, &audit, now()).unwrap_err(),
-    ] {
-        assert!(error.contains("clean"), "Unexpected audit error: {error}");
-        assert!(!error.contains("src/fixture.rs"));
-        assert!(!error.contains("pub const VALUE"));
-        assert!(!error.contains(dir.path().to_string_lossy().as_ref()));
-    }
 }
 
 fn assert_hidden_source_change_rejects_audits(index_flag: &str) {
@@ -435,8 +439,8 @@ fn ambiguous_filter_driver_names_are_rejected_before_git_status_or_hashing() {
     for driver in ["unspecified", "unset"] {
         let dir = fixture();
         install_filter_attributes(&dir, &format!("*.rs filter={driver}\n"));
+        hide_same_size_tracked_change_from_stat_cache(dir.path());
         configure_audit_filter_probe(dir.path(), driver);
-        modify_filtered_source(dir.path());
 
         assert_audit_rejects_active_filter(dir.path());
     }
@@ -471,8 +475,8 @@ fn ambiguous_filter_driver_names_invalidate_receipts_without_running_filters() {
         let policy = load_policy(dir.path()).unwrap();
         let audit = complete(dir.path());
         install_filter_attributes(&dir, &format!("*.rs filter={driver}\n"));
+        hide_same_size_tracked_change_from_stat_cache(dir.path());
         configure_audit_filter_probe(dir.path(), driver);
-        modify_filtered_source(dir.path());
 
         let result = validate_audit(dir.path(), &policy, &audit, now());
         assert!(
