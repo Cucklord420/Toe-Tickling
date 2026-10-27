@@ -583,6 +583,185 @@ fn reference_style_local_markdown_links_are_validated() {
 }
 
 #[test]
+fn markdown_link_forms_resolve_local_destinations() {
+    for markdown in [
+        "[guide](existing.md)",
+        "![guide](existing.md)",
+        "[text][guide]\n\n[guide]: existing.md",
+        "![text][guide]\n\n[guide]: existing.md",
+        "[guide][]\n\n[guide]: existing.md",
+        "![guide][]\n\n[guide]: existing.md",
+        "[guide]\n\n[guide]: existing.md",
+        "![guide]\n\n[guide]: existing.md",
+        "[Mixed   Label]\n\n[mIxEd label]: existing.md",
+        "[STRASSE]\n\n[straße]: existing.md",
+        "[unused]: existing.md",
+        "> [nested]: existing.md",
+    ] {
+        let directory = fixture();
+        write(directory.path(), "existing.md", "Fictional target\n");
+        write(directory.path(), "links.md", markdown);
+        check(directory.path()).unwrap_or_else(|error| panic!("{markdown}: {error}"));
+    }
+}
+
+#[test]
+fn markdown_link_forms_reject_missing_and_escaping_destinations() {
+    for target in ["missing.md", "../outside.md", "%2e%2e/outside.md", "%zz.md"] {
+        for markdown in [
+            format!("[guide]({target})"),
+            format!("![guide]({target})"),
+            format!("[text][guide]\n\n[guide]: {target}"),
+            format!("![text][guide]\n\n[guide]: {target}"),
+            format!("[guide][]\n\n[guide]: {target}"),
+            format!("![guide][]\n\n[guide]: {target}"),
+            format!("[guide]\n\n[guide]: {target}"),
+            format!("![guide]\n\n[guide]: {target}"),
+            format!("[unused]: {target}"),
+            format!("> [nested]: {target}"),
+        ] {
+            let directory = fixture();
+            write(directory.path(), "links.md", &markdown);
+            assert!(check(directory.path()).is_err(), "Accepted {markdown}");
+        }
+    }
+}
+
+#[test]
+fn undefined_markdown_references_are_literal_text_without_destinations() {
+    for markdown in [
+        "[text][unknown]",
+        "![text][unknown]",
+        "[unknown][]",
+        "![unknown][]",
+        "[unknown]",
+        "![unknown]",
+    ] {
+        let directory = fixture();
+        write(directory.path(), "links.md", markdown);
+        check(directory.path()).unwrap();
+    }
+}
+
+#[test]
+fn markdown_duplicate_labels_use_the_first_definition() {
+    let directory = fixture();
+    // CommonMark shadows later duplicates, including their destinations.
+    write(
+        directory.path(),
+        "links.md",
+        "[guide]\n\n[guide]: README.md\n[GUIDE]: missing.md\n",
+    );
+    check(directory.path()).unwrap();
+    write(
+        directory.path(),
+        "links.md",
+        "[guide]\n\n[guide]: missing.md\n[GUIDE]: README.md\n",
+    );
+    assert!(
+        check(directory.path())
+            .unwrap_err()
+            .contains("Broken or escaping local Markdown link")
+    );
+}
+
+#[test]
+fn markdown_destinations_decode_escapes_entities_and_uri_delimiters() {
+    let directory = fixture();
+    for target in ["note (draft).md", "café note.md", "a&b.md", "part#one.md"] {
+        write(directory.path(), target, "Fictional target\n");
+    }
+    write(
+        directory.path(),
+        "links.md",
+        concat!(
+            "[inline](note\\(draft\\).md)\n",
+            "[angle](<note (draft).md> \"Fictional title\")\n",
+            "[encoded][utf8]\n\n[utf8]: caf%C3%A9%20note.md?raw=1#part\n",
+            "[entity]: a&amp;b.md\n",
+            "[hash]: part%23one.md#section\n",
+            "[escaped]: note\\(draft\\).md\n",
+            "[angle reference]: <note (draft).md> 'Fictional title'\n",
+        ),
+    );
+    // Escaped parentheses do not add a space to the destination.
+    write(directory.path(), "note(draft).md", "Fictional target\n");
+    check(directory.path()).unwrap();
+}
+
+#[test]
+fn markdown_code_examples_and_escaped_brackets_are_literal() {
+    let directory = fixture();
+    write(
+        directory.path(),
+        "links.md",
+        concat!(
+            "`[inline](missing.md)` and `[unknown]`\n\n",
+            "``![image][unknown]``\n\n",
+            "```markdown\n[guide](missing.md)\n[unknown]\n[unused]: missing.md\n```\n\n",
+            "~~~markdown\n![guide](missing.md)\n[unknown]: missing.md\n~~~\n\n",
+            "    [indented](missing.md)\n    [unused]: missing.md\n\n",
+            "\\[escaped\\] and \\[text\\](missing.md)\n",
+        ),
+    );
+    check(directory.path()).unwrap();
+}
+
+#[test]
+fn external_markdown_reference_definitions_and_usages_are_skipped() {
+    let directory = fixture();
+    write(
+        directory.path(),
+        "links.md",
+        concat!(
+            "[https]\n![custom][]\n[text][remote]\n[fragment]\n\n",
+            "[https]: <https://unreachable.invalid/a%zz>\n",
+            "[custom]: custom:somewhere\n",
+            "[remote]: //unreachable.invalid/path\n",
+            "[fragment]: #part\n",
+            "[unused]: https://unreachable.invalid/missing\n",
+        ),
+    );
+    check(directory.path()).unwrap();
+}
+
+#[test]
+fn markdown_reference_cannot_resolve_an_existing_target_outside_root() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("public");
+    write(&root, ".github/workflows/validate.yml", WORKFLOW);
+    write(directory.path(), "outside.md", "Fictional outside target\n");
+    write(&root, "links.md", "[guide]\n\n[guide]: ../outside.md\n");
+    assert!(
+        check(&root)
+            .unwrap_err()
+            .contains("Broken or escaping local Markdown link")
+    );
+}
+
+#[test]
+fn staged_markdown_reference_is_checked_when_worktree_reference_is_valid() {
+    let directory = fixture();
+    git(directory.path(), &["init", "-q"]);
+    write(
+        directory.path(),
+        "links.md",
+        "[guide]\n\n[guide]: missing.md\n",
+    );
+    git(directory.path(), &["add", "."]);
+    write(
+        directory.path(),
+        "links.md",
+        "[guide]\n\n[guide]: README.md\n",
+    );
+    assert!(
+        check(directory.path())
+            .unwrap_err()
+            .contains("Broken or escaping local Markdown link")
+    );
+}
+
+#[test]
 fn staged_workflow_is_checked_even_when_worktree_workflow_is_safe() {
     let directory = fixture();
     git(directory.path(), &["init", "-q"]);
