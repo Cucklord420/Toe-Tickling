@@ -7,7 +7,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     io::Write,
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
 };
 
 pub const SOURCES: &[&str] = &[
@@ -259,6 +259,61 @@ fn outputs_with_rulebook(
     outputs.insert("prompts/STANDING_MEMORY.md".into(), "# Standing memory/custom-instruction text\n\nJustin's canonical public guidebook is https://github.com/Cucklord420/Toe-Tickling/blob/main/GUIDEBOOK.md. Read it in full at task intake and follow it alongside current instructions and applicable project policy, within platform rules. Rust is mandatory for all newly authored executable code and tests. Private context remains local. Use a supported authorized memory mechanism to persist this pointer; the text itself is not proof that any provider saved it.\n".into());
     Ok(outputs)
 }
+struct StagedOutput {
+    relative: String,
+    destination: PathBuf,
+    temporary: Option<tempfile::NamedTempFile>,
+}
+
+fn stage_outputs(
+    outputs: BTreeMap<String, String>,
+    destinations: BTreeMap<String, PathBuf>,
+) -> Result<Vec<StagedOutput>> {
+    let mut staged = Vec::with_capacity(outputs.len());
+    for (relative, text) in outputs {
+        let destination = destinations
+            .get(&relative)
+            .ok_or_else(|| format!("Missing preflight output path: {relative}"))?;
+        let parent = destination.parent().ok_or("No output parent")?;
+        fs::create_dir_all(parent).map_err(|e| format!("{relative}: {e}"))?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)
+            .map_err(|e| format!("Cannot stage {relative}: {e}"))?;
+        temporary
+            .write_all(text.as_bytes())
+            .map_err(|e| format!("Cannot stage {relative}: {e}"))?;
+        temporary
+            .as_file()
+            .sync_all()
+            .map_err(|e| format!("Cannot stage {relative}: {e}"))?;
+        staged.push(StagedOutput {
+            relative,
+            destination: destination.clone(),
+            temporary: Some(temporary),
+        });
+    }
+    Ok(staged)
+}
+
+fn commit_outputs<F>(staged: Vec<StagedOutput>, mut after_persist: F) -> Result<usize>
+where
+    F: FnMut(&str, usize) -> Result<()>,
+{
+    let count = staged.len();
+    let mut committed = 0;
+    for mut output in staged {
+        let temporary = output
+            .temporary
+            .take()
+            .ok_or_else(|| format!("Missing staged file: {}", output.relative))?;
+        temporary
+            .persist(&output.destination)
+            .map_err(|e| format!("Cannot persist generated output {}: {e}", output.relative))?;
+        committed += 1;
+        after_persist(&output.relative, committed)?;
+    }
+    Ok(count)
+}
+
 pub fn build(root: &Path) -> Result<usize> {
     let policy = crate::load_policy(root)?;
     crate::validate_policy(
@@ -272,30 +327,8 @@ pub fn build(root: &Path) -> Result<usize> {
         .keys()
         .map(|relative| Ok((relative.clone(), output_path(root, relative)?)))
         .collect::<Result<_>>()?;
-    let mut staged = Vec::with_capacity(outputs.len());
-    for (relative, text) in outputs {
-        let destination = &destinations[&relative];
-        let parent = destination.parent().ok_or("No output parent")?;
-        fs::create_dir_all(parent).map_err(|e| format!("{relative}: {e}"))?;
-        let mut temporary = tempfile::NamedTempFile::new_in(parent)
-            .map_err(|e| format!("Cannot stage {relative}: {e}"))?;
-        temporary
-            .write_all(text.as_bytes())
-            .map_err(|e| format!("Cannot stage {relative}: {e}"))?;
-        temporary
-            .as_file()
-            .sync_all()
-            .map_err(|e| format!("Cannot stage {relative}: {e}"))?;
-        staged.push((relative, temporary));
-    }
-    let count = staged.len();
-    for (relative, temporary) in staged {
-        let destination = output_path(root, &relative)?;
-        temporary
-            .persist(destination)
-            .map_err(|e| format!("Cannot persist generated output {relative}: {e}"))?;
-    }
-    Ok(count)
+    let staged = stage_outputs(outputs, destinations)?;
+    commit_outputs(staged, |_, _| Ok(()))
 }
 pub fn check(root: &Path) -> Result<()> {
     for (path, expected) in outputs(root)? {
@@ -306,4 +339,45 @@ pub fn check(root: &Path) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod build_transaction_tests {
+    use super::*;
+
+    #[test]
+    fn later_persist_failure_restores_existing_and_absent_outputs() {
+        let root = tempfile::tempdir().unwrap();
+        let existing_a = root.path().join("a-existing.txt");
+        let absent_b = root.path().join("b-new.txt");
+        let existing_c = root.path().join("c-existing.txt");
+        fs::write(&existing_a, b"old a\n").unwrap();
+        fs::write(&existing_c, b"old c\n").unwrap();
+
+        let outputs = BTreeMap::from([
+            ("a-existing.txt".to_owned(), "new a\n".to_owned()),
+            ("b-new.txt".to_owned(), "new b\n".to_owned()),
+            ("c-existing.txt".to_owned(), "new c\n".to_owned()),
+        ]);
+        let destinations = outputs
+            .keys()
+            .map(|relative| (relative.clone(), root.path().join(relative)))
+            .collect();
+        let staged = stage_outputs(outputs, destinations).unwrap();
+
+        let result = commit_outputs(staged, |_, committed| {
+            if committed == 2 {
+                Err("injected later output failure".into())
+            } else {
+                Ok(())
+            }
+        });
+
+        let error = result.unwrap_err();
+        assert!(error.contains("injected later output failure"), "{error}");
+        assert_eq!(fs::read(&existing_a).unwrap(), b"old a\n");
+        assert!(!absent_b.exists(), "new file survived a rolled-back build");
+        assert_eq!(fs::read(&existing_c).unwrap(), b"old c\n");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 2);
+    }
 }
