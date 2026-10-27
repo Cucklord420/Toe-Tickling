@@ -381,8 +381,17 @@ fn check_disposition(
 // Source state covers tracked files and non-ignored untracked files. Ignored
 // private data and build outputs intentionally remain outside this contract.
 fn require_complete_audit_checkout(root: &Path) -> Result<()> {
+    // Force status to inspect the worktree instead of trusting FSMonitor or
+    // untracked-cache entries that can hide source changes.
     let index = git_command(root)
-        .args(["--no-optional-locks", "ls-files", "-v", "-z"])
+        .args([
+            "-c",
+            "core.fsmonitor=false",
+            "--no-optional-locks",
+            "ls-files",
+            "-v",
+            "-z",
+        ])
         .output()
         .map_err(|_| "Cannot verify audit checkout state".to_string())?;
     require(index.status.success(), "Cannot verify audit checkout state")?;
@@ -403,6 +412,10 @@ fn require_clean_audit_worktree(root: &Path) -> Result<()> {
     require_complete_audit_checkout(root)?;
     let status = git_command(root)
         .args([
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.untrackedCache=false",
             "--no-optional-locks",
             "status",
             "--porcelain=v1",

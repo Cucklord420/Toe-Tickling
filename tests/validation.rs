@@ -140,6 +140,16 @@ fn clean_git(root: &Path, args: &[&str]) -> std::process::Output {
     command.output().unwrap()
 }
 
+fn fsmonitor_hook_command(path: &Path) -> String {
+    let path = path.to_string_lossy().replace('\\', "/");
+    #[cfg(windows)]
+    let path = {
+        let (drive, rest) = path.split_once(":/").unwrap();
+        format!("/{}/{}", drive.to_ascii_lowercase(), rest)
+    };
+    format!("sh '{}'", path.replace('\'', "'\\''"))
+}
+
 fn add_linked_worktree(repository: &Path, target: &Path) {
     let target = target.to_string_lossy().into_owned();
     let output = clean_git(
@@ -307,6 +317,71 @@ fn assume_unchanged_source_changes_reject_creation_and_invalidate_receipts() {
 #[test]
 fn skip_worktree_source_changes_reject_creation_and_invalidate_receipts() {
     assert_hidden_source_change_rejects_audits("--skip-worktree");
+}
+
+#[test]
+fn fsmonitor_valid_source_changes_reject_creation_and_invalidate_receipts() {
+    let dir = fixture();
+    let policy = load_policy(dir.path()).unwrap();
+    let audit = complete(dir.path());
+    let path = "src/fixture.rs";
+    let monitor = tempfile::tempdir().unwrap();
+    let hook = monitor.path().join("no-changes.sh");
+    fs::write(&hook, b"printf 'noop\\000'\n").unwrap();
+    let hook_command = fsmonitor_hook_command(&hook);
+    assert!(
+        clean_git(dir.path(), &["config", "core.fsmonitorHookVersion", "2"])
+            .status
+            .success()
+    );
+    assert!(
+        clean_git(dir.path(), &["config", "core.fsmonitor", &hook_command])
+            .status
+            .success()
+    );
+    assert!(
+        clean_git(dir.path(), &["update-index", "--fsmonitor"])
+            .status
+            .success()
+    );
+    assert!(
+        clean_git(
+            dir.path(),
+            &["update-index", "--fsmonitor-valid", "--", path]
+        )
+        .status
+        .success()
+    );
+    let flag = clean_git(dir.path(), &["ls-files", "-f", "--", path]);
+    assert!(flag.status.success());
+    assert!(String::from_utf8_lossy(&flag.stdout).starts_with("h "));
+
+    let changed_content = "// FICTIONAL_PRIVATE_SOURCE_VALUE\npub const VALUE: u8 = 2;\n";
+    fs::write(dir.path().join(path), changed_content).unwrap();
+    let ordinary_status = clean_git(
+        dir.path(),
+        &[
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+        ],
+    );
+    assert!(ordinary_status.status.success());
+    assert!(ordinary_status.stdout.is_empty());
+
+    for error in [
+        new_audit(dir.path(), "Fictional fsmonitor-hidden task".into()).unwrap_err(),
+        validate_audit(dir.path(), &policy, &audit, now()).unwrap_err(),
+    ] {
+        assert!(
+            error.contains("clean"),
+            "Unexpected audit rejection: {error}"
+        );
+        assert!(!error.contains(path));
+        assert!(!error.contains("FICTIONAL_PRIVATE_SOURCE_VALUE"));
+        assert!(!error.contains(dir.path().to_string_lossy().as_ref()));
+    }
 }
 
 #[test]
