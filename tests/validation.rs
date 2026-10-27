@@ -424,10 +424,22 @@ fn assert_hidden_source_change_rejects_audits(index_flag: &str) {
 fn active_clean_filter_is_rejected_before_git_status_or_hashing() {
     let dir = fixture();
     install_filter_attributes(&dir, "*.rs filter=audit-probe\n");
-    configure_audit_filter_probe(dir.path());
+    configure_audit_filter_probe(dir.path(), "audit-probe");
     modify_filtered_source(dir.path());
 
     assert_audit_rejects_active_filter(dir.path());
+}
+
+#[test]
+fn ambiguous_filter_driver_names_are_rejected_before_git_status_or_hashing() {
+    for driver in ["unspecified", "unset"] {
+        let dir = fixture();
+        install_filter_attributes(&dir, &format!("*.rs filter={driver}\n"));
+        configure_audit_filter_probe(dir.path(), driver);
+        modify_filtered_source(dir.path());
+
+        assert_audit_rejects_active_filter(dir.path());
+    }
 }
 
 #[test]
@@ -436,7 +448,7 @@ fn active_clean_filter_invalidates_receipt_before_git_status() {
     let policy = load_policy(dir.path()).unwrap();
     let audit = complete(dir.path());
     install_filter_attributes(&dir, "*.rs filter=audit-probe\n");
-    configure_audit_filter_probe(dir.path());
+    configure_audit_filter_probe(dir.path(), "audit-probe");
     modify_filtered_source(dir.path());
 
     let result = validate_audit(dir.path(), &policy, &audit, now());
@@ -453,11 +465,35 @@ fn active_clean_filter_invalidates_receipt_before_git_status() {
 }
 
 #[test]
+fn ambiguous_filter_driver_names_invalidate_receipts_without_running_filters() {
+    for driver in ["unspecified", "unset"] {
+        let dir = fixture();
+        let policy = load_policy(dir.path()).unwrap();
+        let audit = complete(dir.path());
+        install_filter_attributes(&dir, &format!("*.rs filter={driver}\n"));
+        configure_audit_filter_probe(dir.path(), driver);
+        modify_filtered_source(dir.path());
+
+        let result = validate_audit(dir.path(), &policy, &audit, now());
+        assert!(
+            !dir.path().join(".git/filter-probe-ran").exists(),
+            "Audit validation invoked the ambiguous {driver} clean filter"
+        );
+        let error = result.unwrap_err();
+        assert!(
+            error.contains("complete Git checkout"),
+            "Ambiguous external filter should invalidate the receipt: {error}"
+        );
+        assert!(!error.contains(dir.path().to_string_lossy().as_ref()));
+    }
+}
+
+#[test]
 fn cached_clean_filter_is_rejected_even_when_worktree_attribute_disables_it() {
     let dir = fixture();
     install_filter_attributes(&dir, "*.rs filter=audit-probe\n");
     fs::write(dir.path().join(".gitattributes"), "*.rs -filter\n").unwrap();
-    configure_audit_filter_probe(dir.path());
+    configure_audit_filter_probe(dir.path(), "audit-probe");
 
     assert_audit_rejects_active_filter(dir.path());
 }
@@ -471,7 +507,7 @@ fn worktree_clean_filter_is_rejected_before_git_status() {
         "*.rs filter=audit-probe\n",
     )
     .unwrap();
-    configure_audit_filter_probe(dir.path());
+    configure_audit_filter_probe(dir.path(), "audit-probe");
     modify_filtered_source(dir.path());
 
     assert_audit_rejects_active_filter(dir.path());
@@ -502,13 +538,15 @@ fn install_filter_attributes(dir: &TempDir, attributes: &str) {
     );
 }
 
-fn configure_audit_filter_probe(root: &Path) {
+fn configure_audit_filter_probe(root: &Path, driver: &str) {
+    let clean_key = format!("filter.{driver}.clean");
+    let required_key = format!("filter.{driver}.required");
     assert!(
         clean_git(
             root,
             &[
                 "config",
-                "filter.audit-probe.clean",
+                clean_key.as_str(),
                 "echo ran >> .git/filter-probe-ran && cat",
             ],
         )
@@ -516,7 +554,7 @@ fn configure_audit_filter_probe(root: &Path) {
         .success()
     );
     assert!(
-        clean_git(root, &["config", "filter.audit-probe.required", "true"])
+        clean_git(root, &["config", required_key.as_str(), "true"])
             .status
             .success()
     );
