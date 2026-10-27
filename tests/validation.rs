@@ -1,4 +1,10 @@
-use std::{collections::BTreeMap, fs, path::Path, process::Command};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::Path,
+    process::Command,
+    time::{Duration, SystemTime},
+};
 use tempfile::TempDir;
 use time::OffsetDateTime;
 use toe_tickling::*;
@@ -150,6 +156,24 @@ fn fsmonitor_hook_command(path: &Path) -> String {
     format!("sh '{}'", path.replace('\'', "'\\''"))
 }
 
+#[test]
+fn fsmonitor_hook_command_normalizes_windows_drive_unc_and_extended_paths() {
+    for (path, expected) in [
+        (r"C:\Task Dir\hook.sh", "sh '/c/Task Dir/hook.sh'"),
+        (
+            r"\\server\share\Task Dir\hook.sh",
+            "sh '//server/share/Task Dir/hook.sh'",
+        ),
+        (r"\\?\C:\Task Dir\hook.sh", "sh '/c/Task Dir/hook.sh'"),
+        (
+            r"\\?\UNC\server\share\Task Dir\hook.sh",
+            "sh '//server/share/Task Dir/hook.sh'",
+        ),
+    ] {
+        assert_eq!(fsmonitor_hook_command(Path::new(path)), expected);
+    }
+}
+
 fn add_linked_worktree(repository: &Path, target: &Path) {
     let target = target.to_string_lossy().into_owned();
     let output = clean_git(
@@ -267,6 +291,70 @@ fn unstaged_source_changes_reject_creation_and_invalidate_existing_receipts() {
 #[test]
 fn untracked_source_changes_reject_creation_and_invalidate_existing_receipts() {
     assert_source_change_rejects_audits("src/private-untracked-fixture.rs", false);
+}
+
+#[test]
+fn same_size_tracked_changes_reject_audits_when_git_stat_cache_matches() {
+    let dir = fixture();
+    let policy = load_policy(dir.path()).unwrap();
+    let audit = complete(dir.path());
+    let tracked = dir.path().join("src/fixture.rs");
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&tracked)
+        .unwrap();
+    let cached_modified = SystemTime::UNIX_EPOCH + Duration::from_secs(1_600_000_000);
+    file.set_times(fs::FileTimes::new().set_modified(cached_modified))
+        .unwrap();
+    assert!(
+        clean_git(dir.path(), &["config", "core.trustctime", "false"])
+            .status
+            .success()
+    );
+    let refreshed = clean_git(dir.path(), &["update-index", "--refresh"]);
+    assert!(
+        refreshed.status.success(),
+        "Index refresh failed: {}",
+        String::from_utf8_lossy(&refreshed.stderr)
+    );
+    let cached_modified = fs::metadata(&tracked).unwrap().modified().unwrap();
+
+    fs::write(&tracked, "pub const VALUE: u8 = 2;\n").unwrap();
+    fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&tracked)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(cached_modified))
+        .unwrap();
+
+    let ordinary_status = clean_git(
+        dir.path(),
+        &[
+            "-c",
+            "core.trustctime=false",
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+        ],
+    );
+    assert!(ordinary_status.status.success());
+    assert!(
+        ordinary_status.stdout.is_empty(),
+        "Fixture did not reproduce the Git stat-cache blind spot: {}",
+        String::from_utf8_lossy(&ordinary_status.stdout)
+    );
+
+    for error in [
+        new_audit(dir.path(), "Fictional stat-cache task".into()).unwrap_err(),
+        validate_audit(dir.path(), &policy, &audit, now()).unwrap_err(),
+    ] {
+        assert!(error.contains("clean"), "Unexpected audit error: {error}");
+        assert!(!error.contains("src/fixture.rs"));
+        assert!(!error.contains("pub const VALUE"));
+        assert!(!error.contains(dir.path().to_string_lossy().as_ref()));
+    }
 }
 
 fn assert_hidden_source_change_rejects_audits(index_flag: &str) {
