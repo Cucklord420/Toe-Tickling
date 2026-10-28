@@ -622,10 +622,11 @@ where
             );
             let mut failures = Vec::new();
             if let Err(path_error) = validate_staged_output_path(root, &staged[index]) {
+                let relative = staged[index].relative.clone();
+                let recovery = retain_backup(&mut staged[index]);
                 failures.push(format!(
                     "{}; path validation failed: {path_error}; {}",
-                    staged[index].relative,
-                    retain_backup(&mut staged[index])
+                    relative, recovery
                 ));
             } else if !original_matches(&staged[index]) {
                 let relative = staged[index].relative.clone();
