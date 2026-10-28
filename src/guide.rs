@@ -332,7 +332,7 @@ fn retain_backup(output: &mut StagedOutput) -> String {
         }
         OriginalOutput::Present { backup, .. } => match backup.take() {
             Some(file) => match file.keep() {
-                Ok(path) => format!("recovery backup retained at {}", path.display()),
+                Ok((_, path)) => format!("recovery backup retained at {}", path.display()),
                 Err(mut error) => {
                     let path = error.file.path().to_path_buf();
                     error.file.disable_cleanup(true);
@@ -423,6 +423,7 @@ fn restore_output(output: &mut StagedOutput) -> Result<()> {
             }
             restoration
                 .persist(&output.destination)
+                .map(|_| ())
                 .map_err(|error| format!("Cannot restore {}: {error}", output.relative))
         }
     }
@@ -555,9 +556,10 @@ where
             );
             let mut failures = Vec::new();
             if !original_matches(&staged[index]) {
+                let relative = staged[index].relative.clone();
                 failures.push(format!(
                     "{}; {}",
-                    staged[index].relative,
+                    relative,
                     retain_backup(&mut staged[index])
                 ));
             }
