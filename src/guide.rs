@@ -372,9 +372,21 @@ fn validate_staged_output_path(root: &Path, output: &StagedOutput) -> Result<()>
 }
 
 fn restore_output(root: &Path, output: &mut StagedOutput) -> Result<()> {
+    restore_output_with_hook(root, output, || {})
+}
+
+fn restore_output_with_hook<F>(
+    root: &Path,
+    output: &mut StagedOutput,
+    after_path_validation: F,
+) -> Result<()>
+where
+    F: FnOnce(),
+{
     validate_staged_output_path(root, output)?;
     match &output.original {
         OriginalOutput::Absent => {
+            after_path_validation();
             if destination_is_missing(&output.destination) {
                 return Ok(());
             }
@@ -839,6 +851,8 @@ mod build_transaction_tests {
 
         let outside = tempfile::tempdir().unwrap();
         let moved_dir = outside.path().join("moved-generated");
+        let redirect_dir = outside.path().join("redirect-generated");
+        fs::create_dir(&redirect_dir).unwrap();
         let outputs = BTreeMap::from([
             ("generated/a-existing.txt".to_owned(), "new a\n".to_owned()),
             ("generated/b-existing.txt".to_owned(), "new b\n".to_owned()),
@@ -852,7 +866,7 @@ mod build_transaction_tests {
         let result = commit_outputs(root.path(), staged, |_, committed| {
             if committed == 1 {
                 fs::rename(&output_dir, &moved_dir).unwrap();
-                symlink(&moved_dir, &output_dir).unwrap();
+                symlink(&redirect_dir, &output_dir).unwrap();
             }
             Ok(())
         });
@@ -868,12 +882,58 @@ mod build_transaction_tests {
             fs::read(moved_dir.join("b-existing.txt")).unwrap(),
             b"old b\n"
         );
+        let retained = fs::read_dir(root.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| fs::read(path).is_ok_and(|bytes| bytes == b"old a\n"))
+            .expect("original backup is not reachable from the stable repository root");
         assert!(
-            fs::read_dir(&moved_dir)
-                .unwrap()
-                .map(|entry| entry.unwrap().path())
-                .any(|path| fs::read(path).is_ok_and(|bytes| bytes == b"old a\n"))
+            error.contains(&format!(
+                "recovery backup retained at {}",
+                retained.display()
+            )),
+            "{error}"
         );
+        assert_eq!(fs::read(retained).unwrap(), b"old a\n");
+        assert_eq!(fs::read_dir(&redirect_dir).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn absent_output_rollback_revalidates_after_missing_destination_check() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let output_dir = root.path().join("generated");
+        fs::create_dir(&output_dir).unwrap();
+        let destination = output_dir.join("new-output.txt");
+        let outside = tempfile::tempdir().unwrap();
+        let moved_dir = outside.path().join("moved-generated");
+        let redirect_dir = outside.path().join("redirect-generated");
+        fs::create_dir(&redirect_dir).unwrap();
+        let outputs = BTreeMap::from([(
+            "generated/new-output.txt".to_owned(),
+            "generated\n".to_owned(),
+        )]);
+        let destinations =
+            BTreeMap::from([("generated/new-output.txt".to_owned(), destination.clone())]);
+        let mut staged = stage_outputs(root.path(), outputs, destinations).unwrap();
+        staged[0]
+            .temporary
+            .take()
+            .unwrap()
+            .persist_noclobber(&destination)
+            .unwrap();
+
+        let error = restore_output_with_hook(root.path(), &mut staged[0], || {
+            fs::rename(&output_dir, &moved_dir).unwrap();
+            fs::remove_file(moved_dir.join("new-output.txt")).unwrap();
+            symlink(&redirect_dir, &output_dir).unwrap();
+        })
+        .unwrap_err();
+
+        assert!(error.to_lowercase().contains("symlink"), "{error}");
+        assert_eq!(fs::read_dir(&redirect_dir).unwrap().count(), 0);
     }
 
     #[cfg(windows)]
