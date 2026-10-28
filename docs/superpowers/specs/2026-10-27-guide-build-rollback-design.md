@@ -26,7 +26,7 @@ An abrupt process termination or host loss between independent filesystem rename
 
 - Keep `build` responsible for policy validation, rendering, and destination preflight.
 - Separate staging and commit in `src/guide.rs` so failure injection can exercise the commit path without adding a production environment variable or external test helper.
-- Store each backup beside its destination so restoration uses the same filesystem. Preserve existing file permissions in both backup and restored file.
+- Store each original backup at the repository root, outside replaceable output ancestors, so its recovery path remains valid if a nested output directory moves. Restoration reads that backup and stages the replacement beside its destination for same-filesystem persistence. Preserve existing file permissions in both backup and restored file.
 - Re-resolve each relative destination through the root's symlink-safe path validator before `persist`, before `remove_file`, and before rollback replacement. If validation fails, stop the commit and retain the backup rather than writing through the changed path.
 - After retaining a backup or persisting a restoration, reapply the original permissions through the returned file handle; retain and report the backup even if permission restoration fails.
 - Before restoring, verify the destination still contains the bytes installed by this transaction (or is unchanged from its original state). If it contains a third-party change, do not overwrite it; retain the backup and report the conflict.

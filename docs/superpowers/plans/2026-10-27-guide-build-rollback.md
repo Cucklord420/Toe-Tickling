@@ -4,7 +4,7 @@
 
 **Goal:** Ensure a returned failure during generated-file persistence restores the prior coherent output set or retains explicit recovery backups.
 
-**Architecture:** Keep validation/rendering and current output paths unchanged. Add a private staged-output transaction in `src/guide.rs` that stores new files and adjacent backups, commits each file atomically, and rolls completed replacements back in reverse order if a later operation fails.
+**Architecture:** Keep validation/rendering and current output paths unchanged. Add a private staged-output transaction in `src/guide.rs` that stores replacement files beside destinations and original backups at the repository root, commits each file atomically, and rolls completed replacements back in reverse order if a later operation fails.
 
 **Tech Stack:** Rust 1.99.1, Cargo workspace, `tempfile`, standard filesystem APIs; no new dependencies.
 
@@ -18,6 +18,7 @@
 - Revalidate destination ancestors through the root before each replacement and rollback; reject symlinks introduced after staging.
 - Preserve existing file permissions when backing up and restoring outputs.
 - Reapply original permissions after Windows tempfile retention and restoration finalization.
+- Keep recovery backups outside replaceable output ancestors so reported paths remain reachable after an ancestor rename.
 - Never overwrite a destination changed by another writer during rollback; retain the backup and report its path.
 - Do not claim atomicity across a process crash or power loss.
 
@@ -28,6 +29,7 @@
 - If rollback sees content other than this transaction's new bytes or the original bytes, it must preserve the concurrent change and keep the backup.
 - If an ancestor becomes a symlink after staging, the next replacement and rollback must reject the path and avoid following it; retain and report the prior output's backup.
 - Retained Windows backups and restored destinations must preserve the original readonly attribute.
+- An ancestor symlink introduced during rollback must not make a missing-destination probe count as a successful restoration; revalidate after the probe.
 - A genuine later persistence failure with an unchanged destination must roll back prior replacements and clean staged files.
 - Validation/path-collision errors must still happen before any generated file changes.
 - Successful builds must leave no transaction files behind and retain the existing output-count behavior.
@@ -53,6 +55,8 @@
 - [x] Exact-head test checkpoint 1e45af065577ff3238450a3bb6ce47e87ef96544: Ubuntu symlink-swap regression failed as expected; Windows readonly-backup and readonly-restoration regressions failed as expected; the Windows locked-target real-persist-failure regression passed.
 - [ ] Revalidate paths before replacement/removal/restoration and reapply original permissions after `keep`/`persist` finalization.
 - [ ] Run exact-head Ubuntu and Windows checks after the fix.
+- [x] Follow-up review found two more path cases: a retained backup path could go stale if an ancestor is redirected elsewhere, and an absent-output probe could accept a path swapped to an empty symlink target. Added red Unix regressions for both on exact test head `f1adfe5753a3f6011e3830963f0e64b650ad4e1c`.
+- [ ] Move original backups to the stable repository root and revalidate after an absent-destination probe.
 
 ### Task 2: Route `build` through the transaction
 

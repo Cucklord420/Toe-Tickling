@@ -388,6 +388,7 @@ where
         OriginalOutput::Absent => {
             after_path_validation();
             if destination_is_missing(&output.destination) {
+                validate_staged_output_path(root, output)?;
                 return Ok(());
             }
             if !generated_output_matches(output) {
@@ -525,7 +526,9 @@ fn stage_outputs(
                 let bytes = fs::read(destination)
                     .map_err(|error| format!("Cannot read existing output {relative}: {error}"))?;
                 let permissions = metadata.permissions();
-                let mut backup = tempfile::NamedTempFile::new_in(parent).map_err(|error| {
+                // Keep recovery paths outside replaceable output ancestors so rollback can
+                // report a usable location even if one of those ancestors moves.
+                let mut backup = tempfile::NamedTempFile::new_in(root).map_err(|error| {
                     format!("Cannot back up existing output {relative}: {error}")
                 })?;
                 backup.write_all(&bytes).map_err(|error| {
