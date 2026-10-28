@@ -42,8 +42,8 @@
 - [x] Add a unit regression with two existing files and one originally absent file; inject a failure after the second successful replacement and assert the files are restored exactly, original Unix permission bits return, and the absent file remains absent.
 - [x] Add regressions for concurrent changes after staging and during rollback; assert changes are preserved and the original backup path is reported and retained.
 - [x] Run the exact-head hosted Ubuntu regression job and confirm the pre-implementation failures: overwritten original output, accepted post-staging change, and missing retained backup.
-- [ ] Implement backup staging and reverse rollback. Preserve backup files and include their paths in the returned error if rollback cannot safely restore.
-- [ ] Run the focused test and existing guide-build validation regressions.
+- [x] Implement backup staging and reverse rollback. Preserve backup files and include their paths in the returned error if rollback cannot safely restore.
+- [x] Run the focused test and existing guide-build validation regressions.
 
 ### Task 2: Route `build` through the transaction
 
@@ -51,11 +51,11 @@
 - Modify: `src/guide.rs`
 - Existing integration coverage: `tests/validation.rs`
 
-- [ ] Keep policy validation, rendering, output-path preflight, and complete new-output staging before commit.
-- [ ] Verify a validation failure leaves all generated outputs byte-for-byte unchanged.
-- [ ] Replace the sequential persist loop with `commit_outputs`; retain the number-of-outputs return value.
-- [ ] Add assertions for permission preservation and backup retention when rollback detects a concurrent destination change.
-- [ ] Run `cargo fmt --all -- --check`, `cargo clippy --workspace --locked --all-targets -- -D warnings`, `cargo test --workspace --locked`, `cargo run --locked -- check`, and `cargo run --locked -p guidebook-audit -- check .`.
+- [x] Keep policy validation, rendering, output-path preflight, and complete new-output staging before commit.
+- [x] Verify a validation failure leaves all generated outputs byte-for-byte unchanged.
+- [x] Replace the sequential persist loop with `commit_outputs`; retain the number-of-outputs return value.
+- [x] Add assertions for permission preservation and backup retention when rollback detects a concurrent destination change.
+- [x] Run `cargo fmt --all -- --check`, `cargo clippy --workspace --locked --all-targets -- -D warnings`, `cargo test --workspace --locked`, `cargo run --locked -- check`, and `cargo run --locked -p guidebook-audit -- check .` on exact head in Ubuntu Actions run 40606300518.
 - [ ] Inspect the complete diff and confirm no generated policy files or unrelated adoption changes are included.
 
 ### Task 3: Verify exact branch state
@@ -63,6 +63,7 @@
 **Files:**
 - No further source changes unless a validation defect is found.
 
-- [ ] Confirm the branch remains based on `d50fe7c8c0a94bb32676b5042f53adfead0e7ca0` or explicitly reconcile newer `main` changes.
-- [ ] Obtain exact-head Ubuntu workflow results before opening a canonical PR for existing Issue #35.
+- [x] Confirm the branch remains based on `d50fe7c8c0a94bb32676b5042f53adfead0e7ca0`; GitHub `main` still points there.
+- [x] Obtain exact-head Ubuntu workflow results before opening a canonical PR for existing Issue #35: run 40606300518 passed all required jobs at 6874af644decc67859ef6dfe6f91d3f6fe21c345.
+- [ ] Complete independent branch review and inspect the complete diff before opening the canonical PR.
 - [ ] Keep Issue #35 open until the fix is merged and verified on `main`.
