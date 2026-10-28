@@ -436,6 +436,7 @@ where
                 .destination
                 .parent()
                 .ok_or_else(|| format!("No output parent for {}", output.relative))?;
+            validate_staged_output_path(root, output)?;
             let mut restoration = tempfile::NamedTempFile::new_in(parent).map_err(|error| {
                 format!("Cannot stage restoration for {}: {error}", output.relative)
             })?;
