@@ -259,10 +259,189 @@ fn outputs_with_rulebook(
     outputs.insert("prompts/STANDING_MEMORY.md".into(), "# Standing memory/custom-instruction text\n\nJustin's canonical public guidebook is https://github.com/Cucklord420/Toe-Tickling/blob/main/GUIDEBOOK.md. Read it in full at task intake and follow it alongside current instructions and applicable project policy, within platform rules. Rust is mandatory for all newly authored executable code and tests. Private context remains local. Use a supported authorized memory mechanism to persist this pointer; the text itself is not proof that any provider saved it.\n".into());
     Ok(outputs)
 }
+enum OriginalOutput {
+    Absent,
+    Present {
+        bytes: Vec<u8>,
+        permissions: fs::Permissions,
+        backup: Option<tempfile::NamedTempFile>,
+    },
+}
+
 struct StagedOutput {
     relative: String,
     destination: PathBuf,
     temporary: Option<tempfile::NamedTempFile>,
+    new_bytes: Vec<u8>,
+    new_permissions: fs::Permissions,
+    original: OriginalOutput,
+}
+
+fn regular_file_snapshot(destination: &Path) -> Option<(Vec<u8>, fs::Permissions)> {
+    let metadata = fs::symlink_metadata(destination).ok()?;
+    if !metadata.file_type().is_file() {
+        return None;
+    }
+    Some((fs::read(destination).ok()?, metadata.permissions()))
+}
+
+fn permissions_match(left: &fs::Permissions, right: &fs::Permissions) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        left.mode() == right.mode()
+    }
+    #[cfg(not(unix))]
+    {
+        left.readonly() == right.readonly()
+    }
+}
+
+fn destination_is_missing(destination: &Path) -> bool {
+    matches!(
+        fs::symlink_metadata(destination),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound
+    )
+}
+
+fn original_matches(output: &StagedOutput) -> bool {
+    match &output.original {
+        OriginalOutput::Absent => destination_is_missing(&output.destination),
+        OriginalOutput::Present {
+            bytes, permissions, ..
+        } => regular_file_snapshot(&output.destination).is_some_and(
+            |(current, current_permissions)| {
+                current.as_slice() == bytes.as_slice()
+                    && permissions_match(&current_permissions, permissions)
+            },
+        ),
+    }
+}
+
+fn generated_output_matches(output: &StagedOutput) -> bool {
+    regular_file_snapshot(&output.destination).is_some_and(|(current, permissions)| {
+        current.as_slice() == output.new_bytes.as_slice()
+            && permissions_match(&permissions, &output.new_permissions)
+    })
+}
+
+fn retain_backup(output: &mut StagedOutput) -> String {
+    match &mut output.original {
+        OriginalOutput::Absent => {
+            "no original backup exists because this output was absent when staged".into()
+        }
+        OriginalOutput::Present { backup, .. } => match backup.take() {
+            Some(file) => match file.keep() {
+                Ok(path) => format!("recovery backup retained at {}", path.display()),
+                Err(mut error) => {
+                    let path = error.file.path().to_path_buf();
+                    error.file.disable_cleanup(true);
+                    format!(
+                        "recovery backup left at {} after it could not be finalized: {}",
+                        path.display(),
+                        error.error
+                    )
+                }
+            },
+            None => "the recovery backup was already retained".into(),
+        },
+    }
+}
+
+fn restore_output(output: &mut StagedOutput) -> Result<()> {
+    match &output.original {
+        OriginalOutput::Absent => {
+            if destination_is_missing(&output.destination) {
+                return Ok(());
+            }
+            if !generated_output_matches(output) {
+                return Err(format!(
+                    "{} changed during rollback; preserving its current contents",
+                    output.relative
+                ));
+            }
+            fs::remove_file(&output.destination).map_err(|error| {
+                format!("Cannot remove newly generated {}: {error}", output.relative)
+            })
+        }
+        OriginalOutput::Present {
+            bytes,
+            permissions,
+            backup,
+        } => {
+            if original_matches(output) {
+                return Ok(());
+            }
+            if !generated_output_matches(output) {
+                return Err(format!(
+                    "{} changed during rollback; preserving its current contents",
+                    output.relative
+                ));
+            }
+            let backup = backup
+                .as_ref()
+                .ok_or_else(|| format!("Recovery backup for {} is unavailable", output.relative))?;
+            let backup_bytes = fs::read(backup.path()).map_err(|error| {
+                format!(
+                    "Cannot read recovery backup for {}: {error}",
+                    output.relative
+                )
+            })?;
+            if backup_bytes.as_slice() != bytes.as_slice() {
+                return Err(format!(
+                    "Recovery backup for {} no longer matches its staged contents",
+                    output.relative
+                ));
+            }
+            let parent = output
+                .destination
+                .parent()
+                .ok_or_else(|| format!("No output parent for {}", output.relative))?;
+            let mut restoration = tempfile::NamedTempFile::new_in(parent).map_err(|error| {
+                format!("Cannot stage restoration for {}: {error}", output.relative)
+            })?;
+            restoration.write_all(bytes).map_err(|error| {
+                format!("Cannot write restoration for {}: {error}", output.relative)
+            })?;
+            restoration
+                .as_file()
+                .set_permissions(permissions.clone())
+                .map_err(|error| {
+                    format!(
+                        "Cannot restore permissions for {}: {error}",
+                        output.relative
+                    )
+                })?;
+            restoration.as_file().sync_all().map_err(|error| {
+                format!("Cannot sync restoration for {}: {error}", output.relative)
+            })?;
+            if !generated_output_matches(output) {
+                return Err(format!(
+                    "{} changed during rollback; preserving its current contents",
+                    output.relative
+                ));
+            }
+            restoration
+                .persist(&output.destination)
+                .map_err(|error| format!("Cannot restore {}: {error}", output.relative))
+        }
+    }
+}
+
+fn rollback_committed(staged: &mut [StagedOutput], committed: &[usize], cause: String) -> String {
+    let mut failures = Vec::new();
+    for index in committed.iter().rev() {
+        let output = &mut staged[*index];
+        if let Err(error) = restore_output(output) {
+            let recovery = retain_backup(output);
+            failures.push(format!("{error}; {recovery}"));
+        }
+    }
+    if failures.is_empty() {
+        cause
+    } else {
+        format!("{cause}; rollback details: {}", failures.join("; "))
+    }
 }
 
 fn stage_outputs(
@@ -276,6 +455,42 @@ fn stage_outputs(
             .ok_or_else(|| format!("Missing preflight output path: {relative}"))?;
         let parent = destination.parent().ok_or("No output parent")?;
         fs::create_dir_all(parent).map_err(|e| format!("{relative}: {e}"))?;
+
+        let original = match fs::symlink_metadata(destination) {
+            Ok(metadata) if metadata.file_type().is_file() => {
+                let bytes = fs::read(destination)
+                    .map_err(|error| format!("Cannot read existing output {relative}: {error}"))?;
+                let permissions = metadata.permissions();
+                let mut backup = tempfile::NamedTempFile::new_in(parent).map_err(|error| {
+                    format!("Cannot back up existing output {relative}: {error}")
+                })?;
+                backup.write_all(&bytes).map_err(|error| {
+                    format!("Cannot back up existing output {relative}: {error}")
+                })?;
+                backup
+                    .as_file()
+                    .set_permissions(permissions.clone())
+                    .map_err(|error| {
+                        format!("Cannot preserve permissions for {relative}: {error}")
+                    })?;
+                backup
+                    .as_file()
+                    .sync_all()
+                    .map_err(|error| format!("Cannot sync backup for {relative}: {error}"))?;
+                OriginalOutput::Present {
+                    bytes,
+                    permissions,
+                    backup: Some(backup),
+                }
+            }
+            Ok(_) => {
+                return Err(format!(
+                    "Generated output is not a regular file: {relative}"
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => OriginalOutput::Absent,
+            Err(error) => return Err(format!("Cannot inspect output {relative}: {error}")),
+        };
         let mut temporary = tempfile::NamedTempFile::new_in(parent)
             .map_err(|e| format!("Cannot stage {relative}: {e}"))?;
         temporary
@@ -285,11 +500,27 @@ fn stage_outputs(
             .as_file()
             .sync_all()
             .map_err(|e| format!("Cannot stage {relative}: {e}"))?;
+        let new_permissions = temporary
+            .as_file()
+            .metadata()
+            .map_err(|error| format!("Cannot inspect staged output {relative}: {error}"))?
+            .permissions();
         staged.push(StagedOutput {
             relative,
             destination: destination.clone(),
             temporary: Some(temporary),
+            new_bytes: text.into_bytes(),
+            new_permissions,
+            original,
         });
+        let last = staged.last_mut().expect("just staged an output");
+        if !original_matches(last) {
+            let recovery = retain_backup(last);
+            return Err(format!(
+                "Output {} changed while it was staged; {recovery}",
+                last.relative
+            ));
+        }
     }
     Ok(staged)
 }
@@ -299,17 +530,68 @@ where
     F: FnMut(&str, usize) -> Result<()>,
 {
     let count = staged.len();
-    let mut committed = 0;
-    for mut output in staged {
-        let temporary = output
+    let mut staged = staged;
+    let mut committed = Vec::new();
+    for index in 0..staged.len() {
+        if !original_matches(&staged[index]) {
+            let relative = staged[index].relative.clone();
+            let recovery = retain_backup(&mut staged[index]);
+            let cause = format!("Generated output changed after staging: {relative}; {recovery}");
+            return Err(rollback_committed(&mut staged, &committed, cause));
+        }
+
+        let temporary = staged[index]
             .temporary
             .take()
-            .ok_or_else(|| format!("Missing staged file: {}", output.relative))?;
-        temporary
-            .persist(&output.destination)
-            .map_err(|e| format!("Cannot persist generated output {}: {e}", output.relative))?;
-        committed += 1;
-        after_persist(&output.relative, committed)?;
+            .ok_or_else(|| format!("Missing staged file: {}", staged[index].relative))?;
+        let persist_result = match &staged[index].original {
+            OriginalOutput::Absent => temporary.persist_noclobber(&staged[index].destination),
+            OriginalOutput::Present { .. } => temporary.persist(&staged[index].destination),
+        };
+        if let Err(error) = persist_result {
+            let cause = format!(
+                "Cannot persist generated output {}: {error}",
+                staged[index].relative
+            );
+            let mut failures = Vec::new();
+            if !original_matches(&staged[index]) {
+                failures.push(format!(
+                    "{}; {}",
+                    staged[index].relative,
+                    retain_backup(&mut staged[index])
+                ));
+            }
+            let rollback = rollback_committed(&mut staged, &committed, cause);
+            if failures.is_empty() {
+                return Err(rollback);
+            }
+            return Err(format!(
+                "{rollback}; preexisting output changed: {}",
+                failures.join("; ")
+            ));
+        }
+
+        committed.push(index);
+        if !generated_output_matches(&staged[index]) {
+            let relative = staged[index].relative.clone();
+            return Err(rollback_committed(
+                &mut staged,
+                &committed,
+                format!("Generated output changed during commit: {relative}"),
+            ));
+        }
+
+        let relative = staged[index].relative.clone();
+        if let Err(error) = after_persist(&relative, committed.len()) {
+            return Err(rollback_committed(&mut staged, &committed, error));
+        }
+        if !generated_output_matches(&staged[index]) {
+            return Err(rollback_committed(
+                &mut staged,
+                &committed,
+                format!("Generated output changed after commit: {relative}"),
+            ));
+        }
     }
     Ok(count)
 }

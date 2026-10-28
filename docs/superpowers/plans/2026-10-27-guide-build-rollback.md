@@ -36,11 +36,12 @@
 - Existing integration coverage: `tests/validation.rs`
 
 **Interfaces:**
-- `commit_outputs` accepts staged output records and an internal `FnMut(&str, usize) -> Result<()>` hook called after each successful replacement; production passes an always-successful hook, while unit tests inject a failure after the first replacement.
+- `commit_outputs` accepts staged output records and an internal `FnMut(&str, usize) -> Result<()>` hook called after each successful replacement; production passes an always-successful hook, while unit tests inject a failure after the second replacement.
 - Each staged record carries the relative output name, destination path, new bytes/staged file, original bytes and permissions, optional backup, and whether replacement completed.
 
-- [ ] Add a unit regression with two existing files and one originally absent file; inject a failure after the first successful replacement and assert the files are restored exactly and the absent file remains absent.
-- [ ] Run the focused test and confirm it fails because the current sequential-commit path does not roll back.
+- [x] Add a unit regression with two existing files and one originally absent file; inject a failure after the second successful replacement and assert the files are restored exactly, original Unix permission bits return, and the absent file remains absent.
+- [x] Add regressions for concurrent changes after staging and during rollback; assert changes are preserved and the original backup path is reported and retained.
+- [x] Run the exact-head hosted Ubuntu regression job and confirm the pre-implementation failures: overwritten original output, accepted post-staging change, and missing retained backup.
 - [ ] Implement backup staging and reverse rollback. Preserve backup files and include their paths in the returned error if rollback cannot safely restore.
 - [ ] Run the focused test and existing guide-build validation regressions.
 
@@ -51,6 +52,7 @@
 - Existing integration coverage: `tests/validation.rs`
 
 - [ ] Keep policy validation, rendering, output-path preflight, and complete new-output staging before commit.
+- [ ] Verify a validation failure leaves all generated outputs byte-for-byte unchanged.
 - [ ] Replace the sequential persist loop with `commit_outputs`; retain the number-of-outputs return value.
 - [ ] Add assertions for permission preservation and backup retention when rollback detects a concurrent destination change.
 - [ ] Run `cargo fmt --all -- --check`, `cargo clippy --workspace --locked --all-targets -- -D warnings`, `cargo test --workspace --locked`, `cargo run --locked -- check`, and `cargo run --locked -p guidebook-audit -- check .`.
