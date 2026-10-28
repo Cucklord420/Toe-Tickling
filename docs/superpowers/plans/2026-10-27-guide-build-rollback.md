@@ -15,7 +15,9 @@
 - All new executable code and tests must be Rust.
 - Keep `build` output paths, bytes, return value, and `check` behavior compatible.
 - Validate and stage all outputs before the first destination replacement.
+- Revalidate destination ancestors through the root before each replacement and rollback; reject symlinks introduced after staging.
 - Preserve existing file permissions when backing up and restoring outputs.
+- Reapply original permissions after Windows tempfile retention and restoration finalization.
 - Never overwrite a destination changed by another writer during rollback; retain the backup and report its path.
 - Do not claim atomicity across a process crash or power loss.
 
@@ -24,6 +26,9 @@
 - A destination that was originally absent must be removed if a later commit step fails.
 - A destination that existed must be restored byte-for-byte and retain its permissions.
 - If rollback sees content other than this transaction's new bytes or the original bytes, it must preserve the concurrent change and keep the backup.
+- If an ancestor becomes a symlink after staging, the next replacement and rollback must reject the path and avoid following it; retain and report the prior output's backup.
+- Retained Windows backups and restored destinations must preserve the original readonly attribute.
+- A genuine later persistence failure with an unchanged destination must roll back prior replacements and clean staged files.
 - Validation/path-collision errors must still happen before any generated file changes.
 - Successful builds must leave no transaction files behind and retain the existing output-count behavior.
 
@@ -44,6 +49,10 @@
 - [x] Run the exact-head hosted Ubuntu regression job and confirm the pre-implementation failures: overwritten original output, accepted post-staging change, and missing retained backup.
 - [x] Implement backup staging and reverse rollback. Preserve backup files and include their paths in the returned error if rollback cannot safely restore.
 - [x] Run the focused test and existing guide-build validation regressions.
+- [x] Fresh review caught path-ancestor revalidation and Windows readonly metadata gaps; add red regressions before fixing them.
+- [x] Exact-head test checkpoint 1e45af065577ff3238450a3bb6ce47e87ef96544: Ubuntu symlink-swap regression failed as expected; Windows readonly-backup and readonly-restoration regressions failed as expected; the Windows locked-target real-persist-failure regression passed.
+- [ ] Revalidate paths before replacement/removal/restoration and reapply original permissions after `keep`/`persist` finalization.
+- [ ] Run exact-head Ubuntu and Windows checks after the fix.
 
 ### Task 2: Route `build` through the transaction
 
@@ -65,5 +74,5 @@
 
 - [x] Confirm the branch remains based on `d50fe7c8c0a94bb32676b5042f53adfead0e7ca0`; GitHub `main` still points there.
 - [x] Obtain exact-head Ubuntu workflow results before opening a canonical PR for existing Issue #35: run 40606300518 passed all required jobs at 6874af644decc67859ef6dfe6f91d3f6fe21c345.
-- [ ] Complete independent branch review and inspect the complete diff before opening the canonical PR.
+- [ ] Complete independent branch review after the review-driven fix, inspect the complete diff, and open one canonical PR only after exact-head validation.
 - [ ] Keep Issue #35 open until the fix is merged and verified on `main`.

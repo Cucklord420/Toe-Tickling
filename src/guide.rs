@@ -330,9 +330,24 @@ fn retain_backup(output: &mut StagedOutput) -> String {
         OriginalOutput::Absent => {
             "no original backup exists because this output was absent when staged".into()
         }
-        OriginalOutput::Present { backup, .. } => match backup.take() {
+        OriginalOutput::Present {
+            permissions,
+            backup,
+            ..
+        } => match backup.take() {
             Some(file) => match file.keep() {
-                Ok((_, path)) => format!("recovery backup retained at {}", path.display()),
+                Ok((file, path)) => {
+                    let retained = format!("recovery backup retained at {}", path.display());
+                    match file
+                        .set_permissions(permissions.clone())
+                        .and_then(|()| file.sync_all())
+                    {
+                        Ok(()) => retained,
+                        Err(error) => format!(
+                            "{retained}; original backup permissions could not be fully preserved: {error}"
+                        ),
+                    }
+                }
                 Err(mut error) => {
                     let path = error.file.path().to_path_buf();
                     error.file.disable_cleanup(true);
@@ -348,7 +363,16 @@ fn retain_backup(output: &mut StagedOutput) -> String {
     }
 }
 
-fn restore_output(output: &mut StagedOutput) -> Result<()> {
+fn validate_staged_output_path(root: &Path, output: &StagedOutput) -> Result<()> {
+    let current = output_path(root, &output.relative)?;
+    require(
+        current == output.destination,
+        format!("Output path changed after staging: {}", output.relative),
+    )
+}
+
+fn restore_output(root: &Path, output: &mut StagedOutput) -> Result<()> {
+    validate_staged_output_path(root, output)?;
     match &output.original {
         OriginalOutput::Absent => {
             if destination_is_missing(&output.destination) {
@@ -360,6 +384,7 @@ fn restore_output(output: &mut StagedOutput) -> Result<()> {
                     output.relative
                 ));
             }
+            validate_staged_output_path(root, output)?;
             fs::remove_file(&output.destination).map_err(|error| {
                 format!("Cannot remove newly generated {}: {error}", output.relative)
             })
@@ -370,6 +395,7 @@ fn restore_output(output: &mut StagedOutput) -> Result<()> {
             backup,
         } => {
             if original_matches(output) {
+                validate_staged_output_path(root, output)?;
                 return Ok(());
             }
             if !generated_output_matches(output) {
@@ -421,19 +447,38 @@ fn restore_output(output: &mut StagedOutput) -> Result<()> {
                     output.relative
                 ));
             }
-            restoration
+            validate_staged_output_path(root, output)?;
+            let restored = restoration
                 .persist(&output.destination)
-                .map(|_| ())
-                .map_err(|error| format!("Cannot restore {}: {error}", output.relative))
+                .map_err(|error| format!("Cannot restore {}: {error}", output.relative))?;
+            restored
+                .set_permissions(permissions.clone())
+                .map_err(|error| {
+                    format!(
+                        "Cannot restore permissions for {} after replacement: {error}",
+                        output.relative
+                    )
+                })?;
+            restored.sync_all().map_err(|error| {
+                format!(
+                    "Cannot sync restored output {} after replacement: {error}",
+                    output.relative
+                )
+            })
         }
     }
 }
 
-fn rollback_committed(staged: &mut [StagedOutput], committed: &[usize], cause: String) -> String {
+fn rollback_committed(
+    root: &Path,
+    staged: &mut [StagedOutput],
+    committed: &[usize],
+    cause: String,
+) -> String {
     let mut failures = Vec::new();
     for index in committed.iter().rev() {
         let output = &mut staged[*index];
-        if let Err(error) = restore_output(output) {
+        if let Err(error) = restore_output(root, output) {
             let recovery = retain_backup(output);
             failures.push(format!("{error}; {recovery}"));
         }
@@ -446,14 +491,20 @@ fn rollback_committed(staged: &mut [StagedOutput], committed: &[usize], cause: S
 }
 
 fn stage_outputs(
+    root: &Path,
     outputs: BTreeMap<String, String>,
     destinations: BTreeMap<String, PathBuf>,
 ) -> Result<Vec<StagedOutput>> {
     let mut staged = Vec::with_capacity(outputs.len());
     for (relative, text) in outputs {
+        let checked_destination = output_path(root, &relative)?;
         let destination = destinations
             .get(&relative)
             .ok_or_else(|| format!("Missing preflight output path: {relative}"))?;
+        require(
+            checked_destination == *destination,
+            format!("Preflight output path changed: {relative}"),
+        )?;
         let parent = destination.parent().ok_or("No output parent")?;
         fs::create_dir_all(parent).map_err(|e| format!("{relative}: {e}"))?;
 
@@ -526,7 +577,7 @@ fn stage_outputs(
     Ok(staged)
 }
 
-fn commit_outputs<F>(staged: Vec<StagedOutput>, mut after_persist: F) -> Result<usize>
+fn commit_outputs<F>(root: &Path, staged: Vec<StagedOutput>, mut after_persist: F) -> Result<usize>
 where
     F: FnMut(&str, usize) -> Result<()>,
 {
@@ -534,11 +585,26 @@ where
     let mut staged = staged;
     let mut committed = Vec::new();
     for index in 0..staged.len() {
+        if let Err(error) = validate_staged_output_path(root, &staged[index]) {
+            let cause = format!(
+                "Cannot revalidate generated output path {}: {error}",
+                staged[index].relative
+            );
+            return Err(rollback_committed(root, &mut staged, &committed, cause));
+        }
         if !original_matches(&staged[index]) {
             let relative = staged[index].relative.clone();
             let recovery = retain_backup(&mut staged[index]);
             let cause = format!("Generated output changed after staging: {relative}; {recovery}");
-            return Err(rollback_committed(&mut staged, &committed, cause));
+            return Err(rollback_committed(root, &mut staged, &committed, cause));
+        }
+
+        if let Err(error) = validate_staged_output_path(root, &staged[index]) {
+            let cause = format!(
+                "Cannot revalidate generated output path {} immediately before replacement: {error}",
+                staged[index].relative
+            );
+            return Err(rollback_committed(root, &mut staged, &committed, cause));
         }
 
         let temporary = staged[index]
@@ -555,7 +621,13 @@ where
                 staged[index].relative
             );
             let mut failures = Vec::new();
-            if !original_matches(&staged[index]) {
+            if let Err(path_error) = validate_staged_output_path(root, &staged[index]) {
+                failures.push(format!(
+                    "{}; path validation failed: {path_error}; {}",
+                    staged[index].relative,
+                    retain_backup(&mut staged[index])
+                ));
+            } else if !original_matches(&staged[index]) {
                 let relative = staged[index].relative.clone();
                 failures.push(format!(
                     "{}; {}",
@@ -563,7 +635,7 @@ where
                     retain_backup(&mut staged[index])
                 ));
             }
-            let rollback = rollback_committed(&mut staged, &committed, cause);
+            let rollback = rollback_committed(root, &mut staged, &committed, cause);
             if failures.is_empty() {
                 return Err(rollback);
             }
@@ -574,9 +646,19 @@ where
         }
 
         committed.push(index);
+        if let Err(error) = validate_staged_output_path(root, &staged[index]) {
+            let relative = staged[index].relative.clone();
+            return Err(rollback_committed(
+                root,
+                &mut staged,
+                &committed,
+                format!("Generated output path changed during commit: {relative}: {error}"),
+            ));
+        }
         if !generated_output_matches(&staged[index]) {
             let relative = staged[index].relative.clone();
             return Err(rollback_committed(
+                root,
                 &mut staged,
                 &committed,
                 format!("Generated output changed during commit: {relative}"),
@@ -585,10 +667,19 @@ where
 
         let relative = staged[index].relative.clone();
         if let Err(error) = after_persist(&relative, committed.len()) {
-            return Err(rollback_committed(&mut staged, &committed, error));
+            return Err(rollback_committed(root, &mut staged, &committed, error));
+        }
+        if let Err(error) = validate_staged_output_path(root, &staged[index]) {
+            return Err(rollback_committed(
+                root,
+                &mut staged,
+                &committed,
+                format!("Generated output path changed after commit: {relative}: {error}"),
+            ));
         }
         if !generated_output_matches(&staged[index]) {
             return Err(rollback_committed(
+                root,
                 &mut staged,
                 &committed,
                 format!("Generated output changed after commit: {relative}"),
@@ -611,8 +702,8 @@ pub fn build(root: &Path) -> Result<usize> {
         .keys()
         .map(|relative| Ok((relative.clone(), output_path(root, relative)?)))
         .collect::<Result<_>>()?;
-    let staged = stage_outputs(outputs, destinations)?;
-    commit_outputs(staged, |_, _| Ok(()))
+    let staged = stage_outputs(root, outputs, destinations)?;
+    commit_outputs(root, staged, |_, _| Ok(()))
 }
 pub fn check(root: &Path) -> Result<()> {
     for (path, expected) in outputs(root)? {
@@ -652,9 +743,9 @@ mod build_transaction_tests {
             .keys()
             .map(|relative| (relative.clone(), root.path().join(relative)))
             .collect();
-        let staged = stage_outputs(outputs, destinations).unwrap();
+        let staged = stage_outputs(root.path(), outputs, destinations).unwrap();
 
-        let result = commit_outputs(staged, |_, committed| {
+        let result = commit_outputs(root.path(), staged, |_, committed| {
             if committed == 2 {
                 Err("injected later output failure".into())
             } else {
@@ -685,9 +776,9 @@ mod build_transaction_tests {
         fs::write(&destination, b"original\n").unwrap();
         let outputs = BTreeMap::from([("output.txt".to_owned(), "generated\n".to_owned())]);
         let destinations = BTreeMap::from([("output.txt".to_owned(), destination.clone())]);
-        let staged = stage_outputs(outputs, destinations).unwrap();
+        let staged = stage_outputs(root.path(), outputs, destinations).unwrap();
 
-        let result = commit_outputs(staged, |_, _| {
+        let result = commit_outputs(root.path(), staged, |_, _| {
             fs::write(&destination, b"concurrent\n").unwrap();
             Err("injected failure after concurrent change".into())
         });
@@ -715,10 +806,10 @@ mod build_transaction_tests {
         fs::write(&destination, b"original\n").unwrap();
         let outputs = BTreeMap::from([("output.txt".to_owned(), "generated\n".to_owned())]);
         let destinations = BTreeMap::from([("output.txt".to_owned(), destination.clone())]);
-        let staged = stage_outputs(outputs, destinations).unwrap();
+        let staged = stage_outputs(root.path(), outputs, destinations).unwrap();
         fs::write(&destination, b"concurrent\n").unwrap();
 
-        let error = commit_outputs(staged, |_, _| Ok(())).unwrap_err();
+        let error = commit_outputs(root.path(), staged, |_, _| Ok(())).unwrap_err();
 
         assert!(error.to_lowercase().contains("changed"), "{error}");
         assert_eq!(fs::read(&destination).unwrap(), b"concurrent\n");
@@ -755,9 +846,9 @@ mod build_transaction_tests {
             .keys()
             .map(|relative| (relative.clone(), root.path().join(relative)))
             .collect();
-        let staged = stage_outputs(outputs, destinations).unwrap();
+        let staged = stage_outputs(root.path(), outputs, destinations).unwrap();
 
-        let result = commit_outputs(staged, |_, committed| {
+        let result = commit_outputs(root.path(), staged, |_, committed| {
             if committed == 1 {
                 fs::rename(&output_dir, &moved_dir).unwrap();
                 symlink(&moved_dir, &output_dir).unwrap();
@@ -795,11 +886,11 @@ mod build_transaction_tests {
         fs::set_permissions(&destination, permissions).unwrap();
         let outputs = BTreeMap::from([("output.txt".to_owned(), "generated\n".to_owned())]);
         let destinations = BTreeMap::from([("output.txt".to_owned(), destination.clone())]);
-        let staged = stage_outputs(outputs, destinations).unwrap();
+        let staged = stage_outputs(root.path(), outputs, destinations).unwrap();
 
         fs::remove_file(&destination).unwrap();
         fs::write(&destination, b"concurrent\n").unwrap();
-        let error = commit_outputs(staged, |_, _| Ok(())).unwrap_err();
+        let error = commit_outputs(root.path(), staged, |_, _| Ok(())).unwrap_err();
 
         assert!(error.contains("changed"), "{error}");
         assert_eq!(fs::read(&destination).unwrap(), b"concurrent\n");
@@ -822,7 +913,7 @@ mod build_transaction_tests {
         fs::set_permissions(&destination, permissions).unwrap();
         let outputs = BTreeMap::from([("output.txt".to_owned(), "generated\n".to_owned())]);
         let destinations = BTreeMap::from([("output.txt".to_owned(), destination.clone())]);
-        let mut staged = stage_outputs(outputs, destinations).unwrap();
+        let mut staged = stage_outputs(root.path(), outputs, destinations).unwrap();
 
         let mut writable = fs::metadata(&destination).unwrap().permissions();
         writable.set_readonly(false);
@@ -833,7 +924,7 @@ mod build_transaction_tests {
             .unwrap()
             .persist(&destination)
             .unwrap();
-        restore_output(&mut staged[0]).unwrap();
+        restore_output(root.path(), &mut staged[0]).unwrap();
 
         assert_eq!(fs::read(&destination).unwrap(), b"original\n");
         assert!(fs::metadata(destination).unwrap().permissions().readonly());
@@ -857,7 +948,7 @@ mod build_transaction_tests {
             .keys()
             .map(|relative| (relative.clone(), root.path().join(relative)))
             .collect();
-        let staged = stage_outputs(outputs, destinations).unwrap();
+        let staged = stage_outputs(root.path(), outputs, destinations).unwrap();
         let _locked = fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -865,7 +956,7 @@ mod build_transaction_tests {
             .open(&existing_b)
             .unwrap();
 
-        let error = commit_outputs(staged, |_, _| Ok(())).unwrap_err();
+        let error = commit_outputs(root.path(), staged, |_, _| Ok(())).unwrap_err();
 
         assert!(
             error.contains("Cannot persist generated output b-existing.txt"),
