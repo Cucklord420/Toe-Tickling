@@ -30,3 +30,15 @@ jobs:
         run: cargo run --locked -- check
       - name: Independent Rust source-byte audit
         run: cargo run --locked -p guidebook-audit -- check .
+
+  validate-windows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5, inherited inspected pin
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup show
+      - name: Transaction regression tests
+        run: cargo test --locked -p toe-tickling --lib guide::build_transaction_tests

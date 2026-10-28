@@ -731,4 +731,148 @@ mod build_transaction_tests {
         let retained_path = retained.display().to_string();
         assert!(error.contains(retained_path.as_str()), "{error}");
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn ancestor_symlink_swap_during_commit_is_rejected_and_rollback_stays_inside_root() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let output_dir = root.path().join("generated");
+        fs::create_dir(&output_dir).unwrap();
+        let existing_a = output_dir.join("a-existing.txt");
+        let existing_b = output_dir.join("b-existing.txt");
+        fs::write(&existing_a, b"old a\n").unwrap();
+        fs::write(&existing_b, b"old b\n").unwrap();
+
+        let outside = tempfile::tempdir().unwrap();
+        let moved_dir = outside.path().join("moved-generated");
+        let outputs = BTreeMap::from([
+            ("generated/a-existing.txt".to_owned(), "new a\n".to_owned()),
+            ("generated/b-existing.txt".to_owned(), "new b\n".to_owned()),
+        ]);
+        let destinations = outputs
+            .keys()
+            .map(|relative| (relative.clone(), root.path().join(relative)))
+            .collect();
+        let staged = stage_outputs(outputs, destinations).unwrap();
+
+        let result = commit_outputs(staged, |_, committed| {
+            if committed == 1 {
+                fs::rename(&output_dir, &moved_dir).unwrap();
+                symlink(&moved_dir, &output_dir).unwrap();
+            }
+            Ok(())
+        });
+
+        let error = result.unwrap_err();
+        assert!(error.to_lowercase().contains("symlink"), "{error}");
+        assert!(error.contains("recovery backup retained at"), "{error}");
+        assert_eq!(
+            fs::read(moved_dir.join("a-existing.txt")).unwrap(),
+            b"new a\n"
+        );
+        assert_eq!(
+            fs::read(moved_dir.join("b-existing.txt")).unwrap(),
+            b"old b\n"
+        );
+        assert!(
+            fs::read_dir(&moved_dir)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .any(|path| fs::read(path).is_ok_and(|bytes| bytes == b"old a\n"))
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn retained_backup_preserves_windows_readonly_attribute() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("output.txt");
+        fs::write(&destination, b"original\n").unwrap();
+        let mut permissions = fs::metadata(&destination).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&destination, permissions).unwrap();
+        let outputs = BTreeMap::from([("output.txt".to_owned(), "generated\n".to_owned())]);
+        let destinations = BTreeMap::from([("output.txt".to_owned(), destination.clone())]);
+        let staged = stage_outputs(outputs, destinations).unwrap();
+
+        fs::remove_file(&destination).unwrap();
+        fs::write(&destination, b"concurrent\n").unwrap();
+        let error = commit_outputs(staged, |_, _| Ok(())).unwrap_err();
+
+        assert!(error.contains("changed"), "{error}");
+        assert_eq!(fs::read(&destination).unwrap(), b"concurrent\n");
+        let retained = fs::read_dir(root.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| fs::read(path).is_ok_and(|bytes| bytes == b"original\n"))
+            .expect("original bytes were not retained in a recovery backup");
+        assert!(fs::metadata(retained).unwrap().permissions().readonly());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rollback_restoration_preserves_windows_readonly_attribute() {
+        let root = tempfile::tempdir().unwrap();
+        let destination = root.path().join("output.txt");
+        fs::write(&destination, b"original\n").unwrap();
+        let mut permissions = fs::metadata(&destination).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&destination, permissions).unwrap();
+        let outputs = BTreeMap::from([("output.txt".to_owned(), "generated\n".to_owned())]);
+        let destinations = BTreeMap::from([("output.txt".to_owned(), destination.clone())]);
+        let mut staged = stage_outputs(outputs, destinations).unwrap();
+
+        let mut writable = fs::metadata(&destination).unwrap().permissions();
+        writable.set_readonly(false);
+        fs::set_permissions(&destination, writable).unwrap();
+        staged[0]
+            .temporary
+            .take()
+            .unwrap()
+            .persist(&destination)
+            .unwrap();
+        restore_output(&mut staged[0]).unwrap();
+
+        assert_eq!(fs::read(&destination).unwrap(), b"original\n");
+        assert!(fs::metadata(destination).unwrap().permissions().readonly());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn later_persist_error_rolls_back_prior_replacement() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let existing_a = root.path().join("a-existing.txt");
+        let existing_b = root.path().join("b-existing.txt");
+        fs::write(&existing_a, b"old a\n").unwrap();
+        fs::write(&existing_b, b"old b\n").unwrap();
+        let outputs = BTreeMap::from([
+            ("a-existing.txt".to_owned(), "new a\n".to_owned()),
+            ("b-existing.txt".to_owned(), "new b\n".to_owned()),
+        ]);
+        let destinations = outputs
+            .keys()
+            .map(|relative| (relative.clone(), root.path().join(relative)))
+            .collect();
+        let staged = stage_outputs(outputs, destinations).unwrap();
+        let _locked = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .share_mode(0x0000_0003)
+            .open(&existing_b)
+            .unwrap();
+
+        let error = commit_outputs(staged, |_, _| Ok(())).unwrap_err();
+
+        assert!(
+            error.contains("Cannot persist generated output b-existing.txt"),
+            "{error}"
+        );
+        assert_eq!(fs::read(&existing_a).unwrap(), b"old a\n");
+        assert_eq!(fs::read(&existing_b).unwrap(), b"old b\n");
+        assert_eq!(fs::read_dir(root.path()).unwrap().count(), 2);
+    }
 }
