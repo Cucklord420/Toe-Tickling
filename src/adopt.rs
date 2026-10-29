@@ -1,19 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Offline, opt-in adoption into an existing Git working-tree root.
 //!
-//! Planning is read-only. Applying rechecks the complete plan before staging
-//! writes, then replaces each changed file atomically. Multiple replacements
-//! are not a filesystem transaction; an I/O failure can leave a partial install.
+//! Planning is read-only. Applying records a private recovery journal before
+//! staging writes, then replaces each changed file atomically. Multiple
+//! replacements are not a filesystem transaction; use `adopt TARGET --recover`
+//! after an interruption to restore unchanged installer outputs safely.
 use crate::{Result, guide};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::Write,
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
-    time::{Duration, Instant, SystemTime},
+    sync::atomic::{AtomicU64, Ordering},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 const BEGIN: &str = "<!-- JUSTIN-GUIDEBOOK:BEGIN -->";
@@ -23,6 +26,133 @@ const IGNORE_END: &str = "# JUSTIN-GUIDEBOOK-PRIVATE:END";
 const GUIDE: &str = ".ai-guidebook/GUIDEBOOK.md";
 const LOCK: &str = ".ai-guidebook/policy-lock.json";
 const PRIVATE_PATTERNS: &str = "/PRIVATE.local.md\n/CLAUDE.local.md\n/private/\n/.private/\n/.local/\n/.env\n/.env.*\n!/.env.example";
+const JOURNAL_NAME: &str = ".toe-tickling-adoption-v1.json";
+const JOURNAL_VERSION: u32 = 1;
+static NEXT_TRANSACTION: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct JournalPermissions {
+    readonly: bool,
+    #[serde(default)]
+    unix_mode: Option<u32>,
+}
+
+impl JournalPermissions {
+    fn from_metadata(metadata: &fs::Metadata) -> Self {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = metadata.permissions().mode() & 0o7777;
+            Self {
+                readonly: mode & 0o222 == 0,
+                unix_mode: Some(mode),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            Self {
+                readonly: metadata.permissions().readonly(),
+                unix_mode: None,
+            }
+        }
+    }
+
+    fn default_new_file() -> Self {
+        #[cfg(unix)]
+        {
+            Self {
+                readonly: false,
+                unix_mode: Some(0o600),
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            Self {
+                readonly: false,
+                unix_mode: None,
+            }
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        #[cfg(unix)]
+        {
+            let mode = self
+                .unix_mode
+                .ok_or("Journal is missing Unix permissions")?;
+            if mode > 0o7777 || self.readonly != (mode & 0o222 == 0) {
+                return Err("Journal contains invalid Unix permissions".into());
+            }
+        }
+        #[cfg(not(unix))]
+        if self.unix_mode.is_some() {
+            return Err("Journal permissions do not match this platform".into());
+        }
+        Ok(())
+    }
+
+    fn apply_to(&self, path: &Path) -> Result<()> {
+        self.validate()?;
+        let mut permissions = fs::metadata(path)
+            .map_err(|e| format!("{}: {e}", path.display()))?
+            .permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            permissions.set_mode(
+                self.unix_mode
+                    .ok_or("Journal is missing Unix permissions")?,
+            );
+        }
+        #[cfg(not(unix))]
+        permissions.set_readonly(self.readonly);
+        fs::set_permissions(path, permissions).map_err(|e| format!("{}: {e}", path.display()))
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct JournalFileState {
+    bytes: Option<Vec<u8>>,
+    permissions: Option<JournalPermissions>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum JournalState {
+    Prepared,
+    Committed,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct JournalIdentity {
+    target: String,
+    git_dir: String,
+    git_identity: String,
+    source_repo: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct JournalEntry {
+    relative: String,
+    before: JournalFileState,
+    after: JournalFileState,
+    stage: String,
+    rollback_stage: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct AdoptionJournal {
+    version: u32,
+    transaction: String,
+    state: JournalState,
+    identity: JournalIdentity,
+    entries: Vec<JournalEntry>,
+}
 
 #[derive(Clone, Debug)]
 pub struct AdoptionPlan {
@@ -154,11 +284,30 @@ fn git_root(target: &Path) -> Result<PathBuf> {
     run_git_root(target, crate::git_command(target), Duration::from_secs(10))
 }
 
-fn run_git_root(target: &Path, mut command: Command, timeout: Duration) -> Result<PathBuf> {
+fn run_git_root(target: &Path, command: Command, timeout: Duration) -> Result<PathBuf> {
+    let root = run_git_path(
+        target,
+        command,
+        &["rev-parse", "--show-toplevel"],
+        timeout,
+        "Timed out inspecting target Git working tree",
+        "Target must be the root of an existing Git working tree",
+    )?;
+    fs::canonicalize(root).map_err(|e| format!("Invalid Git working-tree root: {e}"))
+}
+
+fn run_git_path(
+    target: &Path,
+    mut command: Command,
+    args: &[&str],
+    timeout: Duration,
+    timeout_error: &str,
+    failure_error: &str,
+) -> Result<PathBuf> {
     let mut child = command
         .arg("-C")
         .arg(target)
-        .args(["rev-parse", "--show-toplevel"])
+        .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -173,7 +322,7 @@ fn run_git_root(target: &Path, mut command: Command, timeout: Duration) -> Resul
             Ok(None) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err("Timed out inspecting target Git working tree".into());
+                return Err(timeout_error.into());
             }
             Err(error) => {
                 let _ = child.kill();
@@ -184,14 +333,46 @@ fn run_git_root(target: &Path, mut command: Command, timeout: Duration) -> Resul
     }
     let output = child.wait_with_output().map_err(|e| e.to_string())?;
     if !output.status.success() {
-        return Err("Target must be the root of an existing Git working tree".into());
+        return Err(failure_error.into());
     }
-    let root = String::from_utf8(output.stdout).map_err(|e| format!("Invalid Git root: {e}"))?;
-    let root = root
+    let path = String::from_utf8(output.stdout).map_err(|e| format!("Invalid Git path: {e}"))?;
+    let path = path
         .strip_suffix('\n')
-        .unwrap_or(&root)
+        .unwrap_or(&path)
         .trim_end_matches('\r');
-    fs::canonicalize(root).map_err(|e| format!("Invalid Git working-tree root: {e}"))
+    if path.is_empty() {
+        return Err("Git returned an empty path".into());
+    }
+    Ok(PathBuf::from(path))
+}
+
+fn git_directory(target: &Path) -> Result<PathBuf> {
+    let command = crate::git_command(target);
+    let reported = run_git_path(
+        target,
+        command,
+        &["rev-parse", "--absolute-git-dir"],
+        Duration::from_secs(10),
+        "Timed out inspecting target Git metadata directory",
+        "Cannot locate target Git metadata directory",
+    )?;
+    if !reported.is_absolute() {
+        return Err("Git metadata directory must be absolute".into());
+    }
+    no_symlink_ancestors(&reported)?;
+    fs::canonicalize(&reported).map_err(|e| format!("Invalid Git metadata directory: {e}"))
+}
+
+fn journal_path(target: &Path) -> Result<(PathBuf, PathBuf)> {
+    let git_dir = git_directory(target)?;
+    no_symlink_ancestors(&git_dir)?;
+    let journal = git_dir.join(JOURNAL_NAME);
+    if let Some(value) = metadata(&journal)?
+        && (value.file_type().is_symlink() || !value.is_file())
+    {
+        return Err("Adoption recovery journal must be a regular file".into());
+    }
+    Ok((git_dir, journal))
 }
 
 fn validate_target(root: &Path, target: &Path) -> Result<PathBuf> {
@@ -270,6 +451,711 @@ fn managed(old: &str, body: &str, begin: &str, end: &str) -> Result<String> {
     let start = old.find(begin).ok_or("Missing managed opening marker")?;
     let finish = old.find(end).ok_or("Missing managed closing marker")? + end.len();
     Ok(format!("{}{block}{}", &old[..start], &old[finish..]))
+}
+
+fn git_identity_fingerprint(identity: &GitIdentity) -> String {
+    let created = |value: Option<SystemTime>| {
+        value
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_nanos().to_string())
+            .unwrap_or_else(|| "unavailable".into())
+    };
+    #[cfg(unix)]
+    let file_ids = format!(
+        ";target={}:{};marker={}:{}",
+        identity.target.device,
+        identity.target.inode,
+        identity.marker.device,
+        identity.marker.inode
+    );
+    #[cfg(not(unix))]
+    let file_ids = String::new();
+    let material = format!(
+        "target-created={};marker-created={};marker-content={}",
+        created(identity.target.created),
+        created(identity.marker.created),
+        identity
+            .marker_contents
+            .as_ref()
+            .map(|bytes| format!("{:x}", Sha256::digest(bytes)))
+            .unwrap_or_else(|| "directory".into())
+    ) + &file_ids;
+    format!("{:x}", Sha256::digest(material.as_bytes()))
+}
+
+fn source_repo(root: &Path) -> Result<String> {
+    let outputs = guide::outputs(root)?;
+    let lock: Value = serde_json::from_str(
+        outputs
+            .get("guidebook-lock.json")
+            .ok_or("Generated guide lock missing")?,
+    )
+    .map_err(|e| e.to_string())?;
+    lock.get("source_repo")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| "Source lock has no managed source repository".into())
+}
+
+fn output_paths() -> BTreeSet<String> {
+    [GUIDE, LOCK, "AGENTS.md", ".gitignore"]
+        .into_iter()
+        .map(str::to_owned)
+        .chain(guide::adapters(GUIDE).into_keys())
+        .collect()
+}
+
+fn transaction_id(target: &Path, source: &str) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let counter = NEXT_TRANSACTION.fetch_add(1, Ordering::Relaxed);
+    let material = format!(
+        "{}:{source}:{now}:{}:{counter}",
+        target.display(),
+        std::process::id()
+    );
+    format!("{:x}", Sha256::digest(material.as_bytes()))
+}
+
+fn stage_relative(relative: &str, transaction: &str, rollback: bool) -> Result<String> {
+    let path = Path::new(relative);
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("Managed output path must have a UTF-8 filename")?;
+    let suffix = if rollback { "rollback" } else { "install" };
+    let mut staged = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    staged.push(format!(".{name}.toe-tickling-{transaction}-{suffix}.stage"));
+    staged
+        .to_str()
+        .map(str::to_owned)
+        .ok_or_else(|| "Staging path must be UTF-8".into())
+}
+
+fn file_state(root: &Path, relative: &str) -> Result<JournalFileState> {
+    let path = safe_path(root, relative)?;
+    match metadata(&path)? {
+        None => Ok(JournalFileState {
+            bytes: None,
+            permissions: None,
+        }),
+        Some(metadata) => {
+            if !metadata.is_file() || metadata.file_type().is_symlink() {
+                return Err(format!("Refusing non-regular adoption output: {relative}"));
+            }
+            Ok(JournalFileState {
+                bytes: Some(fs::read(&path).map_err(|e| format!("{relative}: {e}"))?),
+                permissions: Some(JournalPermissions::from_metadata(&metadata)),
+            })
+        }
+    }
+}
+
+fn state_for_bytes(bytes: Vec<u8>, permissions: JournalPermissions) -> JournalFileState {
+    JournalFileState {
+        bytes: Some(bytes),
+        permissions: Some(permissions),
+    }
+}
+
+fn stage_is_safe_prefix(root: &Path, relative: &str, expected: &JournalFileState) -> Result<bool> {
+    let Some(expected_bytes) = expected.bytes.as_deref() else {
+        return Ok(false);
+    };
+    let actual = file_state(root, relative)?;
+    let Some(actual_bytes) = actual.bytes.as_deref() else {
+        return Ok(true);
+    };
+    Ok(actual_bytes.len() <= expected_bytes.len() && expected_bytes.starts_with(actual_bytes))
+}
+
+fn validate_state(state: &JournalFileState, label: &str) -> Result<()> {
+    match (&state.bytes, &state.permissions) {
+        (None, None) => Ok(()),
+        (Some(_), Some(permissions)) => permissions
+            .validate()
+            .map_err(|error| format!("Invalid {label} permissions: {error}")),
+        _ => Err(format!("Invalid {label} file state")),
+    }
+}
+
+fn validate_snapshot_pair(
+    guide_state: &JournalFileState,
+    lock_state: &JournalFileState,
+    source: &str,
+    label: &str,
+) -> Result<()> {
+    match (guide_state.bytes.as_deref(), lock_state.bytes.as_deref()) {
+        (None, None) => Ok(()),
+        (Some(guide), Some(lock)) => {
+            let lock: Value = serde_json::from_slice(lock)
+                .map_err(|e| format!("Invalid {label} snapshot lock: {e}"))?;
+            if lock.get("source_repo").and_then(Value::as_str) != Some(source) {
+                return Err(format!(
+                    "{label} snapshot belongs to another source repository"
+                ));
+            }
+            let digest = format!("{:x}", Sha256::digest(guide));
+            if lock.get("guidebook_sha256").and_then(Value::as_str) != Some(digest.as_str()) {
+                return Err(format!("{label} guidebook and lock are inconsistent"));
+            }
+            Ok(())
+        }
+        _ => Err(format!(
+            "{label} snapshot and lock must be present together"
+        )),
+    }
+}
+
+fn create_journal(target: &Path, root: &Path, plan: &AdoptionPlan) -> Result<AdoptionJournal> {
+    let source = source_repo(root)?;
+    let (git_dir, _) = journal_path(target)?;
+    let identity = GitIdentity::read(target)?;
+    let target_text = target
+        .to_str()
+        .ok_or("Canonical adoption target must be UTF-8")?
+        .to_owned();
+    let git_dir_text = git_dir
+        .to_str()
+        .ok_or("Git metadata directory must be UTF-8")?
+        .to_owned();
+    let transaction = transaction_id(target, &source);
+    let mut entries = Vec::new();
+    for (relative, content) in &plan.files {
+        let before = file_state(target, relative)?;
+        if before.bytes != plan.baseline[relative] {
+            return Err(format!(
+                "Target changed after planning: {relative}; create a fresh plan"
+            ));
+        }
+        let permissions = before
+            .permissions
+            .clone()
+            .unwrap_or_else(JournalPermissions::default_new_file);
+        let stage = stage_relative(relative, &transaction, false)?;
+        let rollback_stage = stage_relative(relative, &transaction, true)?;
+        for candidate in [&stage, &rollback_stage] {
+            let path = safe_path(target, candidate)?;
+            if metadata(&path)?.is_some() {
+                return Err(format!("Adoption staging path already exists: {candidate}"));
+            }
+        }
+        entries.push(JournalEntry {
+            relative: relative.clone(),
+            before,
+            after: state_for_bytes(content.as_bytes().to_vec(), permissions),
+            stage,
+            rollback_stage,
+        });
+    }
+    if entries.iter().all(|entry| entry.before == entry.after) {
+        return Err("No changed adoption outputs need a recovery journal".into());
+    }
+    Ok(AdoptionJournal {
+        version: JOURNAL_VERSION,
+        transaction,
+        state: JournalState::Prepared,
+        identity: JournalIdentity {
+            target: target_text,
+            git_dir: git_dir_text,
+            git_identity: git_identity_fingerprint(&identity),
+            source_repo: source,
+        },
+        entries,
+    })
+}
+
+fn validate_live_identity(
+    source_root: &Path,
+    target: &Path,
+    identity: &JournalIdentity,
+) -> Result<()> {
+    if validate_target(source_root, target)? != target {
+        return Err("Adoption target identity changed".into());
+    }
+    let (git_dir, _) = journal_path(target)?;
+    if git_dir.to_str() != Some(identity.git_dir.as_str())
+        || target.to_str() != Some(identity.target.as_str())
+        || git_identity_fingerprint(&GitIdentity::read(target)?) != identity.git_identity
+        || source_repo(source_root)? != identity.source_repo
+    {
+        return Err("Adoption source or Git worktree identity changed".into());
+    }
+    Ok(())
+}
+
+fn validate_journal(
+    source_root: &Path,
+    target: &Path,
+    git_dir: &Path,
+    journal: &AdoptionJournal,
+) -> Result<()> {
+    if journal.version != JOURNAL_VERSION {
+        return Err(format!(
+            "Unsupported adoption journal version: {}",
+            journal.version
+        ));
+    }
+    if journal.transaction.len() != 64
+        || !journal
+            .transaction
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err("Invalid adoption journal transaction id".into());
+    }
+    validate_live_identity(source_root, target, &journal.identity)?;
+    if git_dir.to_str() != Some(journal.identity.git_dir.as_str()) {
+        return Err("Adoption journal belongs to another Git worktree".into());
+    }
+    if journal.entries.is_empty() {
+        return Err("Adoption journal has no entries".into());
+    }
+    let allowed = output_paths();
+    let mut seen = BTreeSet::new();
+    let mut stages = BTreeSet::new();
+    let mut by_path = BTreeMap::new();
+    for entry in &journal.entries {
+        if !allowed.contains(&entry.relative) || !seen.insert(entry.relative.as_str()) {
+            return Err(format!(
+                "Invalid or duplicate journal output path: {}",
+                entry.relative
+            ));
+        }
+        validate_state(&entry.before, "preimage")?;
+        validate_state(&entry.after, "postimage")?;
+        if entry.after.bytes.is_none() {
+            return Err(format!("Journal postimage is missing: {}", entry.relative));
+        }
+        if entry.stage != stage_relative(&entry.relative, &journal.transaction, false)?
+            || entry.rollback_stage != stage_relative(&entry.relative, &journal.transaction, true)?
+            || !stages.insert(entry.stage.as_str())
+            || !stages.insert(entry.rollback_stage.as_str())
+            || allowed.contains(&entry.stage)
+            || allowed.contains(&entry.rollback_stage)
+        {
+            return Err(format!("Invalid journal staging path: {}", entry.relative));
+        }
+        for staged in [&entry.stage, &entry.rollback_stage] {
+            let staged_path = safe_path(target, staged)?;
+            if metadata(&staged_path)?.is_some() {
+                let expected = if staged == &entry.stage {
+                    &entry.after
+                } else {
+                    &entry.before
+                };
+                if !stage_is_safe_prefix(target, staged, expected)? {
+                    return Err(format!("Unrecognized adoption staging file: {staged}"));
+                }
+            }
+        }
+        by_path.insert(entry.relative.as_str(), entry);
+    }
+    let guide_entry = by_path
+        .get(GUIDE)
+        .ok_or("Journal is missing the guidebook output")?;
+    let lock_entry = by_path
+        .get(LOCK)
+        .ok_or("Journal is missing the lock output")?;
+    validate_snapshot_pair(
+        &guide_entry.before,
+        &lock_entry.before,
+        &journal.identity.source_repo,
+        "Original",
+    )?;
+    validate_snapshot_pair(
+        &guide_entry.after,
+        &lock_entry.after,
+        &journal.identity.source_repo,
+        "Installed",
+    )?;
+    Ok(())
+}
+
+fn write_journal_exclusive(path: &Path, journal: &AdoptionJournal) -> Result<()> {
+    if metadata(path)?.is_some() {
+        return Err(
+            "Pending adoption recovery already exists; run `adopt TARGET --recover`".into(),
+        );
+    }
+    let encoded = serde_json::to_vec_pretty(journal).map_err(|e| e.to_string())?;
+    let parent = path
+        .parent()
+        .ok_or("Recovery journal has no parent directory")?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|e| format!("Cannot stage adoption recovery journal: {e}"))?;
+    temporary
+        .write_all(&encoded)
+        .map_err(|e| format!("Cannot write adoption recovery journal: {e}"))?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|e| format!("Cannot sync adoption recovery journal: {e}"))?;
+    temporary
+        .persist_noclobber(path)
+        .map_err(|error| format!("Cannot create adoption recovery journal: {}", error.error))?;
+    Ok(())
+}
+
+fn write_journal_committed(path: &Path, journal: &AdoptionJournal) -> Result<()> {
+    let current = metadata(path)?.ok_or("Adoption recovery journal disappeared")?;
+    if current.file_type().is_symlink() || !current.is_file() {
+        return Err("Adoption recovery journal must be a regular file".into());
+    }
+    let encoded = serde_json::to_vec_pretty(journal).map_err(|e| e.to_string())?;
+    let parent = path
+        .parent()
+        .ok_or("Recovery journal has no parent directory")?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|e| format!("Cannot stage committed adoption journal: {e}"))?;
+    temporary
+        .write_all(&encoded)
+        .map_err(|e| format!("Cannot write committed adoption journal: {e}"))?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|e| format!("Cannot sync committed adoption journal: {e}"))?;
+    temporary
+        .persist(path)
+        .map_err(|error| format!("Cannot mark adoption journal committed: {}", error.error))?;
+    Ok(())
+}
+
+fn read_journal(path: &Path) -> Result<AdoptionJournal> {
+    let value = metadata(path)?.ok_or("No pending adoption recovery journal")?;
+    if value.file_type().is_symlink() || !value.is_file() {
+        return Err("Adoption recovery journal must be a regular file".into());
+    }
+    let bytes = fs::read(path).map_err(|e| format!("Cannot read adoption journal: {e}"))?;
+    serde_json::from_slice(&bytes).map_err(|e| format!("Invalid adoption recovery journal: {e}"))
+}
+
+fn ensure_parent_dirs(target: &Path, relative: &str) -> Result<()> {
+    let rel = Path::new(relative);
+    if relative.is_empty()
+        || relative.contains('\\')
+        || rel.is_absolute()
+        || !rel
+            .components()
+            .all(|part| matches!(part, Component::Normal(_)))
+    {
+        return Err(format!("Unsafe relative path: {relative}"));
+    }
+    let mut current = target.to_path_buf();
+    let mut components = rel.components().peekable();
+    while let Some(component) = components.next() {
+        current.push(component);
+        if components.peek().is_none() {
+            break;
+        }
+        match metadata(&current)? {
+            Some(value) if value.file_type().is_symlink() => {
+                return Err(format!("Refusing symlink parent: {relative}"));
+            }
+            Some(value) if !value.is_dir() => {
+                return Err(format!("Parent is not a directory: {relative}"));
+            }
+            Some(_) => {}
+            None => match fs::create_dir(&current) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let created = metadata(&current)?.ok_or("Created parent disappeared")?;
+                    if created.file_type().is_symlink() || !created.is_dir() {
+                        return Err(format!("Refusing unsafe parent: {relative}"));
+                    }
+                }
+                Err(error) => return Err(format!("Cannot create parent for {relative}: {error}")),
+            },
+        }
+    }
+    safe_path(target, relative)?;
+    Ok(())
+}
+
+fn create_stage(target: &Path, relative: &str, bytes: &[u8]) -> Result<()> {
+    ensure_parent_dirs(target, relative)?;
+    let path = safe_path(target, relative)?;
+    if metadata(&path)?.is_some() {
+        return Err(format!("Adoption staging path already exists: {relative}"));
+    }
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|e| format!("Cannot create stage {relative}: {e}"))?;
+    JournalPermissions::default_new_file().apply_to(&path)?;
+    let mut file = file;
+    file.write_all(bytes)
+        .map_err(|e| format!("Cannot write stage {relative}: {e}"))?;
+    file.sync_all()
+        .map_err(|e| format!("Cannot sync stage {relative}: {e}"))?;
+    Ok(())
+}
+
+fn open_named_stage(target: &Path, relative: &str) -> Result<tempfile::NamedTempFile> {
+    let path = safe_path(target, relative)?;
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .open(&path)
+        .map_err(|e| format!("Cannot reopen stage {relative}: {e}"))?;
+    let temp_path = tempfile::TempPath::try_from_path(path)
+        .map_err(|e| format!("Cannot track stage {relative}: {e}"))?;
+    Ok(tempfile::NamedTempFile::from_parts(file, temp_path))
+}
+
+fn persist_stage(
+    target: &Path,
+    relative: &str,
+    destination_relative: &str,
+    expected_before: &JournalFileState,
+    expected_after: &JournalFileState,
+) -> Result<()> {
+    let stage_path = safe_path(target, relative)?;
+    let destination = safe_path(target, destination_relative)?;
+    let stage_state = file_state(target, relative)?;
+    if stage_state.bytes != expected_after.bytes {
+        return Err(format!(
+            "Staged output changed before replacement: {relative}"
+        ));
+    }
+    if file_state(target, destination_relative)? != *expected_before {
+        return Err(format!(
+            "Target changed during apply: {destination_relative}"
+        ));
+    }
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&stage_path)
+        .map_err(|e| format!("Cannot open stage {relative}: {e}"))?;
+    file.sync_all()
+        .map_err(|e| format!("Cannot sync stage {relative}: {e}"))?;
+    expected_after
+        .permissions
+        .as_ref()
+        .ok_or("Journal postimage is missing permissions")?
+        .apply_to(&stage_path)?;
+    let temporary = tempfile::NamedTempFile::from_parts(
+        file,
+        tempfile::TempPath::try_from_path(stage_path.clone())
+            .map_err(|e| format!("Cannot track stage {relative}: {e}"))?,
+    );
+    temporary.persist(&destination).map_err(|error| {
+        format!(
+            "Cannot atomically replace {destination_relative}: {}",
+            error.error
+        )
+    })?;
+    if file_state(target, destination_relative)? != *expected_after {
+        return Err(format!(
+            "Installed output did not match its journal: {destination_relative}"
+        ));
+    }
+    Ok(())
+}
+
+fn cleanup_stage(target: &Path, relative: &str, expected: &JournalFileState) -> Result<()> {
+    let path = safe_path(target, relative)?;
+    if metadata(&path)?.is_none() {
+        return Ok(());
+    }
+    if !stage_is_safe_prefix(target, relative, expected)? {
+        return Err(format!(
+            "Preserving unrecognized adoption stage: {relative}"
+        ));
+    }
+    fs::remove_file(&path).map_err(|e| format!("Cannot remove adoption stage {relative}: {e}"))
+}
+
+fn restore_entry(
+    source_root: &Path,
+    target: &Path,
+    journal: &AdoptionJournal,
+    entry: &JournalEntry,
+) -> Result<bool> {
+    validate_live_identity(source_root, target, &journal.identity)?;
+    let current = file_state(target, &entry.relative)?;
+    if current == entry.before {
+        return Ok(false);
+    }
+    if current != entry.after {
+        return Err(format!("Preserving concurrent edit at {}", entry.relative));
+    }
+    validate_live_identity(source_root, target, &journal.identity)?;
+    if entry.before.bytes.is_none() {
+        if file_state(target, &entry.relative)? != entry.after {
+            return Err(format!("Preserving concurrent edit at {}", entry.relative));
+        }
+        let destination = safe_path(target, &entry.relative)?;
+        fs::remove_file(&destination)
+            .map_err(|e| format!("Cannot remove installed {}: {e}", entry.relative))?;
+        return Ok(true);
+    }
+
+    let before_bytes = entry
+        .before
+        .bytes
+        .as_deref()
+        .ok_or("Missing journal preimage")?;
+    let mut stage = None;
+    let rollback_path = safe_path(target, &entry.rollback_stage)?;
+    if metadata(&rollback_path)?.is_some() {
+        let staged = file_state(target, &entry.rollback_stage)?;
+        if staged.bytes.as_deref() == Some(before_bytes) {
+            stage = Some(open_named_stage(target, &entry.rollback_stage)?);
+        } else if stage_is_safe_prefix(target, &entry.rollback_stage, &entry.before)? {
+            validate_live_identity(source_root, target, &journal.identity)?;
+            fs::remove_file(&rollback_path)
+                .map_err(|e| format!("Cannot replace partial rollback stage: {e}"))?;
+        } else {
+            return Err(format!(
+                "Preserving unrecognized rollback stage: {}",
+                entry.rollback_stage
+            ));
+        }
+    }
+    if stage.is_none() {
+        create_stage(target, &entry.rollback_stage, before_bytes)?;
+        stage = Some(open_named_stage(target, &entry.rollback_stage)?);
+    }
+    validate_live_identity(source_root, target, &journal.identity)?;
+    if file_state(target, &entry.relative)? != entry.after {
+        return Err(format!("Preserving concurrent edit at {}", entry.relative));
+    }
+    let stage_path = safe_path(target, &entry.rollback_stage)?;
+    entry
+        .before
+        .permissions
+        .as_ref()
+        .ok_or("Journal preimage is missing permissions")?
+        .apply_to(&stage_path)?;
+    stage
+        .take()
+        .ok_or("Rollback stage was not prepared")?
+        .persist(&safe_path(target, &entry.relative)?)
+        .map_err(|error| format!("Cannot restore {}: {}", entry.relative, error.error))?;
+    if file_state(target, &entry.relative)? != entry.before {
+        return Err(format!(
+            "Restored output did not match its preimage: {}",
+            entry.relative
+        ));
+    }
+    Ok(true)
+}
+
+fn remove_journal(
+    source_root: &Path,
+    target: &Path,
+    path: &Path,
+    identity: &JournalIdentity,
+) -> Result<()> {
+    validate_live_identity(source_root, target, identity)?;
+    let (_, current_path) = journal_path(target)?;
+    if current_path != path {
+        return Err("Adoption recovery journal path changed".into());
+    }
+    match metadata(path)? {
+        None => Ok(()),
+        Some(value) if value.file_type().is_symlink() || !value.is_file() => {
+            Err("Adoption recovery journal must be a regular file".into())
+        }
+        Some(_) => {
+            fs::remove_file(path).map_err(|e| format!("Cannot remove recovery journal: {e}"))
+        }
+    }
+}
+
+fn recover_prepared(
+    source_root: &Path,
+    target: &Path,
+    journal_path: &Path,
+    journal: &AdoptionJournal,
+) -> Result<()> {
+    let mut problems = Vec::new();
+    for entry in &journal.entries {
+        if let Err(error) = restore_entry(source_root, target, journal, entry) {
+            problems.push(error);
+        }
+    }
+    if validate_live_identity(source_root, target, &journal.identity).is_ok() {
+        for entry in &journal.entries {
+            for (stage, expected) in [
+                (&entry.stage, &entry.after),
+                (&entry.rollback_stage, &entry.before),
+            ] {
+                if let Err(error) = validate_live_identity(source_root, target, &journal.identity)
+                    .and_then(|()| cleanup_stage(target, stage, expected))
+                {
+                    problems.push(error);
+                }
+            }
+        }
+    } else {
+        problems.push("Adoption target identity changed before stage cleanup".into());
+    }
+    if !problems.is_empty() {
+        return Err(format!(
+            "Adoption recovery is incomplete: {}",
+            problems.join("; ")
+        ));
+    }
+    validate_live_identity(source_root, target, &journal.identity)?;
+    remove_journal(source_root, target, journal_path, &journal.identity)
+}
+
+fn cleanup_committed(
+    source_root: &Path,
+    target: &Path,
+    journal_path: &Path,
+    journal: &AdoptionJournal,
+) -> Result<()> {
+    let mut problems = Vec::new();
+    for entry in &journal.entries {
+        for (stage, expected) in [
+            (&entry.stage, &entry.after),
+            (&entry.rollback_stage, &entry.before),
+        ] {
+            if let Err(error) = validate_live_identity(source_root, target, &journal.identity)
+                .and_then(|()| cleanup_stage(target, stage, expected))
+            {
+                problems.push(error);
+            }
+        }
+    }
+    if !problems.is_empty() {
+        return Err(format!(
+            "Committed adoption cleanup is incomplete: {}",
+            problems.join("; ")
+        ));
+    }
+    validate_live_identity(source_root, target, &journal.identity)?;
+    remove_journal(source_root, target, journal_path, &journal.identity)
+}
+
+/// Restore the original managed outputs recorded by an interrupted adoption.
+/// Conflicting user edits are preserved and keep the journal available to retry.
+pub fn recover(root: &Path, target: &Path) -> Result<()> {
+    let source_root = crate::security::checked_root(root)?;
+    let target = validate_target(&source_root, target)?;
+    let (git_dir, journal_path) = journal_path(&target)?;
+    if metadata(&journal_path)?.is_none() {
+        return Ok(());
+    }
+    let journal = read_journal(&journal_path)?;
+    validate_journal(&source_root, &target, &git_dir, &journal)?;
+    match journal.state {
+        JournalState::Prepared => recover_prepared(&source_root, &target, &journal_path, &journal),
+        JournalState::Committed => {
+            cleanup_committed(&source_root, &target, &journal_path, &journal)
+        }
+    }
 }
 
 pub fn plan(root: &Path, target: &Path) -> Result<AdoptionPlan> {
@@ -369,6 +1255,13 @@ pub fn plan(root: &Path, target: &Path) -> Result<AdoptionPlan> {
 }
 
 pub fn apply(plan: &AdoptionPlan) -> Result<()> {
+    apply_transaction(plan, None)
+}
+
+fn apply_transaction(
+    plan: &AdoptionPlan,
+    mut after_persist: Option<&mut dyn FnMut(usize, &str) -> Result<()>>,
+) -> Result<()> {
     if plan.target != plan.checked_target
         || plan.files != plan.checked_files
         || plan.preserved_adapters != plan.checked_adapters
@@ -388,50 +1281,504 @@ pub fn apply(plan: &AdoptionPlan) -> Result<()> {
             ));
         }
     }
-    // Stage every file first, so ordinary preflight or staging failures do not
-    // overwrite existing instructions. NamedTempFile cleans up on every error.
-    let mut staged = Vec::new();
-    for (relative, content) in &plan.files {
-        if plan.baseline[relative].as_deref() == Some(content.as_bytes()) {
-            continue;
-        }
-        let destination = safe_path(&plan.target, relative)?;
-        let parent = destination.parent().ok_or("No adoption output parent")?;
-        fs::create_dir_all(parent).map_err(|e| format!("{relative}: {e}"))?;
-        let mut temporary = tempfile::NamedTempFile::new_in(parent)
-            .map_err(|e| format!("Cannot stage {relative}: {e}"))?;
-        if let Some(old) = metadata(&destination)? {
-            temporary
-                .as_file()
-                .set_permissions(old.permissions())
-                .map_err(|e| e.to_string())?;
-        }
-        temporary
-            .write_all(content.as_bytes())
-            .map_err(|e| format!("Cannot stage {relative}: {e}"))?;
-        temporary
-            .as_file()
-            .sync_all()
-            .map_err(|e| format!("Cannot stage {relative}: {e}"))?;
-        staged.push((relative, temporary));
+    let (_, pending_journal_path) = journal_path(&plan.target)?;
+    if metadata(&pending_journal_path)?.is_some() {
+        return Err("Pending adoption recovery exists; run `adopt TARGET --recover`".into());
     }
-    for (written, (relative, temporary)) in staged.into_iter().enumerate() {
-        let destination = safe_path(&plan.target, relative)?;
-        if bytes(&plan.target, relative)? != plan.baseline[relative] {
+    let changed = plan
+        .files
+        .iter()
+        .any(|(relative, content)| plan.baseline[relative].as_deref() != Some(content.as_bytes()));
+    if !changed {
+        return Ok(());
+    }
+    let mut journal = create_journal(&plan.target, &plan.source_root, plan)?;
+    if validate_target(&plan.source_root, &plan.target)? != plan.checked_target
+        || GitIdentity::read(&plan.target)? != plan.git_identity
+    {
+        return Err("Git working-tree identity changed after planning; create a fresh plan".into());
+    }
+    let (git_dir, verified_journal_path) = journal_path(&plan.target)?;
+    validate_journal(&plan.source_root, &plan.target, &git_dir, &journal)?;
+    if verified_journal_path != pending_journal_path {
+        return Err("Adoption recovery journal path changed".into());
+    }
+    write_journal_exclusive(&pending_journal_path, &journal)?;
+
+    let operation = (|| {
+        for entry in &journal.entries {
+            if entry.before == entry.after {
+                continue;
+            }
+            validate_live_identity(&plan.source_root, &plan.target, &journal.identity)?;
+            let output = entry
+                .after
+                .bytes
+                .as_deref()
+                .ok_or("Journal postimage is missing")?;
+            create_stage(&plan.target, &entry.stage, output)?;
+        }
+        let mut written = 0usize;
+        for entry in &journal.entries {
+            if entry.before == entry.after {
+                continue;
+            }
+            validate_live_identity(&plan.source_root, &plan.target, &journal.identity)?;
+            persist_stage(
+                &plan.target,
+                &entry.stage,
+                &entry.relative,
+                &entry.before,
+                &entry.after,
+            )?;
+            written += 1;
+            if let Some(hook) = after_persist.as_deref_mut() {
+                hook(written, &entry.relative)?;
+            }
+        }
+        validate_live_identity(&plan.source_root, &plan.target, &journal.identity)?;
+        for entry in &journal.entries {
+            if file_state(&plan.target, &entry.relative)? != entry.after {
+                return Err(format!(
+                    "Installed output changed before commit: {}",
+                    entry.relative
+                ));
+            }
+        }
+        let mut committed = journal.clone();
+        committed.state = JournalState::Committed;
+        write_journal_committed(&pending_journal_path, &committed)?;
+        journal = committed;
+        validate_live_identity(&plan.source_root, &plan.target, &journal.identity)?;
+        cleanup_committed(
+            &plan.source_root,
+            &plan.target,
+            &pending_journal_path,
+            &journal,
+        )
+    })();
+
+    if let Err(error) = operation {
+        if journal.state == JournalState::Committed {
             return Err(format!(
-                "Target changed during apply: {relative}; {written} files already applied"
+                "Adoption installed but committed cleanup is pending: {error}; run `adopt TARGET --recover`"
             ));
         }
-        temporary.persist(&destination).map_err(|e| {
-            format!("Cannot atomically replace {relative}; {written} files already applied: {e}")
-        })?;
+        match recover_prepared(
+            &plan.source_root,
+            &plan.target,
+            &pending_journal_path,
+            &journal,
+        ) {
+            Ok(()) => Err(error),
+            Err(recovery_error) => Err(format!(
+                "Adoption failed: {error}; recovery remains pending: {recovery_error}; run `adopt TARGET --recover`"
+            )),
+        }
+    } else {
+        Ok(())
     }
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn source_root() -> PathBuf {
+        crate::security::checked_root(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap()
+    }
+
+    fn target_fixture() -> (tempfile::TempDir, PathBuf) {
+        let scratch = tempfile::tempdir().unwrap();
+        let target = scratch.path().join("target");
+        fs::create_dir(&target).unwrap();
+        isolated_git(&target, &["init", "-q"]);
+        fs::create_dir(target.join(".ai-guidebook")).unwrap();
+        let original_guide = b"# Original guide\n".to_vec();
+        let source = source_repo(&source_root()).unwrap();
+        let old_lock = serde_json::to_vec_pretty(&serde_json::json!({
+            "source_repo": source,
+            "guidebook_sha256": format!("{:x}", Sha256::digest(&original_guide)),
+        }))
+        .unwrap();
+        fs::write(target.join(GUIDE), &original_guide).unwrap();
+        fs::write(target.join(LOCK), old_lock).unwrap();
+        fs::write(target.join("AGENTS.md"), b"Original agent instructions\n").unwrap();
+        fs::write(target.join(".gitignore"), b"Original ignore rules\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(target.join(GUIDE), fs::Permissions::from_mode(0o640)).unwrap();
+            fs::set_permissions(target.join(LOCK), fs::Permissions::from_mode(0o600)).unwrap();
+            fs::set_permissions(target.join("AGENTS.md"), fs::Permissions::from_mode(0o644))
+                .unwrap();
+            fs::set_permissions(target.join(".gitignore"), fs::Permissions::from_mode(0o644))
+                .unwrap();
+        }
+        (scratch, target.canonicalize().unwrap())
+    }
+
+    fn empty_target_fixture() -> (tempfile::TempDir, PathBuf) {
+        let scratch = tempfile::tempdir().unwrap();
+        let target = scratch.path().join("empty-target");
+        fs::create_dir(&target).unwrap();
+        isolated_git(&target, &["init", "-q"]);
+        (scratch, target.canonicalize().unwrap())
+    }
+
+    fn fixture_plan(target: &Path) -> AdoptionPlan {
+        let root = source_root();
+        let target = target.canonicalize().unwrap();
+        let guide = b"# Updated guide\n".to_vec();
+        let source = source_repo(&root).unwrap();
+        let lock = serde_json::to_vec_pretty(&serde_json::json!({
+            "source_repo": source,
+            "guidebook_sha256": format!("{:x}", Sha256::digest(&guide)),
+        }))
+        .unwrap();
+        let files = BTreeMap::from([
+            (GUIDE.to_owned(), String::from_utf8(guide).unwrap()),
+            (LOCK.to_owned(), String::from_utf8(lock).unwrap()),
+            (
+                "AGENTS.md".to_owned(),
+                "Updated agent instructions\n".to_owned(),
+            ),
+            (".gitignore".to_owned(), "Updated ignore rules\n".to_owned()),
+        ]);
+        let baseline = files
+            .keys()
+            .map(|relative| {
+                (
+                    relative.clone(),
+                    file_state(&target, relative).unwrap().bytes,
+                )
+            })
+            .collect();
+        let identity = GitIdentity::read(&target).unwrap();
+        AdoptionPlan {
+            target: target.clone(),
+            checked_target: target,
+            checked_files: files.clone(),
+            checked_adapters: Vec::new(),
+            files,
+            preserved_adapters: Vec::new(),
+            source_root: root,
+            baseline,
+            git_identity: identity,
+        }
+    }
+
+    fn target_snapshot(target: &Path) -> BTreeMap<String, JournalFileState> {
+        [GUIDE, LOCK, "AGENTS.md", ".gitignore"]
+            .into_iter()
+            .map(|relative| (relative.to_owned(), file_state(target, relative).unwrap()))
+            .collect()
+    }
+
+    fn write_postimage(target: &Path, entry: &JournalEntry) {
+        let path = target.join(&entry.relative);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&path, entry.after.bytes.as_ref().unwrap()).unwrap();
+        entry
+            .after
+            .permissions
+            .as_ref()
+            .unwrap()
+            .apply_to(&path)
+            .unwrap();
+    }
+
+    fn prepared_journal(target: &Path, plan: &AdoptionPlan) -> (PathBuf, AdoptionJournal) {
+        let journal = create_journal(target, &plan.source_root, plan).unwrap();
+        let (git_dir, journal_path) = journal_path(target).unwrap();
+        validate_journal(&plan.source_root, target, &git_dir, &journal).unwrap();
+        write_journal_exclusive(&journal_path, &journal).unwrap();
+        let first = journal
+            .entries
+            .iter()
+            .find(|entry| entry.before != entry.after)
+            .unwrap();
+        write_postimage(target, first);
+        (journal_path, journal)
+    }
+
+    fn assert_no_stage_files(target: &Path) {
+        fn visit(path: &Path) {
+            for entry in fs::read_dir(path).unwrap() {
+                let entry = entry.unwrap();
+                if entry.file_type().unwrap().is_dir() {
+                    visit(&entry.path());
+                } else {
+                    assert!(
+                        !entry
+                            .file_name()
+                            .to_string_lossy()
+                            .contains(".toe-tickling-"),
+                        "staging residue remains: {}",
+                        entry.path().display()
+                    );
+                }
+            }
+        }
+        visit(target);
+    }
+
+    #[test]
+    fn recovery_rejects_wrong_target_without_writes() {
+        let (_scratch, target) = target_fixture();
+        let plan = fixture_plan(&target);
+        let before = target_snapshot(&target);
+        let mut journal = create_journal(&target, &plan.source_root, &plan).unwrap();
+        journal.identity.target.push_str("-other");
+        let (_, journal_path) = journal_path(&target).unwrap();
+        write_journal_exclusive(&journal_path, &journal).unwrap();
+
+        let error = recover(&plan.source_root, &target).unwrap_err();
+
+        assert!(error.contains("identity changed"));
+        assert_eq!(target_snapshot(&target), before);
+        assert!(journal_path.exists());
+    }
+
+    #[test]
+    fn recovery_rejects_inconsistent_snapshot_lock_without_writes() {
+        let (_scratch, target) = target_fixture();
+        let plan = fixture_plan(&target);
+        let before = target_snapshot(&target);
+        let mut journal = create_journal(&target, &plan.source_root, &plan).unwrap();
+        let guide = journal
+            .entries
+            .iter_mut()
+            .find(|entry| entry.relative == GUIDE)
+            .unwrap();
+        guide.before.bytes = Some(b"tampered original guide\n".to_vec());
+        let (_, journal_path) = journal_path(&target).unwrap();
+        write_journal_exclusive(&journal_path, &journal).unwrap();
+
+        let error = recover(&plan.source_root, &target).unwrap_err();
+
+        assert!(error.contains("Original guidebook and lock are inconsistent"));
+        assert_eq!(target_snapshot(&target), before);
+        assert!(journal_path.exists());
+    }
+
+    #[test]
+    fn recovery_rolls_back_after_process_exit() {
+        if let Some(target) = std::env::var_os("TOE_TICKLING_ADOPT_TEST_EXIT_TARGET") {
+            let target = PathBuf::from(target);
+            let plan = fixture_plan(&target);
+            let mut exit_after_first = |written: usize, _relative: &str| {
+                if written == 1 {
+                    std::process::exit(91);
+                }
+                Ok(())
+            };
+            let _ = apply_transaction(&plan, Some(&mut exit_after_first));
+            panic!("child did not exit after its first replacement");
+        }
+
+        let (_scratch, target) = target_fixture();
+        let plan = fixture_plan(&target);
+        let before = target_snapshot(&target);
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "adopt::tests::recovery_rolls_back_after_process_exit",
+                "--nocapture",
+            ])
+            .env("TOE_TICKLING_ADOPT_TEST_EXIT_TARGET", &target)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(91),
+            "child did not stop after one persisted output:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_ne!(target_snapshot(&target), before);
+
+        recover(&plan.source_root, &target).unwrap();
+
+        assert_eq!(target_snapshot(&target), before);
+        assert!(!journal_path(&target).unwrap().1.exists());
+        assert_no_stage_files(&target);
+    }
+
+    #[test]
+    fn apply_rolls_back_after_later_write_failure() {
+        let (_scratch, target) = target_fixture();
+        let plan = fixture_plan(&target);
+        let before = target_snapshot(&target);
+        let mut fail_after_first = |written: usize, _relative: &str| {
+            if written == 1 {
+                Err("injected later write failure".into())
+            } else {
+                Ok(())
+            }
+        };
+
+        let error = apply_transaction(&plan, Some(&mut fail_after_first)).unwrap_err();
+
+        assert!(error.contains("injected later write failure"));
+        assert_eq!(target_snapshot(&target), before);
+        assert!(!journal_path(&target).unwrap().1.exists());
+        assert_no_stage_files(&target);
+    }
+
+    #[test]
+    fn apply_commits_all_outputs_and_cleans_recovery_metadata() {
+        let (_scratch, target) = target_fixture();
+        let plan = fixture_plan(&target);
+        let expected = create_journal(&target, &plan.source_root, &plan).unwrap();
+
+        apply(&plan).unwrap();
+
+        for entry in &expected.entries {
+            assert_eq!(file_state(&target, &entry.relative).unwrap(), entry.after);
+        }
+        assert!(!journal_path(&target).unwrap().1.exists());
+        assert_no_stage_files(&target);
+    }
+
+    #[test]
+    fn apply_rejects_a_pending_recovery_journal() {
+        let (_scratch, target) = target_fixture();
+        let stale_plan = fixture_plan(&target);
+        let _ = prepared_journal(&target, &stale_plan);
+        let current_plan = fixture_plan(&target);
+
+        let error = apply(&current_plan).unwrap_err();
+
+        assert!(error.contains("Pending adoption recovery"));
+        assert!(journal_path(&target).unwrap().1.exists());
+    }
+
+    #[test]
+    fn recovery_preserves_concurrent_user_edit() {
+        let (_scratch, target) = target_fixture();
+        let plan = fixture_plan(&target);
+        let (journal_file, journal) = prepared_journal(&target, &plan);
+        let lock = journal
+            .entries
+            .iter()
+            .find(|entry| entry.relative == LOCK)
+            .unwrap();
+        fs::write(target.join(LOCK), b"concurrent user edit\n").unwrap();
+
+        let error = recover(&plan.source_root, &target).unwrap_err();
+
+        assert!(error.contains("Preserving concurrent edit"));
+        assert_eq!(
+            file_state(&target, GUIDE).unwrap(),
+            journal
+                .entries
+                .iter()
+                .find(|entry| entry.relative == GUIDE)
+                .unwrap()
+                .before
+        );
+        assert_eq!(
+            fs::read(target.join(LOCK)).unwrap(),
+            b"concurrent user edit\n"
+        );
+        assert!(journal_file.exists());
+        assert_eq!(
+            file_state(&target, LOCK).unwrap(),
+            JournalFileState {
+                bytes: Some(b"concurrent user edit\n".to_vec()),
+                permissions: lock.before.permissions.clone(),
+            }
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_rejects_symlinked_ancestor() {
+        use std::os::unix::fs::symlink;
+
+        let (_scratch, target) = target_fixture();
+        let plan = fixture_plan(&target);
+        let (journal_file, _) = prepared_journal(&target, &plan);
+        let outside = target.parent().unwrap().join("outside");
+        fs::create_dir(&outside).unwrap();
+        fs::write(outside.join("sentinel"), b"outside bytes").unwrap();
+        fs::remove_dir_all(target.join(".ai-guidebook")).unwrap();
+        symlink(&outside, target.join(".ai-guidebook")).unwrap();
+
+        let error = recover(&plan.source_root, &target).unwrap_err();
+
+        assert!(error.contains("symlink"));
+        assert_eq!(
+            fs::read(outside.join("sentinel")).unwrap(),
+            b"outside bytes"
+        );
+        assert!(journal_file.exists());
+    }
+
+    #[test]
+    fn recovery_cleans_staged_files() {
+        let (_scratch, target) = target_fixture();
+        let plan = fixture_plan(&target);
+        let (journal_file, journal) = prepared_journal(&target, &plan);
+        for entry in &journal.entries {
+            if entry.before != entry.after {
+                create_stage(&target, &entry.stage, entry.after.bytes.as_deref().unwrap()).unwrap();
+            }
+        }
+        recover(&plan.source_root, &target).unwrap();
+        assert!(!journal_file.exists());
+        assert_no_stage_files(&target);
+    }
+
+    #[test]
+    fn recovery_removes_newly_installed_outputs() {
+        let (_scratch, target) = empty_target_fixture();
+        let plan = fixture_plan(&target);
+        let journal = create_journal(&target, &plan.source_root, &plan).unwrap();
+        let (_, journal_file) = journal_path(&target).unwrap();
+        write_journal_exclusive(&journal_file, &journal).unwrap();
+        for entry in &journal.entries {
+            write_postimage(&target, entry);
+        }
+
+        recover(&plan.source_root, &target).unwrap();
+
+        for relative in [GUIDE, LOCK, "AGENTS.md", ".gitignore"] {
+            assert!(file_state(&target, relative).unwrap().bytes.is_none());
+        }
+        assert!(!journal_file.exists());
+        assert_no_stage_files(&target);
+    }
+
+    #[test]
+    fn recovery_cleans_committed_journal_without_rollback() {
+        let (_scratch, target) = target_fixture();
+        let plan = fixture_plan(&target);
+        let mut journal = create_journal(&target, &plan.source_root, &plan).unwrap();
+        for entry in &journal.entries {
+            if entry.before != entry.after {
+                write_postimage(&target, entry);
+            }
+        }
+        let first = journal
+            .entries
+            .iter()
+            .find(|entry| entry.before != entry.after)
+            .unwrap();
+        create_stage(&target, &first.stage, first.after.bytes.as_deref().unwrap()).unwrap();
+        journal.state = JournalState::Committed;
+        let (_, journal_file) = journal_path(&target).unwrap();
+        write_journal_exclusive(&journal_file, &journal).unwrap();
+
+        recover(&plan.source_root, &target).unwrap();
+
+        assert_eq!(file_state(&target, GUIDE).unwrap(), first.after);
+        assert!(!journal_file.exists());
+        assert_no_stage_files(&target);
+    }
 
     fn isolated_git(root: &Path, args: &[&str]) {
         let mut command = Command::new("git");
