@@ -112,9 +112,11 @@
 
   Document the journal's per-worktree Git metadata location, rollback semantics, conflicts, retry behavior, harmless empty-directory residue, and the limits around power loss and arbitrary concurrent writers. Refresh the reading manifest and regenerate its derived artifacts with `cargo run --locked -- refresh-manifest` followed by `cargo run --locked -- build`, then review their diff.
 
-- [ ] **Step 4: Run the full project verification**
+- [x] **Step 4: Run the full project verification**
 
   Run `cargo fmt --all -- --check`, `cargo clippy --workspace --locked --all-targets -- -D warnings`, `cargo test --workspace --locked`, `cargo run --locked -- check`, `cargo run --locked -- render --check`, and `git diff --check`. Extend Windows CI to run the adoption recovery tests as well as existing guide transaction tests. Confirm exact-head push-triggered Ubuntu and Windows Actions results before creating the canonical PR.
+
+  Verified exact head `8fa54baf555d916ebcb5a5c3c0acdfbc5ad42625` in Actions run [40823569377](https://github.com/Cucklord420/Toe-Tickling/actions/runs/40823569377): Ubuntu format, strict Clippy, workspace tests, structural check, render check, and source-byte audit passed; Windows drive-root, transaction, adoption recovery, promotion-race, rollback, and CLI tests passed. `git diff --check` and local rustfmt passed. Local Cargo execution could not link because this host lacks `link.exe`; exact-host CI supplied build/runtime validation.
 
 - [ ] **Step 5: Review and deliver after the journal-transition follow-up**
 
@@ -149,7 +151,7 @@
 
   Persist `pending` before clearing the destination bit, persist `attributes_cleared` only after rechecking the writable variant, and persist `stable` only after replacement/removal and exact state verification. Recovery must reject writable variants in `stable` or `pending`. Migrate validated version-1/version-2 journals to version 3 with stable entries before any destination permission mutation. Do not use destination transition state to authorize stage cleanup.
 
-- [ ] **Step 4: Add transition, migration, and race regressions**
+- [x] **Step 4: Add transition, migration, and race regressions**
 
   Verify `recovery_accepts_recorded_windows_readonly_clear`, `recovery_refuses_pending_windows_readonly_clear`, and `recovery_migrates_v2_journal_before_permission_changes`; keep `recovery_restores_legacy_v1_journal` passing. Assert interrupted `pending` states preserve the target and journal, while valid `attributes_cleared` states recover and clean up. Inject a concurrent destination edit and a stage-content change after the marker is durable but before promotion; assert neither reaches the destination.
 
@@ -159,6 +161,8 @@
 
   The Rust refresh command could not build because `link.exe` is unavailable locally. The SHA-256 for `docs/ADOPTION.md` was computed directly, and all 32 manifest document hashes were checked against their current files.
 
-- [ ] **Step 6: Run final verification and exact-head CI**
+- [x] **Step 6: Run final verification and exact-head CI**
 
   Run formatting, focused regression tests, strict Clippy, workspace tests, structural and render checks, and `git diff --check`. Inspect exact-head Ubuntu and Windows CI before opening the single canonical PR; do not create another PR or Issue.
+
+  Exact-head run 40823569377 passed both jobs, including the recorded/pending/v1/v2 transition tests and the new concurrent destination/stage mutation regressions. The fresh read-only review of `8fa54baf555d916ebcb5a5c3c0acdfbc5ad42625` found no actionable findings and marked the code ready to merge.
