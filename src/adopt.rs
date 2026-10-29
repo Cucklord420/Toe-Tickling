@@ -29,7 +29,8 @@ const PRIVATE_PATTERNS: &str = "/PRIVATE.local.md\n/CLAUDE.local.md\n/private/\n
 // Keep the location stable so pending v1 journals remain discoverable.
 const JOURNAL_NAME: &str = ".toe-tickling-adoption-v1.json";
 const LEGACY_JOURNAL_VERSION: u32 = 1;
-const JOURNAL_VERSION: u32 = 2;
+const LEGACY_JOURNAL_V2_VERSION: u32 = 2;
+const JOURNAL_VERSION: u32 = 3;
 static NEXT_TRANSACTION: AtomicU64 = AtomicU64::new(0);
 type AfterPersistHook = dyn FnMut(usize, &str) -> Result<()>;
 
@@ -128,6 +129,15 @@ enum JournalState {
     Committed,
 }
 
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum JournalTransition {
+    #[default]
+    Stable,
+    Pending,
+    AttributesCleared,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct JournalIdentity {
@@ -145,6 +155,8 @@ struct JournalEntry {
     after: JournalFileState,
     stage: String,
     rollback_stage: String,
+    #[serde(default)]
+    transition: JournalTransition,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -159,6 +171,26 @@ struct AdoptionJournal {
     #[serde(default)]
     integrity_sha256: String,
     entries: Vec<JournalEntry>,
+}
+
+#[derive(Serialize)]
+struct AdoptionJournalV2<'a> {
+    version: u32,
+    transaction: &'a str,
+    state: JournalState,
+    identity: &'a JournalIdentity,
+    planned_paths: &'a [String],
+    integrity_sha256: &'a str,
+    entries: Vec<JournalEntryV2<'a>>,
+}
+
+#[derive(Serialize)]
+struct JournalEntryV2<'a> {
+    relative: &'a str,
+    before: &'a JournalFileState,
+    after: &'a JournalFileState,
+    stage: &'a str,
+    rollback_stage: &'a str,
 }
 
 #[derive(Clone, Debug)]
@@ -659,6 +691,7 @@ fn create_journal(target: &Path, root: &Path, plan: &AdoptionPlan) -> Result<Ado
             after: state_for_bytes(content.as_bytes().to_vec(), permissions),
             stage,
             rollback_stage,
+            transition: JournalTransition::Stable,
         });
     }
     if entries.iter().all(|entry| entry.before == entry.after) {
@@ -684,9 +717,32 @@ fn create_journal(target: &Path, root: &Path, plan: &AdoptionPlan) -> Result<Ado
 }
 
 fn journal_integrity(journal: &AdoptionJournal) -> Result<String> {
-    let mut unsigned = journal.clone();
-    unsigned.integrity_sha256.clear();
-    let bytes = serde_json::to_vec(&unsigned).map_err(|e| e.to_string())?;
+    let bytes = if journal.version == LEGACY_JOURNAL_V2_VERSION {
+        let legacy = AdoptionJournalV2 {
+            version: journal.version,
+            transaction: &journal.transaction,
+            state: journal.state,
+            identity: &journal.identity,
+            planned_paths: &journal.planned_paths,
+            integrity_sha256: "",
+            entries: journal
+                .entries
+                .iter()
+                .map(|entry| JournalEntryV2 {
+                    relative: &entry.relative,
+                    before: &entry.before,
+                    after: &entry.after,
+                    stage: &entry.stage,
+                    rollback_stage: &entry.rollback_stage,
+                })
+                .collect(),
+        };
+        serde_json::to_vec(&legacy).map_err(|e| e.to_string())?
+    } else {
+        let mut unsigned = journal.clone();
+        unsigned.integrity_sha256.clear();
+        serde_json::to_vec(&unsigned).map_err(|e| e.to_string())?
+    };
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
@@ -723,11 +779,22 @@ fn validate_journal(
     let legacy_v1 = journal.version == LEGACY_JOURNAL_VERSION
         && journal.planned_paths.is_empty()
         && journal.integrity_sha256.is_empty();
-    if journal.version != JOURNAL_VERSION && !legacy_v1 {
+    let legacy_v2 = journal.version == LEGACY_JOURNAL_V2_VERSION;
+    if !matches!(journal.version, JOURNAL_VERSION | LEGACY_JOURNAL_V2_VERSION) && !legacy_v1 {
         return Err(format!(
             "Unsupported adoption journal version: {}",
             journal.version
         ));
+    }
+    if (legacy_v1 || legacy_v2)
+        && journal
+            .entries
+            .iter()
+            .any(|entry| entry.transition != JournalTransition::Stable)
+    {
+        return Err(
+            "Legacy adoption journals cannot authorize a destination permission transition".into(),
+        );
     }
     if !legacy_v1 && journal.integrity_sha256 != journal_integrity(journal)? {
         return Err("Adoption recovery journal integrity check failed".into());
@@ -752,17 +819,17 @@ fn validate_journal(
         .iter()
         .map(|entry| entry.relative.as_str())
         .collect();
-    if ![GUIDE, LOCK, "AGENTS.md", ".gitignore"]
-        .iter()
-        .all(|required| entry_paths.contains(required))
-    {
-        return Err("Adoption journal is missing a required managed output".into());
-    }
     if !legacy_v1 {
         let planned_paths: Vec<_> = journal.planned_paths.iter().map(String::as_str).collect();
         if planned_paths != entry_paths {
             return Err("Adoption journal planned output list does not match its entries".into());
         }
+    }
+    if ![GUIDE, LOCK, "AGENTS.md", ".gitignore"]
+        .iter()
+        .all(|required| entry_paths.contains(required))
+    {
+        return Err("Adoption journal is missing a required managed output".into());
     }
     let allowed = output_paths();
     let mut seen = BTreeSet::new();
@@ -850,7 +917,7 @@ fn write_journal_exclusive(path: &Path, journal: &AdoptionJournal) -> Result<()>
     Ok(())
 }
 
-fn write_journal_committed(path: &Path, journal: &AdoptionJournal) -> Result<()> {
+fn write_journal_replacement(path: &Path, journal: &AdoptionJournal) -> Result<()> {
     let current = metadata(path)?.ok_or("Adoption recovery journal disappeared")?;
     if current.file_type().is_symlink() || !current.is_file() {
         return Err("Adoption recovery journal must be a regular file".into());
@@ -860,18 +927,29 @@ fn write_journal_committed(path: &Path, journal: &AdoptionJournal) -> Result<()>
         .parent()
         .ok_or("Recovery journal has no parent directory")?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent)
-        .map_err(|e| format!("Cannot stage committed adoption journal: {e}"))?;
+        .map_err(|e| format!("Cannot stage adoption journal update: {e}"))?;
     temporary
         .write_all(&encoded)
-        .map_err(|e| format!("Cannot write committed adoption journal: {e}"))?;
+        .map_err(|e| format!("Cannot write adoption journal update: {e}"))?;
     temporary
         .as_file()
         .sync_all()
-        .map_err(|e| format!("Cannot sync committed adoption journal: {e}"))?;
+        .map_err(|e| format!("Cannot sync adoption journal update: {e}"))?;
     temporary
         .persist(path)
-        .map_err(|error| format!("Cannot mark adoption journal committed: {}", error.error))?;
+        .map_err(|error| format!("Cannot replace adoption journal: {}", error.error))?;
     Ok(())
+}
+
+fn write_journal_update(
+    path: &Path,
+    expected_current: &AdoptionJournal,
+    updated: &AdoptionJournal,
+) -> Result<()> {
+    if read_journal(path)? != *expected_current {
+        return Err("Adoption recovery journal changed during an update".into());
+    }
+    write_journal_replacement(path, updated)
 }
 
 fn read_journal(path: &Path) -> Result<AdoptionJournal> {
@@ -881,6 +959,25 @@ fn read_journal(path: &Path) -> Result<AdoptionJournal> {
     }
     let bytes = fs::read(path).map_err(|e| format!("Cannot read adoption journal: {e}"))?;
     serde_json::from_slice(&bytes).map_err(|e| format!("Invalid adoption recovery journal: {e}"))
+}
+
+fn migrate_legacy_journal(path: &Path, journal: &AdoptionJournal) -> Result<AdoptionJournal> {
+    if journal.version == JOURNAL_VERSION {
+        return Ok(journal.clone());
+    }
+    let mut migrated = journal.clone();
+    migrated.version = JOURNAL_VERSION;
+    migrated.planned_paths = migrated
+        .entries
+        .iter()
+        .map(|entry| entry.relative.clone())
+        .collect();
+    for entry in &mut migrated.entries {
+        entry.transition = JournalTransition::Stable;
+    }
+    seal_journal(&mut migrated)?;
+    write_journal_update(path, journal, &migrated)?;
+    Ok(migrated)
 }
 
 fn ensure_parent_dirs(target: &Path, relative: &str) -> Result<()> {
@@ -947,24 +1044,28 @@ fn create_stage(target: &Path, relative: &str, bytes: &[u8]) -> Result<()> {
 }
 
 fn persist_stage(
+    source_root: &Path,
     target: &Path,
+    journal_path: &Path,
+    journal: &mut AdoptionJournal,
+    entry_index: usize,
     relative: &str,
-    destination_relative: &str,
-    expected_before: &JournalFileState,
-    expected_after: &JournalFileState,
 ) -> Result<()> {
+    let entry = journal
+        .entries
+        .get(entry_index)
+        .ok_or("Adoption journal entry index is invalid")?
+        .clone();
     let stage_path = safe_path(target, relative)?;
-    let destination = safe_path(target, destination_relative)?;
+    let destination = safe_path(target, &entry.relative)?;
     let stage_state = file_state(target, relative)?;
-    if stage_state.bytes != expected_after.bytes {
+    if stage_state.bytes != entry.after.bytes {
         return Err(format!(
             "Staged output changed before replacement: {relative}"
         ));
     }
-    if file_state(target, destination_relative)? != *expected_before {
-        return Err(format!(
-            "Target changed during apply: {destination_relative}"
-        ));
+    if file_state(target, &entry.relative)? != entry.before {
+        return Err(format!("Target changed during apply: {}", entry.relative));
     }
     let file = fs::OpenOptions::new()
         .read(true)
@@ -973,24 +1074,37 @@ fn persist_stage(
         .map_err(|e| format!("Cannot open stage {relative}: {e}"))?;
     file.sync_all()
         .map_err(|e| format!("Cannot sync stage {relative}: {e}"))?;
-    expected_after
+    entry
+        .after
         .permissions
         .as_ref()
         .ok_or("Journal postimage is missing permissions")?
         .apply_to(&stage_path)?;
     drop(file);
-    make_destination_writable(target, destination_relative, expected_before)?;
-    fs::rename(&stage_path, &destination).map_err(|error| {
-        format!(
-            "Cannot atomically replace {destination_relative}: {}",
-            error
-        )
-    })?;
-    if file_state(target, destination_relative)? != *expected_after {
+    prepare_destination_for_replacement(
+        source_root,
+        target,
+        journal_path,
+        journal,
+        entry_index,
+        &entry.before,
+    )?;
+    fs::rename(&stage_path, &destination)
+        .map_err(|error| format!("Cannot atomically replace {}: {}", entry.relative, error))?;
+    if file_state(target, &entry.relative)? != entry.after {
         return Err(format!(
-            "Installed output did not match its journal: {destination_relative}"
+            "Installed output did not match its journal: {}",
+            entry.relative
         ));
     }
+    set_entry_transition(
+        source_root,
+        target,
+        journal_path,
+        journal,
+        entry_index,
+        JournalTransition::Stable,
+    )?;
     Ok(())
 }
 
@@ -1013,30 +1127,113 @@ fn make_stage_writable(_path: &Path, _relative: &str) -> Result<()> {
 }
 
 fn writable_variant(state: &JournalFileState) -> JournalFileState {
-    let mut writable = state.clone();
     #[cfg(windows)]
-    if let Some(permissions) = writable.permissions.as_mut() {
-        permissions.readonly = false;
+    {
+        let mut writable = state.clone();
+        if let Some(permissions) = writable.permissions.as_mut() {
+            permissions.readonly = false;
+        }
+        writable
     }
-    writable
+    #[cfg(not(windows))]
+    {
+        state.clone()
+    }
 }
 
-fn make_destination_writable(
+fn set_entry_transition(
+    source_root: &Path,
     target: &Path,
-    relative: &str,
+    journal_path: &Path,
+    journal: &mut AdoptionJournal,
+    entry_index: usize,
+    transition: JournalTransition,
+) -> Result<()> {
+    let current = journal
+        .entries
+        .get(entry_index)
+        .ok_or("Adoption journal entry index is invalid")?
+        .transition;
+    if current == transition {
+        return Ok(());
+    }
+    let allowed = matches!(
+        (current, transition),
+        (JournalTransition::Stable, JournalTransition::Pending)
+            | (
+                JournalTransition::Pending,
+                JournalTransition::AttributesCleared
+            )
+            | (JournalTransition::Pending, JournalTransition::Stable)
+            | (
+                JournalTransition::AttributesCleared,
+                JournalTransition::Pending
+            )
+            | (
+                JournalTransition::AttributesCleared,
+                JournalTransition::Stable
+            )
+    );
+    if !allowed {
+        return Err("Invalid adoption journal destination transition".into());
+    }
+
+    validate_live_identity(source_root, target, &journal.identity)?;
+    let mut updated = journal.clone();
+    updated.entries[entry_index].transition = transition;
+    seal_journal(&mut updated)?;
+    write_journal_update(journal_path, journal, &updated)?;
+    *journal = updated;
+    Ok(())
+}
+
+fn prepare_destination_for_replacement(
+    source_root: &Path,
+    target: &Path,
+    journal_path: &Path,
+    journal: &mut AdoptionJournal,
+    entry_index: usize,
     expected: &JournalFileState,
 ) -> Result<()> {
+    let relative = journal
+        .entries
+        .get(entry_index)
+        .ok_or("Adoption journal entry index is invalid")?
+        .relative
+        .clone();
     let writable = writable_variant(expected);
-    let current = file_state(target, relative)?;
-    if current == writable {
+    let current = file_state(target, &relative)?;
+    if current == writable && current != *expected {
+        if journal.entries[entry_index].transition != JournalTransition::AttributesCleared {
+            return Err(format!("Preserving concurrent edit at {relative}"));
+        }
         return Ok(());
     }
     if current != *expected {
         return Err(format!("Target changed during replacement: {relative}"));
     }
+    if writable == *expected {
+        return Ok(());
+    }
+
+    // Persist intent before changing the read-only bit. If recovery sees a
+    // writable variant while this entry is still pending, it must fail closed.
+    set_entry_transition(
+        source_root,
+        target,
+        journal_path,
+        journal,
+        entry_index,
+        JournalTransition::Pending,
+    )?;
+    validate_live_identity(source_root, target, &journal.identity)?;
+    if file_state(target, &relative)? != *expected {
+        return Err(format!("Target changed during replacement: {relative}"));
+    }
+
     #[cfg(windows)]
     {
-        let path = safe_path(target, relative)?;
+        let path = safe_path(target, &relative)?;
         let mut permissions = fs::metadata(&path)
             .map_err(|e| format!("Cannot inspect replacement target {relative}: {e}"))?
             .permissions();
@@ -1046,11 +1243,21 @@ fn make_destination_writable(
                 .map_err(|e| format!("Cannot make replacement target writable {relative}: {e}"))?;
         }
     }
-    if file_state(target, relative)? != writable {
+    if file_state(target, &relative)? != writable {
         return Err(format!(
             "Replacement target permissions did not become writable: {relative}"
         ));
     }
+
+    // Only this durable marker authorizes recovery to accept writable variants.
+    set_entry_transition(
+        source_root,
+        target,
+        journal_path,
+        journal,
+        entry_index,
+        JournalTransition::AttributesCleared,
+    )?;
     Ok(())
 }
 
@@ -1071,16 +1278,33 @@ fn cleanup_stage(target: &Path, relative: &str, expected: &JournalFileState) -> 
 fn restore_entry(
     source_root: &Path,
     target: &Path,
-    journal: &AdoptionJournal,
-    entry: &JournalEntry,
+    journal_path: &Path,
+    journal: &mut AdoptionJournal,
+    entry_index: usize,
 ) -> Result<bool> {
+    let entry = journal
+        .entries
+        .get(entry_index)
+        .ok_or("Adoption journal entry index is invalid")?
+        .clone();
     validate_live_identity(source_root, target, &journal.identity)?;
     let current = file_state(target, &entry.relative)?;
     if current == entry.before {
+        set_entry_transition(
+            source_root,
+            target,
+            journal_path,
+            journal,
+            entry_index,
+            JournalTransition::Stable,
+        )?;
         return Ok(false);
     }
     let before_writable = writable_variant(&entry.before);
     if current == before_writable && current != entry.before {
+        if journal.entries[entry_index].transition != JournalTransition::AttributesCleared {
+            return Err(format!("Preserving concurrent edit at {}", entry.relative));
+        }
         validate_live_identity(source_root, target, &journal.identity)?;
         if file_state(target, &entry.relative)? != before_writable {
             return Err(format!("Preserving concurrent edit at {}", entry.relative));
@@ -1097,9 +1321,23 @@ fn restore_entry(
                 entry.relative
             ));
         }
+        set_entry_transition(
+            source_root,
+            target,
+            journal_path,
+            journal,
+            entry_index,
+            JournalTransition::Stable,
+        )?;
         return Ok(false);
     }
     let after_writable = writable_variant(&entry.after);
+    if current == after_writable
+        && current != entry.after
+        && journal.entries[entry_index].transition != JournalTransition::AttributesCleared
+    {
+        return Err(format!("Preserving concurrent edit at {}", entry.relative));
+    }
     if current != entry.after && current != after_writable {
         return Err(format!("Preserving concurrent edit at {}", entry.relative));
     }
@@ -1110,9 +1348,30 @@ fn restore_entry(
             return Err(format!("Preserving concurrent edit at {}", entry.relative));
         }
         let destination = safe_path(target, &entry.relative)?;
-        make_destination_writable(target, &entry.relative, &entry.after)?;
+        prepare_destination_for_replacement(
+            source_root,
+            target,
+            journal_path,
+            journal,
+            entry_index,
+            &entry.after,
+        )?;
         fs::remove_file(&destination)
             .map_err(|e| format!("Cannot remove installed {}: {e}", entry.relative))?;
+        if file_state(target, &entry.relative)? != entry.before {
+            return Err(format!(
+                "Removed output did not match its preimage: {}",
+                entry.relative
+            ));
+        }
+        set_entry_transition(
+            source_root,
+            target,
+            journal_path,
+            journal,
+            entry_index,
+            JournalTransition::Stable,
+        )?;
         return Ok(true);
     }
 
@@ -1162,7 +1421,14 @@ fn restore_entry(
         .as_ref()
         .ok_or("Journal preimage is missing permissions")?
         .apply_to(&stage_path)?;
-    make_destination_writable(target, &entry.relative, &entry.after)?;
+    prepare_destination_for_replacement(
+        source_root,
+        target,
+        journal_path,
+        journal,
+        entry_index,
+        &entry.after,
+    )?;
     let destination = safe_path(target, &entry.relative)?;
     fs::rename(&stage_path, &destination)
         .map_err(|e| format!("Cannot restore {}: {e}", entry.relative))?;
@@ -1172,6 +1438,14 @@ fn restore_entry(
             entry.relative
         ));
     }
+    set_entry_transition(
+        source_root,
+        target,
+        journal_path,
+        journal,
+        entry_index,
+        JournalTransition::Stable,
+    )?;
     Ok(true)
 }
 
@@ -1201,11 +1475,11 @@ fn recover_prepared(
     source_root: &Path,
     target: &Path,
     journal_path: &Path,
-    journal: &AdoptionJournal,
+    journal: &mut AdoptionJournal,
 ) -> Result<()> {
     let mut problems = Vec::new();
-    for entry in &journal.entries {
-        if let Err(error) = restore_entry(source_root, target, journal, entry) {
+    for entry_index in 0..journal.entries.len() {
+        if let Err(error) = restore_entry(source_root, target, journal_path, journal, entry_index) {
             problems.push(error);
         }
     }
@@ -1275,8 +1549,11 @@ pub fn recover(root: &Path, target: &Path) -> Result<()> {
     }
     let journal = read_journal(&journal_path)?;
     validate_journal(&source_root, &target, &git_dir, &journal)?;
+    let mut journal = migrate_legacy_journal(&journal_path, &journal)?;
     match journal.state {
-        JournalState::Prepared => recover_prepared(&source_root, &target, &journal_path, &journal),
+        JournalState::Prepared => {
+            recover_prepared(&source_root, &target, &journal_path, &mut journal)
+        }
         JournalState::Committed => {
             cleanup_committed(&source_root, &target, &journal_path, &journal)
         }
@@ -1453,17 +1730,19 @@ fn apply_transaction(
             create_stage(&plan.target, &entry.stage, output)?;
         }
         let mut written = 0usize;
-        for entry in &journal.entries {
+        for entry_index in 0..journal.entries.len() {
+            let entry = journal.entries[entry_index].clone();
             if entry.before == entry.after {
                 continue;
             }
             validate_live_identity(&plan.source_root, &plan.target, &journal.identity)?;
             persist_stage(
+                &plan.source_root,
                 &plan.target,
+                &pending_journal_path,
+                &mut journal,
+                entry_index,
                 &entry.stage,
-                &entry.relative,
-                &entry.before,
-                &entry.after,
             )?;
             written += 1;
             if let Some(hook) = after_persist.as_deref_mut() {
@@ -1482,7 +1761,7 @@ fn apply_transaction(
         let mut committed = journal.clone();
         committed.state = JournalState::Committed;
         seal_journal(&mut committed)?;
-        write_journal_committed(&pending_journal_path, &committed)?;
+        write_journal_update(&pending_journal_path, &journal, &committed)?;
         journal = committed;
         validate_live_identity(&plan.source_root, &plan.target, &journal.identity)?;
         cleanup_committed(
@@ -1503,7 +1782,7 @@ fn apply_transaction(
             &plan.source_root,
             &plan.target,
             &pending_journal_path,
-            &journal,
+            &mut journal,
         ) {
             Ok(()) => Err(error),
             Err(recovery_error) => Err(format!(
@@ -1910,6 +2189,135 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn recovery_accepts_recorded_windows_readonly_clear() {
+        let (_scratch, target) = target_fixture();
+        set_readonly(&target, GUIDE, true);
+        let plan = fixture_plan(&target);
+        let before = target_snapshot(&target);
+        let mut journal = create_journal(&target, &plan.source_root, &plan).unwrap();
+        let entry_index = journal
+            .entries
+            .iter()
+            .position(|entry| entry.relative == GUIDE)
+            .unwrap();
+        let expected_before = journal.entries[entry_index].before.clone();
+        let (git_dir, journal_file) = journal_path(&target).unwrap();
+        validate_journal(&plan.source_root, &target, &git_dir, &journal).unwrap();
+        write_journal_exclusive(&journal_file, &journal).unwrap();
+        prepare_destination_for_replacement(
+            &plan.source_root,
+            &target,
+            &journal_file,
+            &mut journal,
+            entry_index,
+            &expected_before,
+        )
+        .unwrap();
+
+        recover(&plan.source_root, &target).unwrap();
+
+        assert_eq!(target_snapshot(&target), before);
+        assert!(!journal_file.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn recovery_refuses_pending_windows_readonly_clear() {
+        let (_scratch, target) = target_fixture();
+        set_readonly(&target, GUIDE, true);
+        let plan = fixture_plan(&target);
+        let mut journal = create_journal(&target, &plan.source_root, &plan).unwrap();
+        let entry_index = journal
+            .entries
+            .iter()
+            .position(|entry| entry.relative == GUIDE)
+            .unwrap();
+        let (git_dir, journal_file) = journal_path(&target).unwrap();
+        validate_journal(&plan.source_root, &target, &git_dir, &journal).unwrap();
+        write_journal_exclusive(&journal_file, &journal).unwrap();
+        set_entry_transition(
+            &plan.source_root,
+            &target,
+            &journal_file,
+            &mut journal,
+            entry_index,
+            JournalTransition::Pending,
+        )
+        .unwrap();
+        set_readonly(&target, GUIDE, false);
+        let user_state = file_state(&target, GUIDE).unwrap();
+
+        let error = recover(&plan.source_root, &target).unwrap_err();
+
+        assert!(error.contains("Preserving concurrent edit"), "{error}");
+        assert_eq!(file_state(&target, GUIDE).unwrap(), user_state);
+        let stored = read_journal(&journal_file).unwrap();
+        assert_eq!(
+            stored.entries[entry_index].transition,
+            JournalTransition::Pending
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn recovery_migrates_v2_journal_before_permission_changes() {
+        let (_scratch, target) = target_fixture();
+        set_readonly(&target, GUIDE, true);
+        let plan = fixture_plan(&target);
+        let journal = create_journal(&target, &plan.source_root, &plan).unwrap();
+        let (git_dir, journal_file) = journal_path(&target).unwrap();
+        validate_journal(&plan.source_root, &target, &git_dir, &journal).unwrap();
+        write_journal_exclusive(&journal_file, &journal).unwrap();
+
+        let mut legacy_value = serde_json::to_value(&journal).unwrap();
+        let object = legacy_value.as_object_mut().unwrap();
+        object.insert(
+            "version".into(),
+            serde_json::json!(LEGACY_JOURNAL_V2_VERSION),
+        );
+        object.insert("integrity_sha256".into(), serde_json::json!(""));
+        for entry in object.get_mut("entries").unwrap().as_array_mut().unwrap() {
+            entry.as_object_mut().unwrap().remove("transition");
+        }
+        let mut legacy: AdoptionJournal = serde_json::from_value(legacy_value).unwrap();
+        seal_journal(&mut legacy).unwrap();
+        let mut legacy_value = serde_json::to_value(&legacy).unwrap();
+        for entry in legacy_value
+            .get_mut("entries")
+            .unwrap()
+            .as_array_mut()
+            .unwrap()
+        {
+            entry.as_object_mut().unwrap().remove("transition");
+        }
+        fs::write(
+            &journal_file,
+            serde_json::to_vec_pretty(&legacy_value).unwrap(),
+        )
+        .unwrap();
+
+        set_readonly(&target, GUIDE, false);
+        let user_state = file_state(&target, GUIDE).unwrap();
+        let entry_index = journal
+            .entries
+            .iter()
+            .position(|entry| entry.relative == GUIDE)
+            .unwrap();
+
+        let error = recover(&plan.source_root, &target).unwrap_err();
+
+        assert!(error.contains("Preserving concurrent edit"), "{error}");
+        assert_eq!(file_state(&target, GUIDE).unwrap(), user_state);
+        let migrated = read_journal(&journal_file).unwrap();
+        assert_eq!(migrated.version, JOURNAL_VERSION);
+        assert_eq!(
+            migrated.entries[entry_index].transition,
+            JournalTransition::Stable
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn recovery_removes_readonly_stage_left_before_promotion() {
         let (_scratch, target) = target_fixture();
         set_readonly(&target, GUIDE, true);
@@ -1948,12 +2356,13 @@ mod tests {
         set_readonly(&target, GUIDE, true);
         let plan = fixture_plan(&target);
         let before = target_snapshot(&target);
-        let (journal_file, journal) = prepared_journal(&target, &plan);
-        let entry = journal
+        let (journal_file, mut journal) = prepared_journal(&target, &plan);
+        let entry_index = journal
             .entries
             .iter()
-            .find(|entry| entry.relative == GUIDE)
+            .position(|entry| entry.relative == GUIDE)
             .unwrap();
+        let entry = journal.entries[entry_index].clone();
         create_stage(
             &target,
             &entry.rollback_stage,
@@ -1967,7 +2376,15 @@ mod tests {
             .unwrap()
             .apply_to(&safe_path(&target, &entry.rollback_stage).unwrap())
             .unwrap();
-        make_destination_writable(&target, GUIDE, &entry.after).unwrap();
+        prepare_destination_for_replacement(
+            &plan.source_root,
+            &target,
+            &journal_file,
+            &mut journal,
+            entry_index,
+            &entry.after,
+        )
+        .unwrap();
 
         recover(&plan.source_root, &target).unwrap();
 
@@ -1983,12 +2400,13 @@ mod tests {
         set_readonly(&target, GUIDE, true);
         let plan = fixture_plan(&target);
         let before = target_snapshot(&target);
-        let journal = create_journal(&target, &plan.source_root, &plan).unwrap();
-        let entry = journal
+        let mut journal = create_journal(&target, &plan.source_root, &plan).unwrap();
+        let entry_index = journal
             .entries
             .iter()
-            .find(|entry| entry.relative == GUIDE)
+            .position(|entry| entry.relative == GUIDE)
             .unwrap();
+        let entry = journal.entries[entry_index].clone();
         let (git_dir, journal_file) = journal_path(&target).unwrap();
         validate_journal(&plan.source_root, &target, &git_dir, &journal).unwrap();
         write_journal_exclusive(&journal_file, &journal).unwrap();
@@ -2001,7 +2419,20 @@ mod tests {
             .unwrap()
             .apply_to(&safe_path(&target, &entry.stage).unwrap())
             .unwrap();
-        make_destination_writable(&target, GUIDE, &entry.before).unwrap();
+        prepare_destination_for_replacement(
+            &plan.source_root,
+            &target,
+            &journal_file,
+            &mut journal,
+            entry_index,
+            &entry.before,
+        )
+        .unwrap();
+        fs::rename(
+            safe_path(&target, &entry.stage).unwrap(),
+            safe_path(&target, GUIDE).unwrap(),
+        )
+        .unwrap();
 
         recover(&plan.source_root, &target).unwrap();
 
@@ -2415,7 +2846,40 @@ fn main() {
         object.insert("version".into(), serde_json::json!(1));
         object.remove("planned_paths");
         object.remove("integrity_sha256");
+        for entry in object.get_mut("entries").unwrap().as_array_mut().unwrap() {
+            entry.as_object_mut().unwrap().remove("transition");
+        }
         fs::write(&journal_file, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
+        fs::write(target.join(LOCK), b"intervening user edit\n").unwrap();
+
+        let error = recover(&plan.source_root, &target).unwrap_err();
+
+        assert!(error.contains("Preserving concurrent edit"), "{error}");
+        let migrated = read_journal(&journal_file).unwrap();
+        assert_eq!(migrated.version, JOURNAL_VERSION);
+        assert_eq!(
+            migrated.planned_paths,
+            migrated
+                .entries
+                .iter()
+                .map(|entry| entry.relative.clone())
+                .collect::<Vec<_>>()
+        );
+        let (git_dir, _) = journal_path(&target).unwrap();
+        validate_journal(&plan.source_root, &target, &git_dir, &migrated).unwrap();
+        let lock = migrated
+            .entries
+            .iter()
+            .find(|entry| entry.relative == LOCK)
+            .unwrap();
+        let lock_path = safe_path(&target, LOCK).unwrap();
+        fs::write(&lock_path, lock.before.bytes.as_deref().unwrap()).unwrap();
+        lock.before
+            .permissions
+            .as_ref()
+            .unwrap()
+            .apply_to(&lock_path)
+            .unwrap();
 
         recover(&plan.source_root, &target).unwrap();
 
