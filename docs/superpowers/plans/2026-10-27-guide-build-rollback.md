@@ -53,10 +53,10 @@
 - [x] Run the focused test and existing guide-build validation regressions.
 - [x] Fresh review caught path-ancestor revalidation and Windows readonly metadata gaps; add red regressions before fixing them.
 - [x] Exact-head test checkpoint 1e45af065577ff3238450a3bb6ce47e87ef96544: Ubuntu symlink-swap regression failed as expected; Windows readonly-backup and readonly-restoration regressions failed as expected; the Windows locked-target real-persist-failure regression passed.
-- [ ] Revalidate paths before replacement/removal/restoration and reapply original permissions after `keep`/`persist` finalization.
-- [ ] Run exact-head Ubuntu and Windows checks after the fix.
+- [x] Revalidate paths before replacement/removal/restoration and reapply original permissions after `keep`/`persist` finalization.
+- [x] Run exact-head Ubuntu and Windows checks after the fix: run 40609571545 passed on `8f4d96d862dfdab1fc652f14a258b3ca5a662722`.
 - [x] Follow-up review found two more path cases: a retained backup path could go stale if an ancestor is redirected elsewhere, and an absent-output probe could accept a path swapped to an empty symlink target. Added red Unix regressions for both on exact test head `f1adfe5753a3f6011e3830963f0e64b650ad4e1c`.
-- [ ] Move original backups to the stable repository root and revalidate after an absent-destination probe.
+- [x] Move original backups to the stable repository root and revalidate after an absent-destination probe; exact-head checks passed in run 40609571545.
 
 ### Task 2: Route `build` through the transaction
 
@@ -68,8 +68,8 @@
 - [x] Verify a validation failure leaves all generated outputs byte-for-byte unchanged.
 - [x] Replace the sequential persist loop with `commit_outputs`; retain the number-of-outputs return value.
 - [x] Add assertions for permission preservation and backup retention when rollback detects a concurrent destination change.
-- [x] Run `cargo fmt --all -- --check`, `cargo clippy --workspace --locked --all-targets -- -D warnings`, `cargo test --workspace --locked`, `cargo run --locked -- check`, and `cargo run --locked -p guidebook-audit -- check .` on exact head in Ubuntu Actions run 40606300518.
-- [ ] Inspect the complete diff and confirm no generated policy files or unrelated adoption changes are included.
+- [x] Run `cargo fmt --all -- --check`, `cargo clippy --workspace --locked --all-targets -- -D warnings`, `cargo test --workspace --locked`, `cargo run --locked -- check`, and `cargo run --locked -p guidebook-audit -- check .` on exact head in Ubuntu Actions run 40609571545.
+- [x] Inspect the complete diff and confirm no generated policy files or unrelated adoption changes are included.
 
 ### Task 3: Verify exact branch state
 
@@ -77,6 +77,7 @@
 - No further source changes unless a validation defect is found.
 
 - [x] Confirm the branch remains based on `d50fe7c8c0a94bb32676b5042f53adfead0e7ca0`; GitHub `main` still points there.
-- [x] Obtain exact-head Ubuntu workflow results before opening a canonical PR for existing Issue #35: run 40606300518 passed all required jobs at 6874af644decc67859ef6dfe6f91d3f6fe21c345.
-- [ ] Complete independent branch review after the review-driven fix, inspect the complete diff, and open one canonical PR only after exact-head validation.
-- [ ] Keep Issue #35 open until the fix is merged and verified on `main`.
+- [x] Obtain exact-head Ubuntu and Windows workflow results before opening a canonical PR for existing Issue #35: run 40609571545 passed both jobs at `8f4d96d862dfdab1fc652f14a258b3ca5a662722`.
+- [x] Complete independent branch review after the review-driven fix; the reviewer found no actionable Critical or Important findings at `8f4d96d862dfdab1fc652f14a258b3ca5a662722`.
+- [ ] Open one canonical PR after exact-head validation and independent review.
+- [x] Keep Issue #35 open until the fix is merged and verified on `main`; it remains open.
