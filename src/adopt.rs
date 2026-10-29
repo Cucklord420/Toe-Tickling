@@ -29,6 +29,7 @@ const PRIVATE_PATTERNS: &str = "/PRIVATE.local.md\n/CLAUDE.local.md\n/private/\n
 const JOURNAL_NAME: &str = ".toe-tickling-adoption-v1.json";
 const JOURNAL_VERSION: u32 = 1;
 static NEXT_TRANSACTION: AtomicU64 = AtomicU64::new(0);
+type AfterPersistHook = dyn FnMut(usize, &str) -> Result<()>;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -1260,7 +1261,7 @@ pub fn apply(plan: &AdoptionPlan) -> Result<()> {
 
 fn apply_transaction(
     plan: &AdoptionPlan,
-    mut after_persist: Option<&mut dyn FnMut(usize, &str) -> Result<()>>,
+    mut after_persist: Option<&mut AfterPersistHook>,
 ) -> Result<()> {
     if plan.target != plan.checked_target
         || plan.files != plan.checked_files
