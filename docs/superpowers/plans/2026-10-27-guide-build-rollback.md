@@ -44,7 +44,7 @@
 
 **Interfaces:**
 - `commit_outputs` accepts staged output records and an internal `FnMut(&str, usize) -> Result<()>` hook called after each successful replacement; production passes an always-successful hook, while unit tests inject a failure after the second replacement.
-- Each staged record carries the relative output name, destination path, new bytes/staged file, original bytes and permissions, optional backup, and whether replacement completed.
+- Each staged record carries the relative output name, destination path, new bytes/staged file, original bytes and permissions, and optional backup. A separate committed-index list tracks successful replacements for rollback.
 
 - [x] Add a unit regression with two existing files and one originally absent file; inject a failure after the second successful replacement and assert the files are restored exactly, original Unix permission bits return, and the absent file remains absent.
 - [x] Add regressions for concurrent changes after staging and during rollback; assert changes are preserved and the original backup path is reported and retained.
