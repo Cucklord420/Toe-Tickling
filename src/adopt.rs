@@ -2048,4 +2048,25 @@ fn main() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+
+    #[test]
+    fn recovery_restores_legacy_v1_journal() {
+        let (_scratch, target) = target_fixture();
+        let plan = fixture_plan(&target);
+        let before = target_snapshot(&target);
+        let (journal_file, journal) = prepared_journal(&target, &plan);
+
+        let mut legacy = serde_json::to_value(&journal).unwrap();
+        let object = legacy.as_object_mut().unwrap();
+        object.insert("version".into(), serde_json::json!(1));
+        object.remove("planned_paths");
+        object.remove("integrity_sha256");
+        fs::write(&journal_file, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
+
+        recover(&plan.source_root, &target).unwrap();
+
+        assert_eq!(target_snapshot(&target), before);
+        assert!(!journal_file.exists());
+        assert_no_stage_files(&target);
+    }
 }
