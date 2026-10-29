@@ -1051,6 +1051,29 @@ fn persist_stage(
     entry_index: usize,
     relative: &str,
 ) -> Result<()> {
+    persist_stage_with_hook(
+        source_root,
+        target,
+        journal_path,
+        journal,
+        entry_index,
+        relative,
+        || Ok(()),
+    )
+}
+
+fn persist_stage_with_hook<F>(
+    source_root: &Path,
+    target: &Path,
+    journal_path: &Path,
+    journal: &mut AdoptionJournal,
+    entry_index: usize,
+    relative: &str,
+    before_rename: F,
+) -> Result<()>
+where
+    F: FnOnce() -> Result<()>,
+{
     let entry = journal
         .entries
         .get(entry_index)
@@ -1089,6 +1112,7 @@ fn persist_stage(
         entry_index,
         &entry.before,
     )?;
+    before_rename()?;
     fs::rename(&stage_path, &destination)
         .map_err(|error| format!("Cannot atomically replace {}: {}", entry.relative, error))?;
     if file_state(target, &entry.relative)? != entry.after {
@@ -2185,6 +2209,55 @@ mod tests {
         assert!(error.contains("Preserving concurrent edit"), "{error}");
         assert_eq!(file_state(&target, GUIDE).unwrap(), user_state);
         assert!(journal_file.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn apply_preserves_destination_edit_between_marker_and_promotion() {
+        let (_scratch, target) = target_fixture();
+        set_readonly(&target, GUIDE, true);
+        let plan = fixture_plan(&target);
+        let mut journal = create_journal(&target, &plan.source_root, &plan).unwrap();
+        let entry_index = journal
+            .entries
+            .iter()
+            .position(|entry| entry.relative == GUIDE)
+            .unwrap();
+        let entry = journal.entries[entry_index].clone();
+        let (git_dir, journal_file) = journal_path(&target).unwrap();
+        validate_journal(&plan.source_root, &target, &git_dir, &journal).unwrap();
+        write_journal_exclusive(&journal_file, &journal).unwrap();
+        create_stage(&target, &entry.stage, entry.after.bytes.as_deref().unwrap()).unwrap();
+        let user_edit = b"user edit after journal authorization\n";
+
+        let error = persist_stage_with_hook(
+            &plan.source_root,
+            &target,
+            &journal_file,
+            &mut journal,
+            entry_index,
+            &entry.stage,
+            || {
+                let persisted = read_journal(&journal_file)?;
+                assert_eq!(
+                    persisted.entries[entry_index].transition,
+                    JournalTransition::AttributesCleared
+                );
+                fs::write(target.join(GUIDE), user_edit).map_err(|error| error.to_string())
+            },
+        )
+        .unwrap_err();
+
+        assert!(
+            error.contains("Target changed during replacement"),
+            "{error}"
+        );
+        assert_eq!(
+            file_state(&target, GUIDE).unwrap().bytes,
+            Some(user_edit.to_vec())
+        );
+        assert!(journal_file.exists());
+        assert!(safe_path(&target, &entry.stage).unwrap().exists());
     }
 
     #[cfg(windows)]

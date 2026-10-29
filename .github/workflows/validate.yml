@@ -28,6 +28,8 @@ jobs:
         run: cargo test --workspace --locked
       - name: Structural policy and freshness audit
         run: cargo run --locked -- check
+      - name: Render check
+        run: cargo run --locked -- render --check
       - name: Independent Rust source-byte audit
         run: cargo run --locked -p guidebook-audit -- check .
 
@@ -46,6 +48,8 @@ jobs:
         run: cargo test --locked -p toe-tickling --lib guide::build_transaction_tests
       - name: Adoption recovery regression tests
         run: cargo test --locked -p toe-tickling --lib adopt::tests::recovery_
+      - name: Adoption promotion race regression test
+        run: cargo test --locked -p toe-tickling --lib adopt::tests::apply_preserves_destination_edit_between_marker_and_promotion
       - name: Adoption rollback failure test
         run: cargo test --locked -p toe-tickling --lib adopt::tests::apply_rolls_back
       - name: Adoption recovery CLI tests
