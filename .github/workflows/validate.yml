@@ -40,6 +40,8 @@ jobs:
           persist-credentials: false
       - name: Install the pinned Rust toolchain
         run: rustup show
+      - name: Windows drive-root inspection regression test
+        run: cargo test --locked -p toe-tickling --lib security::tests::checked_root_accepts_native_drive_prefix
       - name: Transaction regression tests
         run: cargo test --locked -p toe-tickling --lib guide::build_transaction_tests
       - name: Adoption recovery regression tests

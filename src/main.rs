@@ -41,6 +41,9 @@ fn execute_adopt(root: &Path, args: AdoptArgs) -> Result<String> {
         return serde_json::to_string_pretty(&serde_json::json!({"mode": "recovered"}))
             .map_err(|e| e.to_string());
     }
+    if args.mode == AdoptMode::Apply {
+        toe_tickling::adopt::ensure_no_pending_recovery(&args.target)?;
+    }
     let plan = toe_tickling::adopt::plan(root, &args.target)?;
     let changed: Vec<_> = plan
         .files
@@ -222,5 +225,48 @@ mod tests {
     fn adopt_rejects_apply_and_recover_together() {
         let args = vec!["/tmp/target".into(), "--apply".into(), "--recover".into()];
         assert!(parse_adopt_args(&args).is_err());
+    }
+
+    #[test]
+    fn adopt_recover_pending_journal_before_planning() {
+        let scratch = tempfile::tempdir().unwrap();
+        let target = scratch.path().join("target");
+        fs::create_dir(&target).unwrap();
+        let mut command = std::process::Command::new("git");
+        command.args(["init", "-q"]).current_dir(&target);
+        for (key, _) in env::vars_os() {
+            if key
+                .to_string_lossy()
+                .to_ascii_uppercase()
+                .starts_with("GIT_")
+            {
+                command.env_remove(key);
+            }
+        }
+        let output = command.output().unwrap();
+        assert!(output.status.success());
+        fs::create_dir(target.join(".ai-guidebook")).unwrap();
+        fs::write(
+            target.join(".ai-guidebook/GUIDEBOOK.md"),
+            b"partial install",
+        )
+        .unwrap();
+        fs::write(target.join(".ai-guidebook/policy-lock.json"), b"{}").unwrap();
+        fs::write(
+            target.join(".git/.toe-tickling-adoption-v1.json"),
+            b"pending",
+        )
+        .unwrap();
+
+        let args = vec![target.to_string_lossy().into_owned(), "--apply".into()];
+        let parsed = parse_adopt_args(&args).unwrap();
+
+        let error = execute_adopt(Path::new(env!("CARGO_MANIFEST_DIR")), parsed).unwrap_err();
+
+        assert!(error.contains("Pending adoption recovery"));
+        assert_eq!(
+            fs::read(target.join(".ai-guidebook/GUIDEBOOK.md")).unwrap(),
+            b"partial install"
+        );
     }
 }

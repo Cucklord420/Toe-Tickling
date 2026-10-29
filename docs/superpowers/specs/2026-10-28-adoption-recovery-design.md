@@ -35,13 +35,14 @@ Resolve Toe-Tickling Issue #28: an interrupted or failed adoption can leave a su
 - Implement all new executable code and tests in Rust; use the pinned Rust 1.99.1 toolchain and the existing 2024 edition.
 - Add no dependency unless implementation evidence shows an existing dependency is inadequate.
 - Store one fixed journal in the target worktree's private Git directory, located with the existing sanitized Git command pattern. Do not follow symlinks while locating or using journal paths.
-- Journal a version, transaction ID, canonical target path and Git-worktree identity, source repository identity, and original/new bytes and permissions for every managed path. Restrict entries to the known adoption outputs.
-- Predeclare deterministic, transaction-specific staging paths in the journal. Create each stage with exclusive-create semantics and adapt it to `NamedTempFile` so replacement retains the current atomic behavior. Recovery removes only staged content that is an exact output or a prefix of its journaled output.
+- Journal a version, transaction ID, canonical target path and Git-worktree identity, source repository identity, and original/new bytes and permissions for every planned output. Restrict entries to the known adoption outputs, require the core GUIDEBOOK/lock/AGENTS/ignore paths, and store an exact planned-path manifest that must match the entries.
+- Predeclare deterministic, transaction-specific staging paths in the journal and create each stage with exclusive-create semantics. Promote adjacent stages with `std::fs::rename`; on Windows this preserves staged read-only attributes while replacing the destination. Recovery removes only staged content that is an exact output or a prefix of its journaled output, clearing a Windows read-only attribute only after that content check.
+- Hash the normalized journal payload with SHA-256 and verify it before any recovery write. This catches accidental single-file edits or corruption but is not a keyed authenticity check.
 - Create the journal exclusively and sync it before staging or replacing any destination. Mark it committed only after all outputs have been revalidated; committed recovery removes journal/staging metadata without reverting installed files.
 - On prepared recovery, treat each changed destination as one of: unchanged preimage (no action), exact expected postimage (safe to restore), or conflict (preserve and report). Revalidate every path immediately before destructive recovery operations.
 - Keep a prepared journal when any conflict or restoration error remains so a later recovery attempt can continue idempotently.
 - Leave newly created empty parent directories in place during rollback rather than risking removal of a user-created directory; document this harmless residue.
-- Reject a new apply while a pending journal exists and direct the user to `--recover`.
+- Reject a new apply while a pending journal exists before planning, and direct the user to `--recover`; repeat the check immediately before the transaction to cover a journal appearing after planning.
 - Document interruption recovery, conflict behavior, storage location, and limits in `docs/ADOPTION.md` and the CLI help.
 
 ## Acceptance conditions
@@ -58,8 +59,11 @@ Resolve Toe-Tickling Issue #28: an interrupted or failed adoption can leave a su
 
 This design does not make an `adopt --apply` visible as one atomic filesystem change. After process interruption, rerun the explicit recovery command. If any managed output differs from both recorded states, the command reports it and preserves the user's bytes; manual resolution remains necessary.
 
+The journal checksum detects uncoordinated edits, not a malicious same-user actor who can rewrite both the journal and its checksum. Recovery trusts the target worktree's Git metadata; it does not promise safety against hostile concurrent filesystem mutation.
+
 ## Source
 
 - [Toe-Tickling Issue #28](https://github.com/Cucklord420/Toe-Tickling/issues/28)
+- [Rust `std::fs::rename` platform behavior](https://doc.rust-lang.org/std/fs/fn.rename.html)
 - `src/adopt.rs` at `main` commit `d2d7c837a7d5e62ce1c1d6ee8f8a61b2edda8824`
 - `src/guide.rs` at the same commit, for in-process rollback and conflict-preservation patterns
