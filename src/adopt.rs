@@ -1080,7 +1080,6 @@ where
         .ok_or("Adoption journal entry index is invalid")?
         .clone();
     let stage_path = safe_path(target, relative)?;
-    let destination = safe_path(target, &entry.relative)?;
     let stage_state = file_state(target, relative)?;
     if stage_state.bytes != entry.after.bytes {
         return Err(format!(
@@ -1113,6 +1112,16 @@ where
         &entry.before,
     )?;
     before_rename()?;
+    let (stage_path, destination) = revalidate_stage_and_destination(
+        source_root,
+        target,
+        journal_path,
+        journal,
+        entry_index,
+        relative,
+        &entry.after,
+        &entry.before,
+    )?;
     fs::rename(&stage_path, &destination)
         .map_err(|error| format!("Cannot atomically replace {}: {}", entry.relative, error))?;
     if file_state(target, &entry.relative)? != entry.after {
@@ -1299,6 +1308,81 @@ fn cleanup_stage(target: &Path, relative: &str, expected: &JournalFileState) -> 
     fs::remove_file(&path).map_err(|e| format!("Cannot remove adoption stage {relative}: {e}"))
 }
 
+fn destination_matches_expected(
+    entry: &JournalEntry,
+    current: &JournalFileState,
+    expected: &JournalFileState,
+) -> bool {
+    current == expected
+        || (current == &writable_variant(expected)
+            && entry.transition == JournalTransition::AttributesCleared)
+}
+
+fn revalidate_journal_and_identity(
+    source_root: &Path,
+    target: &Path,
+    journal_path: &Path,
+    journal: &AdoptionJournal,
+) -> Result<()> {
+    if read_journal(journal_path)? != *journal {
+        return Err("Adoption recovery journal changed before replacement".into());
+    }
+    validate_live_identity(source_root, target, &journal.identity)
+}
+
+fn revalidate_destination_for_removal(
+    source_root: &Path,
+    target: &Path,
+    journal_path: &Path,
+    journal: &AdoptionJournal,
+    entry_index: usize,
+    expected: &JournalFileState,
+) -> Result<PathBuf> {
+    let entry = journal
+        .entries
+        .get(entry_index)
+        .ok_or("Adoption journal entry index is invalid")?;
+    revalidate_journal_and_identity(source_root, target, journal_path, journal)?;
+    let destination = safe_path(target, &entry.relative)?;
+    let current = file_state(target, &entry.relative)?;
+    if !destination_matches_expected(entry, &current, expected) {
+        return Err(format!("Preserving concurrent edit at {}", entry.relative));
+    }
+    Ok(destination)
+}
+
+fn revalidate_stage_and_destination(
+    source_root: &Path,
+    target: &Path,
+    journal_path: &Path,
+    journal: &AdoptionJournal,
+    entry_index: usize,
+    stage_relative: &str,
+    expected_stage: &JournalFileState,
+    expected_destination: &JournalFileState,
+) -> Result<(PathBuf, PathBuf)> {
+    let entry = journal
+        .entries
+        .get(entry_index)
+        .ok_or("Adoption journal entry index is invalid")?;
+    revalidate_journal_and_identity(source_root, target, journal_path, journal)?;
+    let stage_path = safe_path(target, stage_relative)?;
+    if file_state(target, stage_relative)? != *expected_stage {
+        return Err(format!(
+            "Staged output changed before replacement: {stage_relative}"
+        ));
+    }
+    let destination = safe_path(target, &entry.relative)?;
+    let current = file_state(target, &entry.relative)?;
+    if !destination_matches_expected(entry, &current, expected_destination) {
+        return Err(format!(
+            "Target changed during replacement: {}",
+            entry.relative
+        ));
+    }
+    Ok((stage_path, destination))
+}
+
 fn restore_entry(
     source_root: &Path,
     target: &Path,
@@ -1371,8 +1455,15 @@ fn restore_entry(
         if live != entry.after && live != after_writable {
             return Err(format!("Preserving concurrent edit at {}", entry.relative));
         }
-        let destination = safe_path(target, &entry.relative)?;
         prepare_destination_for_replacement(
+            source_root,
+            target,
+            journal_path,
+            journal,
+            entry_index,
+            &entry.after,
+        )?;
+        let destination = revalidate_destination_for_removal(
             source_root,
             target,
             journal_path,
@@ -1453,7 +1544,16 @@ fn restore_entry(
         entry_index,
         &entry.after,
     )?;
-    let destination = safe_path(target, &entry.relative)?;
+    let (stage_path, destination) = revalidate_stage_and_destination(
+        source_root,
+        target,
+        journal_path,
+        journal,
+        entry_index,
+        &entry.rollback_stage,
+        &entry.before,
+        &entry.after,
+    )?;
     fs::rename(&stage_path, &destination)
         .map_err(|e| format!("Cannot restore {}: {e}", entry.relative))?;
     if file_state(target, &entry.relative)? != entry.before {
@@ -2258,6 +2358,66 @@ mod tests {
         );
         assert!(journal_file.exists());
         assert!(safe_path(&target, &entry.stage).unwrap().exists());
+        assert_eq!(
+            read_journal(&journal_file).unwrap().entries[entry_index].transition,
+            JournalTransition::AttributesCleared
+        );
+        make_stage_writable(&safe_path(&target, &entry.stage).unwrap(), &entry.stage).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn apply_preserves_destination_when_stage_changes_after_marker() {
+        let (_scratch, target) = target_fixture();
+        set_readonly(&target, GUIDE, true);
+        let plan = fixture_plan(&target);
+        let mut journal = create_journal(&target, &plan.source_root, &plan).unwrap();
+        let entry_index = journal
+            .entries
+            .iter()
+            .position(|entry| entry.relative == GUIDE)
+            .unwrap();
+        let entry = journal.entries[entry_index].clone();
+        let (git_dir, journal_file) = journal_path(&target).unwrap();
+        validate_journal(&plan.source_root, &target, &git_dir, &journal).unwrap();
+        write_journal_exclusive(&journal_file, &journal).unwrap();
+        create_stage(&target, &entry.stage, entry.after.bytes.as_deref().unwrap()).unwrap();
+        let original = file_state(&target, GUIDE).unwrap();
+
+        let error = persist_stage_with_hook(
+            &plan.source_root,
+            &target,
+            &journal_file,
+            &mut journal,
+            entry_index,
+            &entry.stage,
+            || {
+                let persisted = read_journal(&journal_file)?;
+                assert_eq!(
+                    persisted.entries[entry_index].transition,
+                    JournalTransition::AttributesCleared
+                );
+                let stage_path = safe_path(&target, &entry.stage)?;
+                make_stage_writable(&stage_path, &entry.stage)?;
+                fs::write(stage_path, b"unrecognized stage content\n")
+                    .map_err(|error| error.to_string())
+            },
+        )
+        .unwrap_err();
+
+        assert!(
+            error.contains("Staged output changed before replacement"),
+            "{error}"
+        );
+        assert_eq!(
+            file_state(&target, GUIDE).unwrap(),
+            writable_variant(&original)
+        );
+        assert!(journal_file.exists());
+        assert_eq!(
+            read_journal(&journal_file).unwrap().entries[entry_index].transition,
+            JournalTransition::AttributesCleared
+        );
     }
 
     #[cfg(windows)]

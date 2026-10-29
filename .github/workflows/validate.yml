@@ -49,7 +49,7 @@ jobs:
       - name: Adoption recovery regression tests
         run: cargo test --locked -p toe-tickling --lib adopt::tests::recovery_
       - name: Adoption promotion race regression test
-        run: cargo test --locked -p toe-tickling --lib adopt::tests::apply_preserves_destination_edit_between_marker_and_promotion
+        run: cargo test --locked -p toe-tickling --lib adopt::tests::apply_preserves
       - name: Adoption rollback failure test
         run: cargo test --locked -p toe-tickling --lib adopt::tests::apply_rolls_back
       - name: Adoption recovery CLI tests

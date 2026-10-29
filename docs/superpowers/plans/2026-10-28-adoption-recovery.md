@@ -134,6 +134,7 @@
 - New journals use version 3 and include the transition state in their integrity digest.
 - Read version 1 and 2 journals, treat old entries as `stable`, validate them first, and atomically migrate them to version 3 before changing destination permissions.
 - A writable variant of a recorded read-only destination is recoverable only when that entry is durably marked `attributes_cleared`; stage-file permission cleanup remains independent.
+- Immediately before destination promotion or removal, re-read the journal and revalidate the worktree identity, safe paths, exact stage state, and authorized destination state.
 
 - [x] **Step 1: Add the failing Windows regression**
 
@@ -148,9 +149,9 @@
 
   Persist `pending` before clearing the destination bit, persist `attributes_cleared` only after rechecking the writable variant, and persist `stable` only after replacement/removal and exact state verification. Recovery must reject writable variants in `stable` or `pending`. Migrate validated version-1/version-2 journals to version 3 with stable entries before any destination permission mutation. Do not use destination transition state to authorize stage cleanup.
 
-- [ ] **Step 4: Add recorded-transition and migration regressions**
+- [ ] **Step 4: Add transition, migration, and race regressions**
 
-  Verify `recovery_accepts_recorded_windows_readonly_clear`, `recovery_refuses_pending_windows_readonly_clear`, and `recovery_migrates_v2_journal_before_permission_changes`; keep `recovery_restores_legacy_v1_journal` passing. Assert interrupted `pending` states preserve the target and journal, while valid `attributes_cleared` states recover and clean up.
+  Verify `recovery_accepts_recorded_windows_readonly_clear`, `recovery_refuses_pending_windows_readonly_clear`, and `recovery_migrates_v2_journal_before_permission_changes`; keep `recovery_restores_legacy_v1_journal` passing. Assert interrupted `pending` states preserve the target and journal, while valid `attributes_cleared` states recover and clean up. Inject a concurrent destination edit and a stage-content change after the marker is durable but before promotion; assert neither reaches the destination.
 
 - [x] **Step 5: Update user-facing recovery documentation and manifest**
 
