@@ -23,6 +23,9 @@ fn no_symlink_ancestors(path: &Path) -> Result<()> {
     let mut prefix = PathBuf::new();
     for component in path.components() {
         prefix.push(component.as_os_str());
+        if matches!(component, Component::Prefix(_)) {
+            continue;
+        }
         match fs::symlink_metadata(&prefix) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
                 return Err("Refusing a public path with a symlink ancestor".into());
@@ -46,6 +49,17 @@ pub fn checked_root(root: &Path) -> Result<PathBuf> {
     };
     no_symlink_ancestors(&absolute)?;
     fs::canonicalize(absolute).map_err(|_| "Cannot resolve public-tree root".into())
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn checked_root_accepts_native_drive_prefix() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        assert_eq!(checked_root(root).unwrap(), fs::canonicalize(root).unwrap());
+    }
 }
 
 fn skipped(relative: &Path) -> bool {

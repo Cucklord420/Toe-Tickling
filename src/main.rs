@@ -9,6 +9,62 @@ use toe_tickling::{
     validate_audit, validate_policy, write_json,
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AdoptMode {
+    Preview,
+    Apply,
+    Recover,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct AdoptArgs {
+    target: PathBuf,
+    mode: AdoptMode,
+}
+
+fn parse_adopt_args(args: &[String]) -> Result<AdoptArgs> {
+    let mode = match args {
+        [target] if !target.is_empty() => AdoptMode::Preview,
+        [target, option] if !target.is_empty() && option == "--apply" => AdoptMode::Apply,
+        [target, option] if !target.is_empty() && option == "--recover" => AdoptMode::Recover,
+        _ => return Err("Expected adopt TARGET [--apply | --recover]".into()),
+    };
+    Ok(AdoptArgs {
+        target: PathBuf::from(&args[0]),
+        mode,
+    })
+}
+
+fn execute_adopt(root: &Path, args: AdoptArgs) -> Result<String> {
+    if args.mode == AdoptMode::Recover {
+        toe_tickling::adopt::recover(root, &args.target)?;
+        return serde_json::to_string_pretty(&serde_json::json!({"mode": "recovered"}))
+            .map_err(|e| e.to_string());
+    }
+    if args.mode == AdoptMode::Apply {
+        toe_tickling::adopt::ensure_no_pending_recovery(&args.target)?;
+    }
+    let plan = toe_tickling::adopt::plan(root, &args.target)?;
+    let changed: Vec<_> = plan
+        .files
+        .iter()
+        .filter(|(path, text)| {
+            fs::read(plan.target.join(path)).ok().as_deref() != Some(text.as_bytes())
+        })
+        .map(|(path, _)| path.clone())
+        .collect();
+    let apply = args.mode == AdoptMode::Apply;
+    if apply {
+        toe_tickling::adopt::apply(&plan)?;
+    }
+    serde_json::to_string_pretty(&serde_json::json!({
+        "mode": if apply {"applied"} else {"preview"},
+        "changed": changed,
+        "preserved_existing_adapters": plan.preserved_adapters
+    }))
+    .map_err(|e| e.to_string())
+}
+
 fn run() -> Result<()> {
     let mut args: Vec<String> = env::args().skip(1).collect();
     let selected = if let Some(index) = args.iter().position(|arg| arg == "--root") {
@@ -24,7 +80,7 @@ fn run() -> Result<()> {
     let root = toe_tickling::security::checked_root(&selected)?;
     if args.is_empty() || args == ["--help"] {
         println!(
-            "Use the checkout as current directory or pass --root PATH:\n  cargo run --locked -- build\n  cargo run --locked -- check [--audit /private/receipt.json]\n  cargo run --locked -- render [--check]\n  cargo run --locked -- refresh-manifest\n  cargo run --locked -- new-audit --task 'Task description' --output /private/receipt.json\n  cargo run --locked -- adopt /path/to/project [--apply]\n\nChecks validate declarations and bytes, not truth or actual model behavior."
+            "Use the checkout as current directory or pass --root PATH:\n  cargo run --locked -- build\n  cargo run --locked -- check [--audit /private/receipt.json]\n  cargo run --locked -- render [--check]\n  cargo run --locked -- refresh-manifest\n  cargo run --locked -- new-audit --task 'Task description' --output /private/receipt.json\n  cargo run --locked -- adopt /path/to/project [--apply | --recover]\n\nChecks validate declarations and bytes, not truth or actual model behavior."
         );
         return Ok(());
     }
@@ -41,30 +97,8 @@ fn run() -> Result<()> {
             );
         }
         "adopt" => {
-            if args.is_empty() || args.len() > 2 || (args.len() == 2 && args[1] != "--apply") {
-                return Err("Expected adopt TARGET [--apply]".into());
-            }
-            let plan = toe_tickling::adopt::plan(&root, Path::new(&args[0]))?;
-            let changed: Vec<_> = plan
-                .files
-                .iter()
-                .filter(|(path, text)| {
-                    fs::read(plan.target.join(path)).ok().as_deref() != Some(text.as_bytes())
-                })
-                .map(|(path, _)| path.clone())
-                .collect();
-            let apply = args.len() == 2;
-            if apply {
-                toe_tickling::adopt::apply(&plan)?;
-            }
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&serde_json::json!({
-                    "mode": if apply {"applied"} else {"preview"}, "changed": changed,
-                    "preserved_existing_adapters": plan.preserved_adapters
-                }))
-                .map_err(|e| e.to_string())?
-            );
+            let parsed = parse_adopt_args(&args)?;
+            println!("{}", execute_adopt(&root, parsed)?);
         }
         "check" => {
             let policy = check_repo(&root, toe_tickling::policy_date_at(now)?)?;
@@ -155,5 +189,84 @@ fn main() {
     if let Err(error) = run() {
         eprintln!("FAIL: {error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn adopt_recover_dispatches_to_recovery() {
+        let scratch = tempfile::tempdir().unwrap();
+        let target = scratch.path().join("target");
+        fs::create_dir(&target).unwrap();
+        let mut command = std::process::Command::new("git");
+        command.args(["init", "-q"]).current_dir(&target);
+        for (key, _) in env::vars_os() {
+            if key
+                .to_string_lossy()
+                .to_ascii_uppercase()
+                .starts_with("GIT_")
+            {
+                command.env_remove(key);
+            }
+        }
+        let output = command.output().unwrap();
+        assert!(output.status.success());
+        let args = vec![target.to_string_lossy().into_owned(), "--recover".into()];
+        let parsed = parse_adopt_args(&args).unwrap();
+        assert_eq!(parsed.mode, AdoptMode::Recover);
+        let result = execute_adopt(Path::new(env!("CARGO_MANIFEST_DIR")), parsed).unwrap();
+        assert!(result.contains("\"mode\": \"recovered\""));
+    }
+
+    #[test]
+    fn adopt_rejects_apply_and_recover_together() {
+        let args = vec!["/tmp/target".into(), "--apply".into(), "--recover".into()];
+        assert!(parse_adopt_args(&args).is_err());
+    }
+
+    #[test]
+    fn adopt_recover_pending_journal_before_planning() {
+        let scratch = tempfile::tempdir().unwrap();
+        let target = scratch.path().join("target");
+        fs::create_dir(&target).unwrap();
+        let mut command = std::process::Command::new("git");
+        command.args(["init", "-q"]).current_dir(&target);
+        for (key, _) in env::vars_os() {
+            if key
+                .to_string_lossy()
+                .to_ascii_uppercase()
+                .starts_with("GIT_")
+            {
+                command.env_remove(key);
+            }
+        }
+        let output = command.output().unwrap();
+        assert!(output.status.success());
+        fs::create_dir(target.join(".ai-guidebook")).unwrap();
+        fs::write(
+            target.join(".ai-guidebook/GUIDEBOOK.md"),
+            b"partial install",
+        )
+        .unwrap();
+        fs::write(target.join(".ai-guidebook/policy-lock.json"), b"{}").unwrap();
+        fs::write(
+            target.join(".git/.toe-tickling-adoption-v1.json"),
+            b"pending",
+        )
+        .unwrap();
+
+        let args = vec![target.to_string_lossy().into_owned(), "--apply".into()];
+        let parsed = parse_adopt_args(&args).unwrap();
+
+        let error = execute_adopt(Path::new(env!("CARGO_MANIFEST_DIR")), parsed).unwrap_err();
+
+        assert!(error.contains("Pending adoption recovery"));
+        assert_eq!(
+            fs::read(target.join(".ai-guidebook/GUIDEBOOK.md")).unwrap(),
+            b"partial install"
+        );
     }
 }

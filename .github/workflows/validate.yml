@@ -28,6 +28,8 @@ jobs:
         run: cargo test --workspace --locked
       - name: Structural policy and freshness audit
         run: cargo run --locked -- check
+      - name: Render check
+        run: cargo run --locked -- render --check
       - name: Independent Rust source-byte audit
         run: cargo run --locked -p guidebook-audit -- check .
 
@@ -40,5 +42,15 @@ jobs:
           persist-credentials: false
       - name: Install the pinned Rust toolchain
         run: rustup show
+      - name: Windows drive-root inspection regression test
+        run: cargo test --locked -p toe-tickling --lib security::tests::checked_root_accepts_native_drive_prefix
       - name: Transaction regression tests
         run: cargo test --locked -p toe-tickling --lib guide::build_transaction_tests
+      - name: Adoption recovery regression tests
+        run: cargo test --locked -p toe-tickling --lib adopt::tests::recovery_
+      - name: Adoption promotion race regression test
+        run: cargo test --locked -p toe-tickling --lib adopt::tests::apply_preserves
+      - name: Adoption rollback failure test
+        run: cargo test --locked -p toe-tickling --lib adopt::tests::apply_rolls_back
+      - name: Adoption recovery CLI tests
+        run: cargo test --locked -p toe-tickling --bin toe-tickling adopt_recover_
