@@ -2004,7 +2004,10 @@ mod tests {
             .iter()
             .find(|entry| entry.before != entry.after)
             .unwrap();
-        create_stage(&target, &first.stage, first.after.bytes.as_deref().unwrap()).unwrap();
+        let stage = first.stage.clone();
+        let expected_after = first.after.clone();
+        let stage_bytes = first.after.bytes.as_deref().unwrap().to_vec();
+        create_stage(&target, &stage, &stage_bytes).unwrap();
         journal.state = JournalState::Committed;
         seal_journal(&mut journal).unwrap();
         let (_, journal_file) = journal_path(&target).unwrap();
@@ -2012,7 +2015,7 @@ mod tests {
 
         recover(&plan.source_root, &target).unwrap();
 
-        assert_eq!(file_state(&target, GUIDE).unwrap(), first.after);
+        assert_eq!(file_state(&target, GUIDE).unwrap(), expected_after);
         assert!(!journal_file.exists());
         assert_no_stage_files(&target);
     }
