@@ -535,7 +535,7 @@ fn stage_relative(relative: &str, transaction: &str, rollback: bool) -> Result<S
     staged.push(format!(".{name}.toe-tickling-{transaction}-{suffix}.stage"));
     staged
         .to_str()
-        .map(str::to_owned)
+        .map(|path| path.replace('\\', "/"))
         .ok_or_else(|| "Staging path must be UTF-8".into())
 }
 
@@ -1474,6 +1474,22 @@ mod tests {
             .into_iter()
             .map(|relative| (relative.to_owned(), file_state(target, relative).unwrap()))
             .collect()
+    }
+
+    #[test]
+    fn staging_paths_use_forward_slashes_on_every_platform() {
+        let transaction = "a".repeat(64);
+        let root = tempfile::tempdir().unwrap();
+
+        for (rollback, suffix) in [(false, "install"), (true, "rollback")] {
+            let stage =
+                stage_relative(".ai-guidebook/GUIDEBOOK.md", &transaction, rollback).unwrap();
+            assert_eq!(
+                stage,
+                format!(".ai-guidebook/.GUIDEBOOK.md.toe-tickling-{transaction}-{suffix}.stage")
+            );
+            safe_path(root.path(), &stage).unwrap();
+        }
     }
 
     fn write_postimage(target: &Path, entry: &JournalEntry) {
