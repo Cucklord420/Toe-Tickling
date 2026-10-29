@@ -159,6 +159,12 @@ struct JournalEntry {
     transition: JournalTransition,
 }
 
+struct ReplacementExpectation<'a> {
+    stage_relative: &'a str,
+    stage: &'a JournalFileState,
+    destination: &'a JournalFileState,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct AdoptionJournal {
@@ -1118,9 +1124,11 @@ where
         journal_path,
         journal,
         entry_index,
-        relative,
-        &entry.after,
-        &entry.before,
+        ReplacementExpectation {
+            stage_relative: relative,
+            stage: &entry.after,
+            destination: &entry.before,
+        },
     )?;
     fs::rename(&stage_path, &destination)
         .map_err(|error| format!("Cannot atomically replace {}: {}", entry.relative, error))?;
@@ -1357,24 +1365,23 @@ fn revalidate_stage_and_destination(
     journal_path: &Path,
     journal: &AdoptionJournal,
     entry_index: usize,
-    stage_relative: &str,
-    expected_stage: &JournalFileState,
-    expected_destination: &JournalFileState,
+    expected: ReplacementExpectation<'_>,
 ) -> Result<(PathBuf, PathBuf)> {
     let entry = journal
         .entries
         .get(entry_index)
         .ok_or("Adoption journal entry index is invalid")?;
     revalidate_journal_and_identity(source_root, target, journal_path, journal)?;
-    let stage_path = safe_path(target, stage_relative)?;
-    if file_state(target, stage_relative)? != *expected_stage {
+    let stage_path = safe_path(target, expected.stage_relative)?;
+    if file_state(target, expected.stage_relative)? != *expected.stage {
         return Err(format!(
-            "Staged output changed before replacement: {stage_relative}"
+            "Staged output changed before replacement: {}",
+            expected.stage_relative
         ));
     }
     let destination = safe_path(target, &entry.relative)?;
     let current = file_state(target, &entry.relative)?;
-    if !destination_matches_expected(entry, &current, expected_destination) {
+    if !destination_matches_expected(entry, &current, expected.destination) {
         return Err(format!(
             "Target changed during replacement: {}",
             entry.relative
@@ -1550,9 +1557,11 @@ fn restore_entry(
         journal_path,
         journal,
         entry_index,
-        &entry.rollback_stage,
-        &entry.before,
-        &entry.after,
+        ReplacementExpectation {
+            stage_relative: &entry.rollback_stage,
+            stage: &entry.before,
+            destination: &entry.after,
+        },
     )?;
     fs::rename(&stage_path, &destination)
         .map_err(|e| format!("Cannot restore {}: {e}", entry.relative))?;
