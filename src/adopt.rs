@@ -26,7 +26,9 @@ const IGNORE_END: &str = "# JUSTIN-GUIDEBOOK-PRIVATE:END";
 const GUIDE: &str = ".ai-guidebook/GUIDEBOOK.md";
 const LOCK: &str = ".ai-guidebook/policy-lock.json";
 const PRIVATE_PATTERNS: &str = "/PRIVATE.local.md\n/CLAUDE.local.md\n/private/\n/.private/\n/.local/\n/.env\n/.env.*\n!/.env.example";
+// Keep the location stable so pending v1 journals remain discoverable.
 const JOURNAL_NAME: &str = ".toe-tickling-adoption-v1.json";
+const LEGACY_JOURNAL_VERSION: u32 = 1;
 const JOURNAL_VERSION: u32 = 2;
 static NEXT_TRANSACTION: AtomicU64 = AtomicU64::new(0);
 type AfterPersistHook = dyn FnMut(usize, &str) -> Result<()>;
@@ -152,7 +154,9 @@ struct AdoptionJournal {
     transaction: String,
     state: JournalState,
     identity: JournalIdentity,
+    #[serde(default)]
     planned_paths: Vec<String>,
+    #[serde(default)]
     integrity_sha256: String,
     entries: Vec<JournalEntry>,
 }
@@ -716,13 +720,16 @@ fn validate_journal(
     git_dir: &Path,
     journal: &AdoptionJournal,
 ) -> Result<()> {
-    if journal.version != JOURNAL_VERSION {
+    let legacy_v1 = journal.version == LEGACY_JOURNAL_VERSION
+        && journal.planned_paths.is_empty()
+        && journal.integrity_sha256.is_empty();
+    if journal.version != JOURNAL_VERSION && !legacy_v1 {
         return Err(format!(
             "Unsupported adoption journal version: {}",
             journal.version
         ));
     }
-    if journal.integrity_sha256 != journal_integrity(journal)? {
+    if !legacy_v1 && journal.integrity_sha256 != journal_integrity(journal)? {
         return Err("Adoption recovery journal integrity check failed".into());
     }
     if journal.transaction.len() != 64
@@ -745,20 +752,17 @@ fn validate_journal(
         .iter()
         .map(|entry| entry.relative.as_str())
         .collect();
-    let planned_paths: Vec<_> = journal.planned_paths.iter().map(String::as_str).collect();
-    if planned_paths != entry_paths {
-        return Err("Adoption journal planned output list does not match its entries".into());
-    }
     if ![GUIDE, LOCK, "AGENTS.md", ".gitignore"]
         .iter()
-        .all(|required| {
-            journal
-                .planned_paths
-                .iter()
-                .any(|path| path.as_str() == *required)
-        })
+        .all(|required| entry_paths.contains(required))
     {
         return Err("Adoption journal is missing a required managed output".into());
+    }
+    if !legacy_v1 {
+        let planned_paths: Vec<_> = journal.planned_paths.iter().map(String::as_str).collect();
+        if planned_paths != entry_paths {
+            return Err("Adoption journal planned output list does not match its entries".into());
+        }
     }
     let allowed = output_paths();
     let mut seen = BTreeSet::new();
@@ -975,6 +979,7 @@ fn persist_stage(
         .ok_or("Journal postimage is missing permissions")?
         .apply_to(&stage_path)?;
     drop(file);
+    make_destination_writable(target, destination_relative, expected_before)?;
     fs::rename(&stage_path, &destination).map_err(|error| {
         format!(
             "Cannot atomically replace {destination_relative}: {}",
@@ -1007,6 +1012,48 @@ fn make_stage_writable(_path: &Path, _relative: &str) -> Result<()> {
     Ok(())
 }
 
+fn writable_variant(state: &JournalFileState) -> JournalFileState {
+    let mut writable = state.clone();
+    #[cfg(windows)]
+    if let Some(permissions) = writable.permissions.as_mut() {
+        permissions.readonly = false;
+    }
+    writable
+}
+
+fn make_destination_writable(
+    target: &Path,
+    relative: &str,
+    expected: &JournalFileState,
+) -> Result<()> {
+    let writable = writable_variant(expected);
+    let current = file_state(target, relative)?;
+    if current == writable {
+        return Ok(());
+    }
+    if current != *expected {
+        return Err(format!("Target changed during replacement: {relative}"));
+    }
+    #[cfg(windows)]
+    {
+        let path = safe_path(target, relative)?;
+        let mut permissions = fs::metadata(&path)
+            .map_err(|e| format!("Cannot inspect replacement target {relative}: {e}"))?
+            .permissions();
+        if permissions.readonly() {
+            permissions.set_readonly(false);
+            fs::set_permissions(&path, permissions)
+                .map_err(|e| format!("Cannot make replacement target writable {relative}: {e}"))?;
+        }
+    }
+    if file_state(target, relative)? != writable {
+        return Err(format!(
+            "Replacement target permissions did not become writable: {relative}"
+        ));
+    }
+    Ok(())
+}
+
 fn cleanup_stage(target: &Path, relative: &str, expected: &JournalFileState) -> Result<()> {
     let path = safe_path(target, relative)?;
     if metadata(&path)?.is_none() {
@@ -1032,15 +1079,38 @@ fn restore_entry(
     if current == entry.before {
         return Ok(false);
     }
-    if current != entry.after {
+    let before_writable = writable_variant(&entry.before);
+    if current == before_writable && current != entry.before {
+        validate_live_identity(source_root, target, &journal.identity)?;
+        if file_state(target, &entry.relative)? != before_writable {
+            return Err(format!("Preserving concurrent edit at {}", entry.relative));
+        }
+        entry
+            .before
+            .permissions
+            .as_ref()
+            .ok_or("Journal preimage is missing permissions")?
+            .apply_to(&safe_path(target, &entry.relative)?)?;
+        if file_state(target, &entry.relative)? != entry.before {
+            return Err(format!(
+                "Restored preimage permissions did not match the journal: {}",
+                entry.relative
+            ));
+        }
+        return Ok(false);
+    }
+    let after_writable = writable_variant(&entry.after);
+    if current != entry.after && current != after_writable {
         return Err(format!("Preserving concurrent edit at {}", entry.relative));
     }
     validate_live_identity(source_root, target, &journal.identity)?;
     if entry.before.bytes.is_none() {
-        if file_state(target, &entry.relative)? != entry.after {
+        let live = file_state(target, &entry.relative)?;
+        if live != entry.after && live != after_writable {
             return Err(format!("Preserving concurrent edit at {}", entry.relative));
         }
         let destination = safe_path(target, &entry.relative)?;
+        make_destination_writable(target, &entry.relative, &entry.after)?;
         fs::remove_file(&destination)
             .map_err(|e| format!("Cannot remove installed {}: {e}", entry.relative))?;
         return Ok(true);
@@ -1071,7 +1141,8 @@ fn restore_entry(
         create_stage(target, &entry.rollback_stage, before_bytes)?;
     }
     validate_live_identity(source_root, target, &journal.identity)?;
-    if file_state(target, &entry.relative)? != entry.after {
+    let live = file_state(target, &entry.relative)?;
+    if live != entry.after && live != after_writable {
         return Err(format!("Preserving concurrent edit at {}", entry.relative));
     }
     let stage_path = safe_path(target, &entry.rollback_stage)?;
@@ -1091,6 +1162,7 @@ fn restore_entry(
         .as_ref()
         .ok_or("Journal preimage is missing permissions")?
         .apply_to(&stage_path)?;
+    make_destination_writable(target, &entry.relative, &entry.after)?;
     let destination = safe_path(target, &entry.relative)?;
     fs::rename(&stage_path, &destination)
         .map_err(|e| format!("Cannot restore {}: {e}", entry.relative))?;
@@ -1814,6 +1886,30 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn recovery_rejects_unjournaled_windows_readonly_clear() {
+        let (_scratch, target) = target_fixture();
+        set_readonly(&target, GUIDE, true);
+        let plan = fixture_plan(&target);
+        let before = file_state(&target, GUIDE).unwrap();
+        let journal = create_journal(&target, &plan.source_root, &plan).unwrap();
+        let (git_dir, journal_file) = journal_path(&target).unwrap();
+        validate_journal(&plan.source_root, &target, &git_dir, &journal).unwrap();
+        write_journal_exclusive(&journal_file, &journal).unwrap();
+
+        set_readonly(&target, GUIDE, false);
+        let user_state = file_state(&target, GUIDE).unwrap();
+        assert_eq!(user_state.bytes, before.bytes);
+        assert_ne!(user_state, before);
+
+        let error = recover(&plan.source_root, &target).unwrap_err();
+
+        assert!(error.contains("Preserving concurrent edit"), "{error}");
+        assert_eq!(file_state(&target, GUIDE).unwrap(), user_state);
+        assert!(journal_file.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn recovery_removes_readonly_stage_left_before_promotion() {
         let (_scratch, target) = target_fixture();
         set_readonly(&target, GUIDE, true);
@@ -1871,6 +1967,41 @@ mod tests {
             .unwrap()
             .apply_to(&safe_path(&target, &entry.rollback_stage).unwrap())
             .unwrap();
+        make_destination_writable(&target, GUIDE, &entry.after).unwrap();
+
+        recover(&plan.source_root, &target).unwrap();
+
+        assert_eq!(target_snapshot(&target), before);
+        assert!(!journal_file.exists());
+        assert_no_stage_files(&target);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn recovery_restores_readonly_preimage_after_interrupted_promotion() {
+        let (_scratch, target) = target_fixture();
+        set_readonly(&target, GUIDE, true);
+        let plan = fixture_plan(&target);
+        let before = target_snapshot(&target);
+        let journal = create_journal(&target, &plan.source_root, &plan).unwrap();
+        let entry = journal
+            .entries
+            .iter()
+            .find(|entry| entry.relative == GUIDE)
+            .unwrap();
+        let (git_dir, journal_file) = journal_path(&target).unwrap();
+        validate_journal(&plan.source_root, &target, &git_dir, &journal).unwrap();
+        write_journal_exclusive(&journal_file, &journal).unwrap();
+
+        create_stage(&target, &entry.stage, entry.after.bytes.as_deref().unwrap()).unwrap();
+        entry
+            .after
+            .permissions
+            .as_ref()
+            .unwrap()
+            .apply_to(&safe_path(&target, &entry.stage).unwrap())
+            .unwrap();
+        make_destination_writable(&target, GUIDE, &entry.before).unwrap();
 
         recover(&plan.source_root, &target).unwrap();
 
