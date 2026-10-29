@@ -1289,6 +1289,38 @@ fn removing_existing_rules_or_restoring_language_exception_fails() {
 }
 
 #[test]
+fn validation_failure_leaves_all_generated_outputs_unchanged() {
+    let dir = fixture();
+    let mut before: BTreeMap<_, _> = guide::outputs(dir.path())
+        .unwrap()
+        .keys()
+        .map(|relative| {
+            (
+                relative.clone(),
+                fs::read(dir.path().join(relative)).unwrap(),
+            )
+        })
+        .collect();
+    before.insert(
+        "RULEBOOK.md".into(),
+        fs::read(dir.path().join("RULEBOOK.md")).unwrap(),
+    );
+
+    let mut policy = load_policy(dir.path()).unwrap();
+    policy.rules[0].id = "INVALID".into();
+    write_json(&dir.path().join("policy/rules.json"), &policy).unwrap();
+
+    assert!(guide::build(dir.path()).is_err());
+    for (relative, expected) in before {
+        assert_eq!(
+            fs::read(dir.path().join(&relative)).unwrap(),
+            expected,
+            "validation failure changed generated output {relative}"
+        );
+    }
+}
+
+#[test]
 fn build_cannot_silently_refresh_reading_receipts() {
     let dir = fixture();
     let mut policy = load_policy(dir.path()).unwrap();
