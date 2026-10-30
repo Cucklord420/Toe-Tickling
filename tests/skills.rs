@@ -50,7 +50,8 @@ fn mismatched_directory_and_declared_name_fails_closed() {
 #[test]
 fn invalid_names_fail_closed() {
     for name in ["Bad-Skill", "-bad", "bad--skill", "bad-"] {
-        let dir = fixture(name, Some(VALID));
+        let contents = VALID.replace("name: sample-skill", &format!("name: {name}"));
+        let dir = fixture(name, Some(&contents));
         assert!(validate_skills(dir.path()).is_err(), "{name}");
     }
 }
