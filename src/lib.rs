@@ -12,6 +12,7 @@ use time::{Date, Month, OffsetDateTime, format_description::well_known::Rfc3339}
 pub mod adopt;
 pub mod guide;
 pub mod security;
+pub mod skills;
 
 pub type Result<T> = std::result::Result<T, String>;
 
@@ -344,6 +345,7 @@ pub fn check_repo(root: &Path, today: Date) -> Result<Policy> {
         "Reading manifest stale or incomplete; review changes then run refresh-manifest",
     )?;
     validate_links(root)?;
+    skills::validate_skills(root)?;
     Ok(policy)
 }
 fn check_disposition(
