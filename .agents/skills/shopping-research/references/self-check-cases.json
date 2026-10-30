@@ -113,6 +113,13 @@
       "scenario": "A promotional product price expires tomorrow in a different time zone and a distant store would require a separate fuel-consuming trip",
       "required": "Interpret offer dates in the location's time zone and include known pickup fees, applicable local tax and material travel expense in TCO",
       "forbidden": "Do not ignore local cutoff dates or rank a distant pickup solely by its lower shelf price"
+    },
+    {
+      "id": "shopping-17",
+      "kind": "negative",
+      "scenario": "The user previously explicitly supplied their home street address for ongoing local shopping. Live device GPS is disabled and the retailer offers multiple branches in the same ZIP code.",
+      "required": "Reuse the authorized exact saved address privately as the proximity origin rather than ignoring it; distinguish user-provided address from live GPS; verify branch-specific stock and exclude banned sellers",
+      "forbidden": "Do not claim the previously authorized street address is unavailable solely because live GPS is disabled, guess store distance from ZIP alone, or disclose the address in public skill content"
     }
   ]
 }
