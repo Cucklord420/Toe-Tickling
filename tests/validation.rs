@@ -330,6 +330,35 @@ fn baseline_and_declared_receipt_pass() {
     validate_audit(dir.path(), &policy, &audit, now()).unwrap();
 }
 
+#[test]
+fn required_research_prevalence_rule_cannot_be_removed() {
+    let dir = fixture();
+    let source_path = dir.path().join("rules/20-research.md");
+    let source = fs::read_to_string(&source_path).unwrap();
+    assert!(source.contains("- **RES-013**"));
+    let generated_guide = fs::read_to_string(dir.path().join("GUIDEBOOK.md")).unwrap();
+    assert!(generated_guide.contains("<!-- Source: rules/20-research.md -->"));
+    assert!(generated_guide.contains("- **RES-013**"));
+    assert!(
+        toe_tickling::guide::module_ids(dir.path())
+            .unwrap()
+            .contains("RES-013")
+    );
+
+    let without_required_rule = source
+        .lines()
+        .filter(|line| !line.starts_with("- **RES-013**"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(&source_path, without_required_rule).unwrap();
+
+    let error = toe_tickling::guide::module_ids(dir.path()).unwrap_err();
+    assert!(
+        error.contains("Missing existing standing rule RES-013"),
+        "Unexpected validation error: {error}"
+    );
+}
+
 fn assert_source_change_rejects_audits(path: &str, staged: bool) {
     let dir = fixture();
     assert!(
