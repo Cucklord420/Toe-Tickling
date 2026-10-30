@@ -43,7 +43,10 @@ pub fn validate_skills(root: &Path) -> Result<()> {
     let agents_meta =
         fs::symlink_metadata(&agents).map_err(|error| format!("{}: {error}", agents.display()))?;
     if !agents_meta.file_type().is_dir() || !metadata.file_type().is_dir() {
-        return Err(invalid(&base, "Agent Skills directory must not be a symlink or file"));
+        return Err(invalid(
+            &base,
+            "Agent Skills directory must not be a symlink or file",
+        ));
     }
 
     let mut count = 0usize;
@@ -85,10 +88,13 @@ pub fn validate_skills(root: &Path) -> Result<()> {
             .as_mapping()
             .ok_or_else(|| invalid(&file, "frontmatter must be a YAML mapping"))?;
 
-        let declared = text_field(mapping, "name")
-            .ok_or_else(|| invalid(&file, "missing string name"))?;
+        let declared =
+            text_field(mapping, "name").ok_or_else(|| invalid(&file, "missing string name"))?;
         if declared != name {
-            return Err(invalid(&file, "declared skill name must match its directory"));
+            return Err(invalid(
+                &file,
+                "declared skill name must match its directory",
+            ));
         }
         let description = text_field(mapping, "description")
             .ok_or_else(|| invalid(&file, "missing string description"))?;
@@ -103,13 +109,19 @@ pub fn validate_skills(root: &Path) -> Result<()> {
             if mapping.contains_key(&Value::String(field.to_owned()))
                 && text_field(mapping, field).is_none()
             {
-                return Err(invalid(&file, "optional frontmatter field must be a string"));
+                return Err(invalid(
+                    &file,
+                    "optional frontmatter field must be a string",
+                ));
             }
         }
         if let Some(compatibility) = text_field(mapping, "compatibility")
             && (compatibility.trim().is_empty() || compatibility.chars().count() > 500)
         {
-            return Err(invalid(&file, "compatibility must contain 1-500 characters"));
+            return Err(invalid(
+                &file,
+                "compatibility must contain 1-500 characters",
+            ));
         }
         if let Some(extra) = mapping.get(&Value::String("metadata".to_owned())) {
             let values = extra
@@ -125,7 +137,10 @@ pub fn validate_skills(root: &Path) -> Result<()> {
         count += 1;
     }
     if count == 0 {
-        return Err(invalid(&base, "skills directory exists but contains no skills"));
+        return Err(invalid(
+            &base,
+            "skills directory exists but contains no skills",
+        ));
     }
     Ok(())
 }

@@ -102,7 +102,11 @@ fn symlinked_skill_file_fails_closed() {
     let dir = fixture("sample-skill", None);
     let outside = dir.path().join("outside.md");
     fs::write(&outside, VALID).unwrap();
-    symlink(&outside, dir.path().join(".agents/skills/sample-skill/SKILL.md")).unwrap();
+    symlink(
+        &outside,
+        dir.path().join(".agents/skills/sample-skill/SKILL.md"),
+    )
+    .unwrap();
     assert!(validate_skills(dir.path()).is_err());
 }
 

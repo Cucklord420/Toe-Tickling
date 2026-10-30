@@ -26,13 +26,17 @@ fn validate(root: &Path) -> Result<usize, String> {
         )
         .map_err(|error| error.to_string())?;
         if data["schema_version"] != 1 || data["skill"] != name {
-            return Err(format!("{name}: incompatible acceptance schema or skill name"));
+            return Err(format!(
+                "{name}: incompatible acceptance schema or skill name"
+            ));
         }
         let cases = data["cases"]
             .as_array()
             .ok_or_else(|| format!("{name}: missing case array"))?;
         if !(5..=64).contains(&cases.len()) {
-            return Err(format!("{name}: expected five or more distinct acceptance cases"));
+            return Err(format!(
+                "{name}: expected five or more distinct acceptance cases"
+            ));
         }
         let mut ids = BTreeSet::new();
         let mut positives = 0;
@@ -135,7 +139,11 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
         data["cases"][1]["id"] = serde_json::json!("case-0");
         fs::write(file, data.to_string()).unwrap();
-        assert!(validate(directory.path()).unwrap_err().contains("duplicate"));
+        assert!(
+            validate(directory.path())
+                .unwrap_err()
+                .contains("duplicate")
+        );
     }
 
     #[test]
@@ -167,7 +175,11 @@ mod tests {
             serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
         data["cases"][1]["required"] = serde_json::json!("");
         fs::write(file, data.to_string()).unwrap();
-        assert!(validate(directory.path()).unwrap_err().contains("incomplete"));
+        assert!(
+            validate(directory.path())
+                .unwrap_err()
+                .contains("incomplete")
+        );
     }
 
     #[test]
@@ -178,7 +190,11 @@ mod tests {
             .unwrap()
             .replace("## Self-checks", "## General Notes");
         fs::write(file, body).unwrap();
-        assert!(validate(directory.path()).unwrap_err().contains("self-check"));
+        assert!(
+            validate(directory.path())
+                .unwrap_err()
+                .contains("self-check")
+        );
     }
 
     #[cfg(unix)]
@@ -192,6 +208,10 @@ mod tests {
         let outside = directory.path().join("outside.json");
         fs::rename(&file, &outside).unwrap();
         symlink(outside, file).unwrap();
-        assert!(validate(directory.path()).unwrap_err().contains("regular file"));
+        assert!(
+            validate(directory.path())
+                .unwrap_err()
+                .contains("regular file")
+        );
     }
 }
