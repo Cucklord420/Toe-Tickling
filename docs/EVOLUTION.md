@@ -1,5 +1,9 @@
 # Keep the law alive
 
+## 1.2.5 — 10-30-2026
+
+Issue #44 identified that repeated complaints can be mistaken for independent failures and that material unresolved reports can be obscured when no defensible denominator exists. RES-013 and scenarios S30–S31 preserve those distinctions without requiring every review site to be searched or allowing unsupported failure-rate estimates. The Rust validator preserves the new stable ID, while generated outputs and hashes remain derived from canonical sources. This is policy and mechanical integrity evidence, not proof of live agent adoption.
+
 Nothing is static. Preserve durable intent while changing obsolete mechanisms. A review date is a prompt to investigate, not evidence that a rule is wrong or permission to weaken it.
 
 ## When to review

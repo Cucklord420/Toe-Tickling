@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.5 — 10-30-2026
+
+- Add RES-013 and scenarios S30–S31 to seek relevant credible negative experiences and failure modes, distinguish distinct from repeated/stale/resolved reports, report prevalence only when defensible, and reassess recommendations. Preserve RES-001 through RES-012 and the 46 verification rules; do not require an exhaustive review-site sweep or invent failure rates.
+- Require RES-013 in the Rust stable-ID validator and regenerate the guide and integrity artifacts while preserving all 161 standing rules and 46 verification rules. Mechanical validation does not prove live agent adoption.
+
 ## 1.2.4 — 10-24-2026
 
 - Add PREF-011: favor openness, privacy, interoperability and ownership where practical while prioritizing mature, supported, ready-to-use and low-maintenance options across domains. Technical experience does not imply willingness to maintain experimental products; retaining working equipment or buying nothing remains valid.

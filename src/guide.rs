@@ -166,7 +166,7 @@ fn validate_module_ids(ids: &BTreeSet<String>) -> Result<()> {
         ("AUTH", 9),
         ("EXEC", 12),
         ("COM", 10),
-        ("RES", 12),
+        ("RES", 13),
         ("ENG", 20),
         ("SEC", 8),
         ("OPS", 10),
