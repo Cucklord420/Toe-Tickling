@@ -23,7 +23,7 @@ fn valid_name(name: &str) -> bool {
 
 fn text_field<'a>(mapping: &'a serde_yaml_ng::Mapping, name: &str) -> Option<&'a str> {
     mapping
-        .get(&Value::String(name.to_owned()))
+        .get(Value::String(name.to_owned()))
         .and_then(Value::as_str)
 }
 
@@ -106,7 +106,7 @@ pub fn validate_skills(root: &Path) -> Result<()> {
         }
 
         for field in ["license", "compatibility", "allowed-tools"] {
-            if mapping.contains_key(&Value::String(field.to_owned()))
+            if mapping.contains_key(Value::String(field.to_owned()))
                 && text_field(mapping, field).is_none()
             {
                 return Err(invalid(
@@ -123,7 +123,7 @@ pub fn validate_skills(root: &Path) -> Result<()> {
                 "compatibility must contain 1-500 characters",
             ));
         }
-        if let Some(extra) = mapping.get(&Value::String("metadata".to_owned())) {
+        if let Some(extra) = mapping.get(Value::String("metadata".to_owned())) {
             let values = extra
                 .as_mapping()
                 .ok_or_else(|| invalid(&file, "metadata must be a mapping"))?;
