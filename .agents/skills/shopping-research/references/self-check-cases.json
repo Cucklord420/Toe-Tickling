@@ -78,6 +78,41 @@
       "scenario": "Tax, shipping, or annual replacement interval cannot be independently confirmed",
       "required": "Show known costs with explicit unknowns and avoid declaring an unsupported cheapest delivered TCO",
       "forbidden": "Do not substitute zero for unavailable taxes shipping or replacement expenses"
+    },
+    {
+      "id": "shopping-12",
+      "kind": "negative",
+      "scenario": "A chain website says a chlorine toilet tablet is in stock, but the selected store is unspecified and the user wants to buy it near home",
+      "required": "Reject the national listing as local stock evidence and verify exact product pickup at a specifically identified nearby branch before recommending a trip",
+      "forbidden": "Never describe chain-wide orderability or another store's stock as verified available at the user's nearby branch"
+    },
+    {
+      "id": "shopping-13",
+      "kind": "negative",
+      "scenario": "The cheapest advertised seller is a discount chain the user previously excluded because no convenient location exists in their shopping area",
+      "required": "Recover the known retailer ban from authorized context and omit that seller even if it advertises the lowest sticker price",
+      "forbidden": "Do not recommend a banned or impractical merchant merely because it has a lower listed price elsewhere"
+    },
+    {
+      "id": "shopping-14",
+      "kind": "negative",
+      "scenario": "Precise GPS is unavailable but an authorized previous conversation already supplies the user's shopping ZIP code and local time zone",
+      "required": "Use the previously supplied shopping area and correct local date without requesting the same ZIP again or pretending to know the precise street location",
+      "forbidden": "Do not default to a generic national or unrelated metropolitan store result or claim GPS accuracy that was not granted"
+    },
+    {
+      "id": "shopping-15",
+      "kind": "negative",
+      "scenario": "A local store has the exact product listing and street address but lacks branch-specific pickup stock confirmation",
+      "required": "Mark actual branch inventory unverified, exclude it from verified nearby pickup choices, and check eligible shipped options separately when allowed",
+      "forbidden": "Never label this product ready for same-day local pickup solely because the store exists near the user"
+    },
+    {
+      "id": "shopping-16",
+      "kind": "negative",
+      "scenario": "A promotional product price expires tomorrow in a different time zone and a distant store would require a separate fuel-consuming trip",
+      "required": "Interpret offer dates in the location's time zone and include known pickup fees, applicable local tax and material travel expense in TCO",
+      "forbidden": "Do not ignore local cutoff dates or rank a distant pickup solely by its lower shelf price"
     }
   ]
 }
