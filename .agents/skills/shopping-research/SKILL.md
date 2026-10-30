@@ -55,3 +55,11 @@ Add checks for high-risk uncertainty when useful; running the same search repeat
 ## Acceptance scenario
 
 A request for the cheapest filter compatible with an exact purifier and effective for fine particles and pet odors must: check exact model suffix, confirm physical compatibility, distinguish measured particle performance from documented carbon capacity/odor evidence, find independent tests and unresolved negative reports, enforce retailer exclusions, verify live orderability, and compare delivered and annual TCO. Low advertised price or high review count alone must fail the audit.
+
+## Self-checks
+
+Run the five independent checks in Section 5 against the exact item and current seller checkout. Verify that an intentionally mismatched model suffix, out-of-stock seller, unsupported odor claim, duplicated complaint, and incomplete annual TCO each **fail** qualification rather than receiving a plausible-looking recommendation. Review the full output and record evidence; repeating identical searches does not provide independent confirmation.
+
+## Failure handling
+
+If the purchase or compatibility evidence is absent, do not promote that option as verified. State the exact blocked criterion, exclude the candidate, and continue comparing independently valid options. Do not buy, disclose private data, or treat the examples in `references/self-check-cases.json` as executed evaluations. The companion cases specify expected and forbidden model behavior but require separately run agent tests.
