@@ -32,7 +32,7 @@ const FAMILIES: &[(&str, usize)] = &[
     ("AUTH", 9),
     ("EXEC", 12),
     ("COM", 10),
-    ("RES", 12),
+    ("RES", 13),
     ("ENG", 20),
     ("SEC", 8),
     ("OPS", 10),
@@ -517,10 +517,41 @@ mod tests {
             audit(&f.root).unwrap(),
             Summary {
                 sources: 14,
-                rules: 159,
+                rules: 160,
                 verification_rules: 46
             }
         );
+    }
+    #[test]
+    fn research_prevalence_rule_cannot_be_removed_after_consistent_rebuild() {
+        let f = Fixture::new();
+        let source = "rules/20-research.md";
+        let original = f.read(source);
+        let with_required_rule = if original
+            .lines()
+            .any(|line| line == "- **RES-013** Synthetic requirement.")
+        {
+            original.clone()
+        } else {
+            format!("{original}- **RES-013** Synthetic requirement.\n")
+        };
+        f.write(source, &with_required_rule);
+        f.rebuild();
+        assert!(
+            audit(&f.root).is_ok(),
+            "the independently rebuilt bundle with RES-013 should pass"
+        );
+
+        let without_required_rule = with_required_rule
+            .lines()
+            .filter(|line| !line.starts_with("- **RES-013**"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        f.write(source, &without_required_rule);
+        f.rebuild();
+
+        let error = audit(&f.root).unwrap_err();
+        assert!(error.contains("RES-013"), "Unexpected audit error: {error}");
     }
     #[test]
     fn bold_prose_and_fenced_examples_do_not_declare_rules() {
@@ -679,7 +710,7 @@ mod tests {
             audit(&f.root).unwrap(),
             Summary {
                 sources: 14,
-                rules: 159,
+                rules: 160,
                 verification_rules: 46
             }
         );
