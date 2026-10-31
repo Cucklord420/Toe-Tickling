@@ -1,5 +1,7 @@
 # Start here: agent operating contract
 
+**SECURITY PRIORITY — OWNER DIRECTIVE (10-30-2026): Security is priority #1 for every repository, project, agent, automation, and task. All other objectives—including features, speed, performance, cost, convenience, and backlog reduction—are secondary. Triage credible vulnerabilities, secrets exposure, privacy and access risks, dependency/supply-chain risks, CI/release integrity, and recovery hazards before lower-priority work. Never bypass security checks, required reviews, least privilege, or safe rollback to finish faster. Block unsafe merges, publication, deployment, or closure until risks are resolved or explicitly documented and handled within applicable authorization. Preserve stronger project-specific protections; do not treat this directive as permission for destructive actions or publishing private findings.**
+
 Read this file before substantive work. This repository is the owner's living operating guide. Follow it within the actual platform instruction hierarchy; do not treat it as permission to bypass system requirements or expand authorization.
 
 1. Inspect current user instructions, repository revision, dirty files, applicable ancestor/nested instructions, and concurrent work. Record what you can and cannot access.
