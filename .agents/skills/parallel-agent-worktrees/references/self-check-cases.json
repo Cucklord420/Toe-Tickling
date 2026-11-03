@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "skill": "parallel-agent-worktrees",
+  "cases": [
+    {
+      "id": "parallel-agent-worktrees-1",
+      "kind": "positive",
+      "scenario": "Two nonoverlapping tasks have verified task claims and separate authorized branches",
+      "required": "Permit isolated worktrees while maintaining canonical task ownership and reviews",
+      "forbidden": "Do not confuse separate working directories with permission to override protected Git rules"
+    },
+    {
+      "id": "parallel-agent-worktrees-2",
+      "kind": "negative",
+      "scenario": "Two independent worktrees attempt to implement the same Issue at the same time without claims",
+      "required": "Stop duplicate editing until the required atomic task reservation is established",
+      "forbidden": "Do not assume separate worktrees prevent duplicate logical work"
+    },
+    {
+      "id": "parallel-agent-worktrees-3",
+      "kind": "negative",
+      "scenario": "A pull request receives a new commit after required checks passed for an earlier SHA",
+      "required": "Invalidate old check evidence and rerun relevant tests on exact current head",
+      "forbidden": "Do not merge based on stale CI attached to a different revision"
+    },
+    {
+      "id": "parallel-agent-worktrees-4",
+      "kind": "negative",
+      "scenario": "A pull request is mergeable but has blocking independent review requirements",
+      "required": "Honor actual branch protections and review requirements before integration",
+      "forbidden": "Do not self approve or interpret mergeable as sufficient permission"
+    },
+    {
+      "id": "parallel-agent-worktrees-5",
+      "kind": "negative",
+      "scenario": "A successful merge API response is not followed by reading the target branch state",
+      "required": "Fetch merged PR state and target commit to confirm the requested integration",
+      "forbidden": "Do not conflate an API attempt with verified integration or deployment"
+    }
+  ]
+}
