@@ -37,3 +37,7 @@ Compare incremental setup, license, storage, power, maintenance, backup, securit
 Record exact inspected refs, source depth, unresolved negative evidence, overlapping existing tools, tests run and decision. A README claim, GitHub popularity or source-list entry alone must **not** transition a candidate to installed, safe or compatible.
 
 For deeper review, apply the repository's `agent-supply-chain-review`, `parallel-agent-worktrees`, `local-ai-pilots` and `desktop-automation-pilots` skills when present. They specialize existing policy; they grant no spending, install, deployment or merge permission.
+
+## Self-checks
+
+Check the exact GitHub repository and snapshot scope, compare the existing baseline, count original independent negative reports, examine license/privacy/runtime support and calculate bounded TCO. Explicitly exercise stale-star, unsupported-platform, duplicate-stack and unauthorized-disclosure cases; report which checks were actually executed, not merely specified.

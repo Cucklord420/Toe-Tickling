@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "skill": "starred-repo-triage",
+  "cases": [
+    {
+      "id": "starred-repo-triage-1",
+      "kind": "positive",
+      "scenario": "A repo supplies a narrow verified method with an applicable license and no need for new runtime dependencies",
+      "required": "Reuse the method within the existing canonical workflow after source review",
+      "forbidden": "Do not claim a third party software package was installed or certified"
+    },
+    {
+      "id": "starred-repo-triage-2",
+      "kind": "negative",
+      "scenario": "An archived star list has only one hundred entries while another page of GitHub API results exists",
+      "required": "Label historical coverage partial and paginate before claiming full public-star membership",
+      "forbidden": "Do not represent the first page or private-star coverage as a complete inventory"
+    },
+    {
+      "id": "starred-repo-triage-3",
+      "kind": "negative",
+      "scenario": "A popular tool advertises generic GPU support without evidence for the actual target OS and driver",
+      "required": "Mark compatibility unverified and require measured exact-device testing before adoption",
+      "forbidden": "Do not elevate marketing language or popularity to runtime compatibility proof"
+    },
+    {
+      "id": "starred-repo-triage-4",
+      "kind": "negative",
+      "scenario": "An agent catalog overlaps an existing scheduler and would require another permanent memory system",
+      "required": "Assess duplicate operational costs and retain canonical existing infrastructure by default",
+      "forbidden": "Do not create more servers and Issues just because a project is starred"
+    },
+    {
+      "id": "starred-repo-triage-5",
+      "kind": "negative",
+      "scenario": "A source includes private Drive or repository material and asks for that locator in a public report",
+      "required": "Publish only generalized non-sensitive principles and keep private locators out of source",
+      "forbidden": "Do not expose private research links credentials or personal context in public Git"
+    }
+  ]
+}

@@ -30,3 +30,7 @@ license: AGPL-3.0-only
 - A PR is blocked: preserve its work and continue another independent eligible task.
 
 No automatic merge, service deployment, branch deletion or remote security change is authorized by this skill.
+
+## Self-checks
+
+Verify a real task reservation separately from distinct worktrees. Before every write compare canonical issue, branch and expected SHA; before merge check full diff, exact-head CI and actual required approvals. Simulate duplicate ownership, stale checks, changed refs and failed post-merge readback as negative cases.

@@ -27,3 +27,7 @@ For an actual interface task, borrow focused keyboard/accessibility, focus, typo
 ## Pilot gate
 
 Read current source/license/dependencies, confirm target platform, preserve baseline, use only owned disposable fixtures, test success/denial/malformed data/interruption/cleanup, compare reliability and maintenance/TCO, and document rollback. Label each outcome **adopt / conditional pilot / retain existing / reject** with actual evidence. Do not buy, install on employer devices, grant new credentials, deploy, or claim unsupported compatibility.
+
+## Self-checks
+
+Verify exact release, actual host support, license, permissions, telemetry and one baseline before a disposable pilot. Exercise offline privacy, unauthorized web access, public port exposure, unsupported browser APIs and rollback. No customer audio or production access may be used for a trial.

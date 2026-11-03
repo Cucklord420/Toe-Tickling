@@ -31,3 +31,7 @@ Identify one measurable bottleneck: answer quality, cold start, concurrent throu
 6. Keep current runtime unless a validated adoption/change is separately authorized. An advertised benchmark or a successful process start is not a proven improvement.
 
 No hardware purchase, cloud data upload, live migration or exposed public service is granted by this skill.
+
+## Self-checks
+
+Use identical sanitized tasks and exact versions to compare baseline versus candidate on quality, latency, memory, storage, power where available, privacy and TCO. Require raw error and citation fidelity, test unavailable models and network failures, and separate unrun device checks from observed success.

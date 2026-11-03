@@ -31,3 +31,7 @@ Compare against the existing baseline: accuracy, maintainability, security, new 
 ## Acceptance
 
 A skill requesting broad credentials or silent hosted logging without a justified and reviewable data path fails the intake gate. Produce a short ledger of inspected source, actual security checks, untested paths, risk, TCO and rollback. Do not authorize purchase, deployment, publishing or privilege escalation.
+
+## Self-checks
+
+Read the precise version's complete instructions and install hooks, inspect privilege/network/token paths and original adverse evidence, then verify denied access using disposable synthetic fixtures. Check downstream mutable downloads despite pinned GitHub Actions. Fail any unreviewed grant; keep installed, reviewed and untested outcomes distinct.

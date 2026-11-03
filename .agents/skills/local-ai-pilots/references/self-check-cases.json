@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "skill": "local-ai-pilots",
+  "cases": [
+    {
+      "id": "local-ai-pilots-1",
+      "kind": "positive",
+      "scenario": "A local model replacement is tested with repeated identical public tasks and documented measured gains",
+      "required": "Report actual quality latency resource and privacy observations with sample sizes",
+      "forbidden": "Do not extrapolate a small synthetic improvement to all hardware and workflows"
+    },
+    {
+      "id": "local-ai-pilots-2",
+      "kind": "negative",
+      "scenario": "A streaming inference engine advertises Vulkan but the target GPU and driver have not been tested",
+      "required": "Keep target compatibility unknown and benchmark the exact device and model",
+      "forbidden": "Do not assert useful performance from a generic graphics backend support claim"
+    },
+    {
+      "id": "local-ai-pilots-3",
+      "kind": "negative",
+      "scenario": "Compressed tool output loses a fatal error code and exact commit SHA needed for diagnosis",
+      "required": "Reject that compression for the workflow and preserve retrievable raw output",
+      "forbidden": "Do not count reduced tokens as success when important evidence disappears"
+    },
+    {
+      "id": "local-ai-pilots-4",
+      "kind": "negative",
+      "scenario": "A multi computer inference router advertises aggregate GPU memory without actual model sharding",
+      "required": "Describe independent request routing until a supported sharing mechanism is tested",
+      "forbidden": "Do not claim VRAM pooling based on the router marketing text"
+    },
+    {
+      "id": "local-ai-pilots-5",
+      "kind": "negative",
+      "scenario": "A hosted code graph trial would transmit private source while storage retention remains unknown",
+      "required": "Use public synthetic code and review data egress before considering any private input",
+      "forbidden": "Do not upload private repositories to an unverified indexing service"
+    }
+  ]
+}
