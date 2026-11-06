@@ -1405,18 +1405,17 @@ fn adoption_cli_runs_from_an_unrelated_directory_and_path_with_spaces() {
     assert!(!target.path().join("AGENTS.md").exists());
     let applied = run(true);
     assert!(
-        applied.status.success(),
-        "{}",
-        String::from_utf8_lossy(&applied.stderr)
+        !applied.status.success(),
+        "adoption unexpectedly succeeded: {}",
+        String::from_utf8_lossy(&applied.stdout)
     );
-    assert_eq!(
-        fs::read(target.path().join(".ai-guidebook/GUIDEBOOK.md")).unwrap(),
-        fs::read(source.path().join("GUIDEBOOK.md")).unwrap()
-    );
-    let repeated = run(true);
-    assert!(repeated.status.success());
-    let report: serde_json::Value = serde_json::from_slice(&repeated.stdout).unwrap();
-    assert_eq!(report["changed"], serde_json::json!([]));
+    assert!(String::from_utf8_lossy(&applied.stderr).contains("paused"));
+    for path in [".ai-guidebook", "AGENTS.md", ".gitignore", "CLAUDE.md"] {
+        assert!(
+            !target.path().join(path).exists(),
+            "paused adoption created {path}"
+        );
+    }
     let head = Command::new("git")
         .args(["rev-parse", "--verify", "HEAD"])
         .current_dir(target.path())

@@ -1798,8 +1798,8 @@ pub fn plan(root: &Path, target: &Path) -> Result<AdoptionPlan> {
     })
 }
 
-pub fn apply(plan: &AdoptionPlan) -> Result<()> {
-    apply_transaction(plan, None)
+pub fn apply(_plan: &AdoptionPlan) -> Result<()> {
+    Err("Guidebook adoption writes are paused on all platforms until Issue #39's path-replacement race is closed".into())
 }
 
 fn apply_transaction(
@@ -1926,6 +1926,10 @@ fn apply_transaction(
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "adopt_transaction_tests.rs"]
+mod transaction_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2255,7 +2259,7 @@ mod tests {
         let plan = fixture_plan(&target);
         let expected = create_journal(&target, &plan.source_root, &plan).unwrap();
 
-        apply(&plan).unwrap();
+        apply_transaction(&plan, None).unwrap();
 
         for entry in &expected.entries {
             assert_eq!(file_state(&target, &entry.relative).unwrap(), entry.after);
@@ -2274,7 +2278,7 @@ mod tests {
         let plan = fixture_plan(&target);
         let expected = create_journal(&target, &plan.source_root, &plan).unwrap();
 
-        apply(&plan).unwrap();
+        apply_transaction(&plan, None).unwrap();
 
         for entry in &expected.entries {
             assert_eq!(file_state(&target, &entry.relative).unwrap(), entry.after);
@@ -2690,7 +2694,7 @@ mod tests {
         let _ = prepared_journal(&target, &stale_plan);
         let current_plan = fixture_plan(&target);
 
-        let error = apply(&current_plan).unwrap_err();
+        let error = apply_transaction(&current_plan, None).unwrap_err();
 
         assert!(error.contains("Pending adoption recovery"));
         assert!(journal_path(&target).unwrap().1.exists());
