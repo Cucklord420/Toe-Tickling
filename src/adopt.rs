@@ -31,7 +31,11 @@ const JOURNAL_NAME: &str = ".toe-tickling-adoption-v1.json";
 const LEGACY_JOURNAL_VERSION: u32 = 1;
 const LEGACY_JOURNAL_V2_VERSION: u32 = 2;
 const JOURNAL_VERSION: u32 = 3;
+// The public write entry remains paused until Issue #39's race is fixed; keep
+// its transaction internals available to the existing regression tests.
+#[cfg_attr(not(test), allow(dead_code))]
 static NEXT_TRANSACTION: AtomicU64 = AtomicU64::new(0);
+#[cfg_attr(not(test), allow(dead_code))]
 type AfterPersistHook = dyn FnMut(usize, &str) -> Result<()>;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -200,6 +204,7 @@ struct JournalEntryV2<'a> {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub struct AdoptionPlan {
     pub target: PathBuf,
     pub files: BTreeMap<String, String>,
@@ -550,6 +555,7 @@ fn output_paths() -> BTreeSet<String> {
         .collect()
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn transaction_id(target: &Path, source: &str) -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -602,6 +608,7 @@ fn file_state(root: &Path, relative: &str) -> Result<JournalFileState> {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn state_for_bytes(bytes: Vec<u8>, permissions: JournalPermissions) -> JournalFileState {
     JournalFileState {
         bytes: Some(bytes),
@@ -658,6 +665,7 @@ fn validate_snapshot_pair(
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn create_journal(target: &Path, root: &Path, plan: &AdoptionPlan) -> Result<AdoptionJournal> {
     let source = source_repo(root)?;
     let (git_dir, _) = journal_path(target)?;
@@ -898,6 +906,7 @@ fn validate_journal(
     Ok(())
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn write_journal_exclusive(path: &Path, journal: &AdoptionJournal) -> Result<()> {
     if metadata(path)?.is_some() {
         return Err(
@@ -1049,6 +1058,7 @@ fn create_stage(target: &Path, relative: &str, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn persist_stage(
     source_root: &Path,
     target: &Path,
@@ -1068,6 +1078,7 @@ fn persist_stage(
     )
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn persist_stage_with_hook<F>(
     source_root: &Path,
     target: &Path,
@@ -1798,10 +1809,11 @@ pub fn plan(root: &Path, target: &Path) -> Result<AdoptionPlan> {
     })
 }
 
-pub fn apply(plan: &AdoptionPlan) -> Result<()> {
-    apply_transaction(plan, None)
+pub fn apply(_plan: &AdoptionPlan) -> Result<()> {
+    Err("Guidebook adoption writes are paused on all platforms until Issue #39's path-replacement race is closed".into())
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn apply_transaction(
     plan: &AdoptionPlan,
     mut after_persist: Option<&mut AfterPersistHook>,
@@ -1926,6 +1938,10 @@ fn apply_transaction(
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "adopt_transaction_tests.rs"]
+mod transaction_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2255,7 +2271,7 @@ mod tests {
         let plan = fixture_plan(&target);
         let expected = create_journal(&target, &plan.source_root, &plan).unwrap();
 
-        apply(&plan).unwrap();
+        apply_transaction(&plan, None).unwrap();
 
         for entry in &expected.entries {
             assert_eq!(file_state(&target, &entry.relative).unwrap(), entry.after);
@@ -2274,7 +2290,7 @@ mod tests {
         let plan = fixture_plan(&target);
         let expected = create_journal(&target, &plan.source_root, &plan).unwrap();
 
-        apply(&plan).unwrap();
+        apply_transaction(&plan, None).unwrap();
 
         for entry in &expected.entries {
             assert_eq!(file_state(&target, &entry.relative).unwrap(), entry.after);
@@ -2690,7 +2706,7 @@ mod tests {
         let _ = prepared_journal(&target, &stale_plan);
         let current_plan = fixture_plan(&target);
 
-        let error = apply(&current_plan).unwrap_err();
+        let error = apply_transaction(&current_plan, None).unwrap_err();
 
         assert!(error.contains("Pending adoption recovery"));
         assert!(journal_path(&target).unwrap().1.exists());

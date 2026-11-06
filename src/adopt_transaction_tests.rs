@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+use super as adopt;
+use crate::{Result, guide};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -8,7 +10,12 @@ use std::{
     process::Command,
 };
 use tempfile::TempDir;
-use toe_tickling::{adopt, guide};
+
+// These tests exercise the retained private transaction path. The public
+// apply() pause is covered separately by tests/adoption_pause.rs.
+fn apply_transaction_for_test(plan: &adopt::AdoptionPlan) -> Result<()> {
+    adopt::apply_transaction(plan, None)
+}
 
 const GUIDE: &str = ".ai-guidebook/GUIDEBOOK.md";
 const LOCK: &str = ".ai-guidebook/policy-lock.json";
@@ -45,7 +52,7 @@ impl Fixture {
     }
 
     fn install(&self) {
-        adopt::apply(&self.plan()).unwrap();
+        apply_transaction_for_test(&self.plan()).unwrap();
     }
 
     fn write(&self, relative: &str, contents: &str) {
@@ -79,9 +86,9 @@ fn copy_public(source: &Path, destination: &Path) {
 }
 
 fn refresh_manifest(root: &Path) {
-    toe_tickling::write_json(
+    crate::write_json(
         &root.join("policy/reading-manifest.json"),
-        &toe_tickling::current_manifest(root).unwrap(),
+        &crate::current_manifest(root).unwrap(),
     )
     .unwrap();
 }
@@ -210,7 +217,7 @@ fn repeat_install_is_byte_identical() {
     let before = snapshot(&f.target);
     let next = f.plan();
     assert_eq!(next.preserved_adapters.len(), 4);
-    adopt::apply(&next).unwrap();
+    apply_transaction_for_test(&next).unwrap();
     assert_eq!(before, snapshot(&f.target));
     assert_eq!(
         f.text("AGENTS.md")
@@ -240,7 +247,7 @@ fn existing_model_adapters_are_preserved_including_non_utf8_content() {
     for relative in originals.keys() {
         assert!(!plan.files.contains_key(relative));
     }
-    adopt::apply(&plan).unwrap();
+    apply_transaction_for_test(&plan).unwrap();
     for relative in originals.keys() {
         assert_eq!(fs::read(f.target.join(relative)).unwrap(), before[relative]);
     }
@@ -366,7 +373,7 @@ fn source_changes_after_preview_do_not_change_pinned_plan_bytes() {
     let plan = f.plan();
     let guide = plan.files[GUIDE].clone();
     fs::write(f.source.join("GUIDEBOOK.md"), "Changed after preview\n").unwrap();
-    adopt::apply(&plan).unwrap();
+    apply_transaction_for_test(&plan).unwrap();
     assert_eq!(f.text(GUIDE), guide);
 }
 
@@ -419,14 +426,14 @@ fn target_path_traversal_and_public_plan_mutations_are_rejected() {
     plan.files
         .insert("../outside.md".into(), "Must not be written".into());
     assert!(
-        adopt::apply(&plan)
+        apply_transaction_for_test(&plan)
             .unwrap_err()
             .contains("changed after validation")
     );
     assert!(!f._work.path().join("outside.md").exists());
     let mut plan = f.plan();
     plan.target = f.source.clone();
-    assert!(adopt::apply(&plan).is_err());
+    assert!(apply_transaction_for_test(&plan).is_err());
     assert!(!f.target.join("AGENTS.md").exists());
 }
 
@@ -461,7 +468,7 @@ fn concurrent_project_edits_and_new_adapters_invalidate_plan_before_writes() {
     f.write("AGENTS.md", "Another worker's requirements.\n");
     let before = snapshot(&f.target);
     assert!(
-        adopt::apply(&plan)
+        apply_transaction_for_test(&plan)
             .unwrap_err()
             .contains("changed after planning")
     );
@@ -469,11 +476,11 @@ fn concurrent_project_edits_and_new_adapters_invalidate_plan_before_writes() {
     let plan = f.plan();
     f.write("CLAUDE.md", "Another worker's adapter.\n");
     let before = snapshot(&f.target);
-    assert!(adopt::apply(&plan).is_err());
+    assert!(apply_transaction_for_test(&plan).is_err());
     assert_eq!(before, snapshot(&f.target));
     let plan = f.plan();
     f.write("CLAUDE.md", "Modified preserved adapter.\n");
-    assert!(adopt::apply(&plan).is_err());
+    assert!(apply_transaction_for_test(&plan).is_err());
     assert!(!f.target.join(".ai-guidebook").exists());
 }
 
@@ -484,7 +491,7 @@ fn snapshot_tampering_after_preview_blocks_apply() {
     let plan = f.plan();
     f.write(GUIDE, "Tampered after planning\n");
     let before = snapshot(&f.target);
-    assert!(adopt::apply(&plan).is_err());
+    assert!(apply_transaction_for_test(&plan).is_err());
     assert_eq!(before, snapshot(&f.target));
 }
 
@@ -497,7 +504,7 @@ fn disappearing_git_identity_after_preview_blocks_apply() {
         f._work.path().join("saved git directory"),
     )
     .unwrap();
-    assert!(adopt::apply(&plan).is_err());
+    assert!(apply_transaction_for_test(&plan).is_err());
     assert!(!f.target.join("AGENTS.md").exists());
 }
 
@@ -509,7 +516,7 @@ fn replacement_repository_at_the_same_path_invalidates_preview() {
     fs::create_dir(&f.target).unwrap();
     git_init(&f.target);
     assert!(
-        adopt::apply(&plan)
+        apply_transaction_for_test(&plan)
             .unwrap_err()
             .contains("identity changed")
     );
@@ -626,7 +633,11 @@ fn symlinks_introduced_after_preview_are_rejected() {
     let outside = f._work.path().join("outside");
     fs::create_dir(&outside).unwrap();
     symlink(&outside, f.target.join(".ai-guidebook")).unwrap();
-    assert!(adopt::apply(&plan).unwrap_err().contains("symlink"));
+    assert!(
+        apply_transaction_for_test(&plan)
+            .unwrap_err()
+            .contains("symlink")
+    );
     assert_eq!(fs::read_dir(outside).unwrap().count(), 0);
     assert!(!f.target.join("AGENTS.md").exists());
 }
