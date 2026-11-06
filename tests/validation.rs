@@ -29,6 +29,7 @@ fn fixture() -> TempDir {
         "CHANGELOG.md",
         ".github/workflows/validate.yml",
         "docs/VALIDATION.md",
+        "docs/PYTHON_RUST_PARITY.md",
         "docs/archive/INITIAL_INSTRUCTION_AUDIT.md",
         "docs/archive/INITIAL_VALIDATION.md",
     ] {
@@ -1265,6 +1266,8 @@ fn cli_does_not_overwrite_receipts_or_write_them_in_checkout() {
     let run = |output: &Path| {
         Command::new(env!("CARGO_BIN_EXE_toe-tickling"))
             .current_dir(dir.path())
+            .arg("--root")
+            .arg(dir.path())
             .args([
                 "new-audit",
                 "--task",
@@ -1282,6 +1285,8 @@ fn cli_does_not_overwrite_receipts_or_write_them_in_checkout() {
     assert!(!run(&dir.path().join("receipt.json")).status.success());
     let result = Command::new(env!("CARGO_BIN_EXE_toe-tickling"))
         .current_dir(dir.path())
+        .arg("--root")
+        .arg(dir.path())
         .args(["check", "--audit"])
         .arg(&output)
         .output()

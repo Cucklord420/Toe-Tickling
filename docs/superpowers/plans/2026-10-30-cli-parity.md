@@ -41,7 +41,7 @@
 - [x] **Step 1: Add the regression test.** Added the real-CLI regression for `build`, `check`, and adoption preview from an unrelated temporary directory; it also asserts no launch-directory writes.
 - [ ] **Step 2: Verify RED against the old default.** Not observed locally: the focused command stopped before test execution because MSVC `link.exe` is unavailable. The regression is designed to fail with the prior current-directory default; exact-head CI will establish the final behavior.
 - [x] **Step 3: Implement the minimal root fallback.** `src/main.rs` uses `PathBuf::from(env!("CARGO_MANIFEST_DIR"))` when `--root` is absent and preserves explicit parsing. Help text now explains the default and override.
-- [ ] **Step 4: Verify GREEN.** Pending exact-head Linux and Windows CI; the local focused test cannot link because `link.exe` is unavailable.
+- [ ] **Step 4: Verify GREEN.** Initial exact-head run #42168654175 passed the Windows job, formatting, and Clippy. Linux validation tests had 5 failures: four temporary fixtures omitted the newly linked parity matrix, and one CLI test implicitly used its current directory as the checkout. The fixtures now include the matrix, and the CLI test passes `--root` explicitly; rerun CI is still required. The local focused test cannot link because `link.exe` is unavailable.
 
 ### Task 2: Record migration evidence and boundaries
 

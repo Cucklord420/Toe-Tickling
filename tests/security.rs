@@ -38,6 +38,7 @@ fn full_fixture() -> TempDir {
         "CHANGELOG.md",
         ".github/workflows/validate.yml",
         "docs/VALIDATION.md",
+        "docs/PYTHON_RUST_PARITY.md",
         "docs/archive/INITIAL_INSTRUCTION_AUDIT.md",
         "docs/archive/INITIAL_VALIDATION.md",
     ] {
