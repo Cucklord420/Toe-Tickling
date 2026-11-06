@@ -1478,3 +1478,45 @@ fn audit_validation_uses_the_selected_checkout_under_git_redirects() {
         "unexpected alternate-index result: {alternate_stderr}"
     );
 }
+
+#[test]
+fn build_and_check_default_to_manifest_root_from_unrelated_directory() {
+    let unrelated = tempfile::tempdir().unwrap();
+
+    for command_name in ["build", "check"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_toe-tickling"))
+            .arg(command_name)
+            .current_dir(unrelated.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{command_name} failed from an unrelated directory:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let target = tempfile::tempdir().unwrap();
+    assert!(clean_git(target.path(), &["init", "-q"]).status.success());
+    let adoption = Command::new(env!("CARGO_BIN_EXE_toe-tickling"))
+        .arg("adopt")
+        .arg(target.path())
+        .current_dir(unrelated.path())
+        .output()
+        .unwrap();
+    assert!(
+        adoption.status.success(),
+        "adopt failed from an unrelated directory:\n{}\n{}",
+        String::from_utf8_lossy(&adoption.stdout),
+        String::from_utf8_lossy(&adoption.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&adoption.stdout).unwrap();
+    assert_eq!(report["mode"], "preview");
+    assert!(!target.path().join(".ai-guidebook").exists());
+
+    assert!(
+        fs::read_dir(unrelated.path()).unwrap().next().is_none(),
+        "commands must not create generated files in their launch directory"
+    );
+}

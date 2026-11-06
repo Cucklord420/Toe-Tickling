@@ -32,7 +32,7 @@ Use an intentional revision update, inspect its diff, refresh reading receipts, 
 
 ## Rust installer
 
-Preview with `cargo run --locked -- adopt /absolute/path/to/project`; write the reviewed plan with the same command plus `--apply`. Run from this checkout, or invoke the compiled binary with `--root /path/to/Toe-Tickling`. The target must be the root of a separate existing Git working tree. No commit, push, model execution, account settings, or cross-session memory write occurs.
+Preview with `cargo run --locked -- adopt /absolute/path/to/project`; write the reviewed plan with the same command plus `--apply`. Commands default to this package's manifest directory even when launched elsewhere. Use `--root /path/to/another/checkout` to select a different source checkout. The target must be the root of a separate existing Git working tree. No commit, push, model execution, account settings, or cross-session memory write occurs.
 
 The installer manages `.ai-guidebook/GUIDEBOOK.md` and its digest lock, a marked AGENTS.md section, and a marked private-file ignore section. Existing instructions outside those blocks and existing model adapters remain intact. New adapters are created only when absent and existing ones are reported for manual integration. A repeat with unchanged source/target produces no change. Tampered/unmanaged snapshots, malformed managed markers, unsafe paths, symlinks, or changed target state require review rather than blind replacement.
 

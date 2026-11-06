@@ -48,4 +48,4 @@ cargo run --locked -- adopt /absolute/path/to/project
 cargo run --locked -- adopt /absolute/path/to/project --apply
 ```
 
-Preview is the default. Apply only under the target project's authorization. The Rust installer preserves existing instructions and adapters, validates snapshot digests, and rejects unsafe or tampered targets. It does not commit, push, change account settings, or prove that a model obeyed the installed text. Use `--root /path/to/Toe-Tickling` when invoking the compiled CLI from another directory.
+Preview is the default. Apply only under the target project's authorization. The Rust installer preserves existing instructions and adapters, validates snapshot digests, and rejects unsafe or tampered targets. It does not commit, push, change account settings, or prove that a model obeyed the installed text. Commands default to this package's manifest directory even when launched elsewhere; use `--root /path/to/another/checkout` to select a different source checkout.
