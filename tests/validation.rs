@@ -1585,7 +1585,6 @@ fn build_cli_for_checkout(root: &Path, target_directory: &Path) -> std::path::Pa
 }
 
 #[test]
-#[test]
 fn build_and_check_default_to_manifest_root_from_unrelated_directory() {
     let package_root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let original_outputs = generated_output_snapshot(package_root);
