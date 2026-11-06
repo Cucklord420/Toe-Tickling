@@ -10,7 +10,7 @@ The mapping below compares historical scenarios with current Rust source and tes
 
 | Pinned Python test | Current Rust counterpart or status | Coverage assessment |
 | --- | --- | --- |
-| `test_real_cli_build_and_check_from_unrelated_directory` | `tests/validation.rs::build_and_check_default_to_manifest_root_from_unrelated_directory` | Direct real-CLI regression for `build`, `check`, and also `adopt` preview from an unrelated directory; exact-head CI is still required. |
+| `test_real_cli_build_and_check_from_unrelated_directory` | `tests/validation.rs::build_and_check_default_to_manifest_root_from_unrelated_directory` | Direct real-CLI regression for `build`, `check`, and also `adopt` preview from an unrelated directory. Linux and Windows run [#42169337426](https://github.com/Cucklord420/Toe-Tickling/actions/runs/42169337426) passed at code commit `3ae0c8755c14d42d8c27f3232b51c657ebe35acd`; see the canonical PR for final-head checks. |
 | `test_build_is_deterministic` | `tests/validation.rs::full_guide_and_adapters_cannot_drift`; current render and source-byte checks | Partial: verifies generated content against canonical sources, but there is no identical-tree before/after snapshot test for two CLI builds. |
 | `test_generated_guide_tamper_is_rejected` | `tests/validation.rs::full_guide_and_adapters_cannot_drift` | Current checker rejects stale generated guide content. |
 | `test_generated_adapter_tamper_is_rejected` | `tests/validation.rs::full_guide_and_adapters_cannot_drift` | Current checker rejects a stale generated adapter. |
