@@ -1484,7 +1484,6 @@ fn audit_validation_uses_the_selected_checkout_under_git_redirects() {
     );
 }
 
-#[test]
 fn copy_tracked_checkout(source: &Path, destination: &Path) {
     fs::create_dir_all(destination).unwrap();
     let listing = clean_git(source, &["ls-files", "-z"]);
@@ -1585,6 +1584,7 @@ fn build_cli_for_checkout(root: &Path, target_directory: &Path) -> std::path::Pa
     executable
 }
 
+#[test]
 #[test]
 fn build_and_check_default_to_manifest_root_from_unrelated_directory() {
     let package_root = Path::new(env!("CARGO_MANIFEST_DIR"));
