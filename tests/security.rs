@@ -38,6 +38,7 @@ fn full_fixture() -> TempDir {
         "CHANGELOG.md",
         ".github/workflows/validate.yml",
         "docs/VALIDATION.md",
+        "docs/PYTHON_RUST_PARITY.md",
         "docs/archive/INITIAL_INSTRUCTION_AUDIT.md",
         "docs/archive/INITIAL_VALIDATION.md",
     ] {
@@ -470,6 +471,8 @@ fn scanner_fails_closed_on_ambient_git_index_override() {
     );
 
     let output = Command::new(env!("CARGO_BIN_EXE_toe-tickling"))
+        .args(["--root"])
+        .arg(directory.path())
         .arg("check")
         .current_dir(directory.path())
         .env("GIT_INDEX_FILE", alternate_index)
@@ -529,7 +532,10 @@ fn alternate_index_only_staged_credentials_fail_closed() {
     fs::write(&readme, original).unwrap();
 
     let mut scan = Command::new(env!("CARGO_BIN_EXE_toe-tickling"));
-    scan.arg("check").current_dir(directory.path());
+    scan.args(["--root"])
+        .arg(directory.path())
+        .arg("check")
+        .current_dir(directory.path());
     for variable in [
         "GIT_DIR",
         "GIT_WORK_TREE",

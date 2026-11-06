@@ -29,6 +29,7 @@ fn fixture() -> TempDir {
         "CHANGELOG.md",
         ".github/workflows/validate.yml",
         "docs/VALIDATION.md",
+        "docs/PYTHON_RUST_PARITY.md",
         "docs/archive/INITIAL_INSTRUCTION_AUDIT.md",
         "docs/archive/INITIAL_VALIDATION.md",
     ] {
@@ -1265,6 +1266,8 @@ fn cli_does_not_overwrite_receipts_or_write_them_in_checkout() {
     let run = |output: &Path| {
         Command::new(env!("CARGO_BIN_EXE_toe-tickling"))
             .current_dir(dir.path())
+            .arg("--root")
+            .arg(dir.path())
             .args([
                 "new-audit",
                 "--task",
@@ -1282,6 +1285,8 @@ fn cli_does_not_overwrite_receipts_or_write_them_in_checkout() {
     assert!(!run(&dir.path().join("receipt.json")).status.success());
     let result = Command::new(env!("CARGO_BIN_EXE_toe-tickling"))
         .current_dir(dir.path())
+        .arg("--root")
+        .arg(dir.path())
         .args(["check", "--audit"])
         .arg(&output)
         .output()
@@ -1475,5 +1480,178 @@ fn audit_validation_uses_the_selected_checkout_under_git_redirects() {
     assert!(
         alternate_stderr.contains("GIT_INDEX_FILE override"),
         "unexpected alternate-index result: {alternate_stderr}"
+    );
+}
+
+fn copy_tracked_checkout(source: &Path, destination: &Path) {
+    fs::create_dir_all(destination).unwrap();
+    let listing = clean_git(source, &["ls-files", "-z"]);
+    assert!(
+        listing.status.success(),
+        "cannot list tracked checkout files: {}",
+        String::from_utf8_lossy(&listing.stderr)
+    );
+
+    for entry in listing
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+    {
+        let relative = Path::new(std::str::from_utf8(entry).unwrap());
+        assert!(
+            !relative.is_absolute()
+                && relative
+                    .components()
+                    .all(|component| matches!(component, std::path::Component::Normal(_))),
+            "tracked checkout path must stay relative"
+        );
+        if relative
+            .components()
+            .any(|component| matches!(component.as_os_str().to_str(), Some(".git" | "target")))
+        {
+            continue;
+        }
+
+        let source_path = source.join(relative);
+        let metadata = match fs::symlink_metadata(&source_path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => panic!("cannot inspect tracked source file: {error}"),
+        };
+        assert!(
+            !metadata.file_type().is_symlink(),
+            "tracked checkout copy refuses symlinks"
+        );
+        let destination_path = destination.join(relative);
+        if metadata.is_dir() {
+            fs::create_dir_all(destination_path).unwrap();
+        } else {
+            assert!(metadata.is_file(), "tracked checkout entry must be a file");
+            fs::create_dir_all(destination_path.parent().unwrap()).unwrap();
+            fs::copy(source_path, destination_path).unwrap();
+        }
+    }
+}
+
+fn generated_output_snapshot(root: &Path) -> BTreeMap<String, Option<Vec<u8>>> {
+    let mut paths: Vec<_> = toe_tickling::guide::outputs(root)
+        .unwrap()
+        .into_keys()
+        .collect();
+    paths.push("RULEBOOK.md".to_owned());
+    paths.sort();
+    paths.dedup();
+
+    paths
+        .into_iter()
+        .map(|relative| {
+            let bytes = match fs::read(root.join(&relative)) {
+                Ok(bytes) => Some(bytes),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => panic!("cannot snapshot generated output {relative}: {error}"),
+            };
+            (relative, bytes)
+        })
+        .collect()
+}
+
+fn build_cli_for_checkout(root: &Path, target_directory: &Path) -> std::path::PathBuf {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let output = Command::new(cargo)
+        .args(["build", "--locked", "--offline", "--bin", "toe-tickling"])
+        .arg("--manifest-path")
+        .arg(root.join("Cargo.toml"))
+        .arg("--target-dir")
+        .arg(target_directory)
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "disposable CLI build failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let executable = target_directory
+        .join("debug")
+        .join(format!("toe-tickling{}", std::env::consts::EXE_SUFFIX));
+    assert!(
+        executable.is_file(),
+        "disposable CLI binary was not created"
+    );
+    executable
+}
+
+#[test]
+fn build_and_check_default_to_manifest_root_from_unrelated_directory() {
+    let package_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let original_outputs = generated_output_snapshot(package_root);
+    let temporary = tempfile::tempdir().unwrap();
+    let checkout = temporary.path().join("checkout");
+    let unrelated = temporary.path().join("unrelated");
+    let target_directory = temporary.path().join("cargo-target");
+    fs::create_dir_all(&unrelated).unwrap();
+    copy_tracked_checkout(package_root, &checkout);
+
+    // A stale generated file makes it observable that the default-root build
+    // updates the disposable checkout rather than the developer's checkout.
+    fs::write(checkout.join("RULEBOOK.md"), "stale disposable fixture\n").unwrap();
+    let binary = build_cli_for_checkout(&checkout, &target_directory);
+
+    let build = Command::new(&binary)
+        .arg("build")
+        .current_dir(&unrelated)
+        .output()
+        .unwrap();
+    assert!(
+        build.status.success(),
+        "build failed from an unrelated directory:\n{}\n{}",
+        String::from_utf8_lossy(&build.stdout),
+        String::from_utf8_lossy(&build.stderr)
+    );
+    assert!(
+        !fs::read_to_string(checkout.join("RULEBOOK.md"))
+            .unwrap()
+            .contains("stale disposable fixture")
+    );
+
+    let check = Command::new(&binary)
+        .arg("check")
+        .current_dir(&unrelated)
+        .output()
+        .unwrap();
+    assert!(
+        check.status.success(),
+        "check failed from an unrelated directory:\n{}\n{}",
+        String::from_utf8_lossy(&check.stdout),
+        String::from_utf8_lossy(&check.stderr)
+    );
+
+    let target = tempfile::tempdir().unwrap();
+    assert!(clean_git(target.path(), &["init", "-q"]).status.success());
+    let adoption = Command::new(&binary)
+        .arg("adopt")
+        .arg(target.path())
+        .current_dir(&unrelated)
+        .output()
+        .unwrap();
+    assert!(
+        adoption.status.success(),
+        "adopt failed from an unrelated directory:\n{}\n{}",
+        String::from_utf8_lossy(&adoption.stdout),
+        String::from_utf8_lossy(&adoption.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&adoption.stdout).unwrap();
+    assert_eq!(report["mode"], "preview");
+    assert!(!target.path().join(".ai-guidebook").exists());
+    assert!(
+        fs::read_dir(&unrelated).unwrap().next().is_none(),
+        "commands must not create generated files in their launch directory"
+    );
+    assert_eq!(
+        generated_output_snapshot(package_root),
+        original_outputs,
+        "default-root CLI commands must not rewrite generated files in the actual checkout"
     );
 }
