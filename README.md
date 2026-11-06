@@ -45,7 +45,6 @@ Original additions follow the existing [AGPL-3.0-only license](LICENSE). See [li
 
 ```bash
 cargo run --locked -- adopt /absolute/path/to/project
-cargo run --locked -- adopt /absolute/path/to/project --apply
 ```
 
-Preview is the default. Apply only under the target project's authorization. The Rust installer preserves existing instructions and adapters, validates snapshot digests, and rejects unsafe or tampered targets. It does not commit, push, change account settings, or prove that a model obeyed the installed text. Use `--root /path/to/Toe-Tickling` when invoking the compiled CLI from another directory.
+Preview is the default. **Adoption with `--apply` is temporarily paused on all platforms for [Issue #39](https://github.com/Cucklord420/Toe-Tickling/issues/39) until the path-replacement race is closed and verified.** Preview remains read-only; `--recover` remains available only for interrupted earlier installs. The Rust installer preserves existing instructions and adapters, validates snapshot digests, and rejects unsafe or tampered targets. It does not commit, push, change account settings, or prove that a model obeyed the installed text. Use `--root /path/to/Toe-Tickling` when invoking the compiled CLI from another directory.
