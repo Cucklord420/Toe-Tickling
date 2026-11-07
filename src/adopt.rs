@@ -1262,6 +1262,31 @@ fn create_stage_with(
     context.write_new(&path, bytes)
 }
 
+#[cfg(all(test, windows))]
+fn persist_stage_with_hook<F>(
+    source_root: &Path,
+    target: &Path,
+    journal_path: &Path,
+    journal: &mut AdoptionJournal,
+    entry_index: usize,
+    relative: &str,
+    before_rename: F,
+) -> Result<()>
+where
+    F: FnOnce() -> Result<()>,
+{
+    persist_stage_with_hook_with_context(
+        None,
+        source_root,
+        target,
+        journal_path,
+        journal,
+        entry_index,
+        relative,
+        before_rename,
+    )
+}
+
 #[allow(clippy::too_many_arguments)] // These explicit inputs are the recovery transaction state.
 fn persist_stage_with_hook_with_context<F>(
     context: Option<&mutation::MutationContext>,
@@ -1494,6 +1519,26 @@ fn set_entry_transition_with(
     write_journal_update_with(context, journal_path, journal, &updated)?;
     *journal = updated;
     Ok(())
+}
+
+#[cfg(all(test, windows))]
+fn prepare_destination_for_replacement(
+    source_root: &Path,
+    target: &Path,
+    journal_path: &Path,
+    journal: &mut AdoptionJournal,
+    entry_index: usize,
+    expected: &JournalFileState,
+) -> Result<()> {
+    prepare_destination_for_replacement_with(
+        None,
+        source_root,
+        target,
+        journal_path,
+        journal,
+        entry_index,
+        expected,
+    )
 }
 
 fn prepare_destination_for_replacement_with(
