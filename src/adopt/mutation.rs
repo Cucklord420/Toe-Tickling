@@ -1829,10 +1829,10 @@ mod windows_acl {
                     }
                     if mask & mutation_rights() != 0 {
                         if !self.trusted(sid) {
-                            return Err(
-                                "Mutation object's DACL grants another local user a mutation right"
-                                    .into(),
-                            );
+                            return Err(format!(
+                                "Mutation object's DACL grants another local user mutation rights (mask 0x{:08x})",
+                                mask & mutation_rights()
+                            ));
                         }
                     }
                     continue;
