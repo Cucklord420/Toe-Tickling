@@ -2117,6 +2117,15 @@ mod windows_tests {
         (target.canonicalize().unwrap(), git.canonicalize().unwrap())
     }
 
+    #[test]
+    fn protected_user_profile_path_passes_handle_anchored_preflight() {
+        let work = mutation_fixture_tempdir();
+        let (target, git) = target_and_git(work.path());
+
+        MutationContext::open(&target, &git)
+            .unwrap_or_else(|error| panic!("protected profile path was rejected: {error}"));
+    }
+
     fn grant_everyone_modify(path: &Path, inherited: bool) {
         let rights = if inherited {
             "*S-1-1-0:(OI)(CI)M"
