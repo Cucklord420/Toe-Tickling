@@ -869,14 +869,6 @@ fn seal_journal(journal: &mut AdoptionJournal) -> Result<()> {
     Ok(())
 }
 
-fn validate_live_identity(
-    source_root: &Path,
-    target: &Path,
-    identity: &JournalIdentity,
-) -> Result<()> {
-    validate_live_identity_with(None, source_root, target, identity)
-}
-
 fn validate_live_identity_with(
     context: Option<&mutation::MutationContext>,
     source_root: &Path,
@@ -907,15 +899,6 @@ fn validate_live_identity_with(
         return Err("Adoption source or Git worktree identity changed".into());
     }
     Ok(())
-}
-
-fn validate_journal(
-    source_root: &Path,
-    target: &Path,
-    git_dir: &Path,
-    journal: &AdoptionJournal,
-) -> Result<()> {
-    validate_journal_with(None, source_root, target, git_dir, journal)
 }
 
 fn validate_journal_with(
@@ -1090,17 +1073,6 @@ fn write_journal_replacement(path: &Path, journal: &AdoptionJournal) -> Result<(
     Ok(())
 }
 
-fn write_journal_update(
-    path: &Path,
-    expected_current: &AdoptionJournal,
-    updated: &AdoptionJournal,
-) -> Result<()> {
-    if read_journal(path)? != *expected_current {
-        return Err("Adoption recovery journal changed during an update".into());
-    }
-    write_journal_replacement(path, updated)
-}
-
 fn read_journal(path: &Path) -> Result<AdoptionJournal> {
     let value = metadata(path)?.ok_or("No pending adoption recovery journal")?;
     if value.file_type().is_symlink() || !value.is_file() {
@@ -1108,25 +1080,6 @@ fn read_journal(path: &Path) -> Result<AdoptionJournal> {
     }
     let bytes = fs::read(path).map_err(|e| format!("Cannot read adoption journal: {e}"))?;
     serde_json::from_slice(&bytes).map_err(|e| format!("Invalid adoption recovery journal: {e}"))
-}
-
-fn migrate_legacy_journal(path: &Path, journal: &AdoptionJournal) -> Result<AdoptionJournal> {
-    if journal.version == JOURNAL_VERSION {
-        return Ok(journal.clone());
-    }
-    let mut migrated = journal.clone();
-    migrated.version = JOURNAL_VERSION;
-    migrated.planned_paths = migrated
-        .entries
-        .iter()
-        .map(|entry| entry.relative.clone())
-        .collect();
-    for entry in &mut migrated.entries {
-        entry.transition = JournalTransition::Stable;
-    }
-    seal_journal(&mut migrated)?;
-    write_journal_update(path, journal, &migrated)?;
-    Ok(migrated)
 }
 
 fn write_journal_exclusive_with(
@@ -1170,7 +1123,7 @@ fn read_journal_with(
     };
     let bytes = context.read(path)?;
     serde_json::from_slice(&bytes)
-        .map_err(|error| format!("Invalid adoption recovery journal: {error}").into())
+        .map_err(|error| format!("Invalid adoption recovery journal: {error}"))
 }
 
 fn write_journal_update_with(
@@ -1294,57 +1247,12 @@ fn create_stage_with(
     ensure_parent_dirs_with(Some(context), target, relative)?;
     let path = target.join(relative);
     if context.file_state(&path)?.is_some() {
-        return Err(format!("Adoption staging path already exists: {relative}").into());
+        return Err(format!("Adoption staging path already exists: {relative}"));
     }
     context.write_new(&path, bytes)
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
-fn persist_stage(
-    source_root: &Path,
-    target: &Path,
-    journal_path: &Path,
-    journal: &mut AdoptionJournal,
-    entry_index: usize,
-    relative: &str,
-) -> Result<()> {
-    persist_stage_with_hook_with_context(
-        None,
-        source_root,
-        target,
-        journal_path,
-        journal,
-        entry_index,
-        relative,
-        || Ok(()),
-    )
-}
-
-#[cfg_attr(not(test), allow(dead_code))]
-fn persist_stage_with_hook<F>(
-    source_root: &Path,
-    target: &Path,
-    journal_path: &Path,
-    journal: &mut AdoptionJournal,
-    entry_index: usize,
-    relative: &str,
-    before_rename: F,
-) -> Result<()>
-where
-    F: FnOnce() -> Result<()>,
-{
-    persist_stage_with_hook_with_context(
-        None,
-        source_root,
-        target,
-        journal_path,
-        journal,
-        entry_index,
-        relative,
-        before_rename,
-    )
-}
-
+#[allow(clippy::too_many_arguments)] // These explicit inputs are the recovery transaction state.
 fn persist_stage_with_hook_with_context<F>(
     context: Option<&mutation::MutationContext>,
     source_root: &Path,
@@ -1578,25 +1486,6 @@ fn set_entry_transition_with(
     Ok(())
 }
 
-fn prepare_destination_for_replacement(
-    source_root: &Path,
-    target: &Path,
-    journal_path: &Path,
-    journal: &mut AdoptionJournal,
-    entry_index: usize,
-    expected: &JournalFileState,
-) -> Result<()> {
-    prepare_destination_for_replacement_with(
-        None,
-        source_root,
-        target,
-        journal_path,
-        journal,
-        entry_index,
-        expected,
-    )
-}
-
 fn prepare_destination_for_replacement_with(
     context: Option<&mutation::MutationContext>,
     source_root: &Path,
@@ -1709,7 +1598,9 @@ fn cleanup_stage_with(
         return Ok(());
     }
     if !stage_is_safe_prefix_with(Some(context), target, relative, expected)? {
-        return Err(format!("Preserving unrecognized adoption stage: {relative}").into());
+        return Err(format!(
+            "Preserving unrecognized adoption stage: {relative}"
+        ));
     }
     make_stage_writable_with(Some(context), &path, relative)?;
     let current = context
@@ -1728,15 +1619,6 @@ fn destination_matches_expected(
             && entry.transition == JournalTransition::AttributesCleared)
 }
 
-fn revalidate_journal_and_identity(
-    source_root: &Path,
-    target: &Path,
-    journal_path: &Path,
-    journal: &AdoptionJournal,
-) -> Result<()> {
-    revalidate_journal_and_identity_with(None, source_root, target, journal_path, journal)
-}
-
 fn revalidate_journal_and_identity_with(
     context: Option<&mutation::MutationContext>,
     source_root: &Path,
@@ -1748,25 +1630,6 @@ fn revalidate_journal_and_identity_with(
         return Err("Adoption recovery journal changed before replacement".into());
     }
     validate_live_identity_with(context, source_root, target, &journal.identity)
-}
-
-fn revalidate_destination_for_removal(
-    source_root: &Path,
-    target: &Path,
-    journal_path: &Path,
-    journal: &AdoptionJournal,
-    entry_index: usize,
-    expected: &JournalFileState,
-) -> Result<PathBuf> {
-    revalidate_destination_for_removal_with(
-        None,
-        source_root,
-        target,
-        journal_path,
-        journal,
-        entry_index,
-        expected,
-    )
 }
 
 fn revalidate_destination_for_removal_with(
@@ -1789,25 +1652,6 @@ fn revalidate_destination_for_removal_with(
         return Err(format!("Preserving concurrent edit at {}", entry.relative));
     }
     Ok(destination)
-}
-
-fn revalidate_stage_and_destination(
-    source_root: &Path,
-    target: &Path,
-    journal_path: &Path,
-    journal: &AdoptionJournal,
-    entry_index: usize,
-    expected: ReplacementExpectation<'_>,
-) -> Result<(PathBuf, PathBuf)> {
-    revalidate_stage_and_destination_with(
-        None,
-        source_root,
-        target,
-        journal_path,
-        journal,
-        entry_index,
-        expected,
-    )
 }
 
 fn revalidate_stage_and_destination_with(
@@ -1840,23 +1684,6 @@ fn revalidate_stage_and_destination_with(
         ));
     }
     Ok((stage_path, destination))
-}
-
-fn restore_entry(
-    source_root: &Path,
-    target: &Path,
-    journal_path: &Path,
-    journal: &mut AdoptionJournal,
-    entry_index: usize,
-) -> Result<bool> {
-    restore_entry_with_context(
-        None,
-        source_root,
-        target,
-        journal_path,
-        journal,
-        entry_index,
-    )
 }
 
 fn restore_entry_with_context(
@@ -1990,7 +1817,7 @@ fn restore_entry_with_context(
         .bytes
         .as_deref()
         .ok_or("Missing journal preimage")?;
-    let rollback_path = safe_path(target, &entry.rollback_stage)?;
+    let _rollback_path = safe_path(target, &entry.rollback_stage)?;
     let mut stage_ready = false;
     if file_state_with(context, target, &entry.rollback_stage)?
         .bytes
@@ -2097,15 +1924,6 @@ fn restore_entry_with_context(
     Ok(true)
 }
 
-fn remove_journal(
-    source_root: &Path,
-    target: &Path,
-    path: &Path,
-    identity: &JournalIdentity,
-) -> Result<()> {
-    remove_journal_with(None, source_root, target, path, identity)
-}
-
 fn remove_journal_with(
     context: Option<&mutation::MutationContext>,
     source_root: &Path,
@@ -2131,18 +1949,8 @@ fn remove_journal_with(
         if metadata(path)?.is_none() {
             return Ok(());
         }
-        fs::remove_file(path)
-            .map_err(|error| format!("Cannot remove recovery journal: {error}").into())
+        fs::remove_file(path).map_err(|error| format!("Cannot remove recovery journal: {error}"))
     }
-}
-
-fn recover_prepared(
-    source_root: &Path,
-    target: &Path,
-    journal_path: &Path,
-    journal: &mut AdoptionJournal,
-) -> Result<()> {
-    recover_prepared_with(None, source_root, target, journal_path, journal)
 }
 
 fn recover_prepared_with(
@@ -2196,15 +2004,6 @@ fn recover_prepared_with(
         journal_path,
         &journal.identity,
     )
-}
-
-fn cleanup_committed(
-    source_root: &Path,
-    target: &Path,
-    journal_path: &Path,
-    journal: &AdoptionJournal,
-) -> Result<()> {
-    cleanup_committed_with(None, source_root, target, journal_path, journal)
 }
 
 fn cleanup_committed_with(

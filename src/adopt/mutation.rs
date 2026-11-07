@@ -57,7 +57,7 @@ impl MutationContext {
             if rustix::process::geteuid().as_raw() == 0 {
                 return Err("Guidebook adoption mutations are paused when run as root".into());
             }
-            return Ok(());
+            Ok(())
         }
 
         #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
@@ -107,8 +107,7 @@ impl MutationContext {
         Err(format!(
             "Mutation path is outside the verified target and Git metadata roots: {}",
             path.display()
-        )
-        .into())
+        ))
     }
 
     pub(super) fn file_state(&self, path: &Path) -> super::Result<Option<JournalFileState>> {
@@ -124,10 +123,10 @@ impl MutationContext {
         let before = match parent.directory.symlink_metadata(&parent.leaf) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(format!("Cannot inspect {}: {error}", path.display()).into()),
+            Err(error) => return Err(format!("Cannot inspect {}: {error}", path.display())),
         };
         if before.file_type().is_symlink() || !before.is_file() {
-            return Err(format!("Expected a regular file at {}", path.display()).into());
+            return Err(format!("Expected a regular file at {}", path.display()));
         }
         let mut options = cap_std::fs::OpenOptions::new();
         options.read(true).follow(FollowSymlinks::No);
@@ -157,7 +156,7 @@ impl MutationContext {
     pub(super) fn read(&self, path: &Path) -> super::Result<Vec<u8>> {
         self.file_state(path)?
             .and_then(|state| state.bytes)
-            .ok_or_else(|| format!("File does not exist: {}", path.display()).into())
+            .ok_or_else(|| format!("File does not exist: {}", path.display()))
     }
 
     pub(super) fn sync_file(&self, path: &Path) -> super::Result<()> {
@@ -182,7 +181,7 @@ impl MutationContext {
             &self.dacl,
         )?;
         file.sync_all()
-            .map_err(|error| format!("Cannot sync {}: {error}", path.display()).into())
+            .map_err(|error| format!("Cannot sync {}: {error}", path.display()))
     }
 
     pub(super) fn validate_git_identity(&self, expected: &super::GitIdentity) -> super::Result<()> {
@@ -245,7 +244,7 @@ impl MutationContext {
             .symlink_metadata(&name)
             .map_err(|error| format!("Cannot inspect directory {}: {error}", path.display()))?;
         if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            return Err(format!("Refusing unsafe directory: {}", path.display()).into());
+            return Err(format!("Refusing unsafe directory: {}", path.display()));
         }
         check_transition(
             &parent,
@@ -342,8 +341,7 @@ impl MutationContext {
                     "Cannot safely use new file {}: {error}; cleanup also failed: {cleanup_error}",
                     path.display()
                 ),
-            }
-            .into());
+            });
         }
         if let Err(error) = file.write_all(contents).and_then(|()| file.sync_all()) {
             let cleanup = cleanup_created_file(
@@ -360,8 +358,7 @@ impl MutationContext {
                     "Cannot persist {}: {error}; cleanup also failed: {cleanup_error}",
                     path.display()
                 ),
-            }
-            .into());
+            });
         }
         Ok(())
     }
@@ -465,16 +462,14 @@ impl MutationContext {
                 return Err(format!(
                     "Published {} but cannot remove its temporary link: {error}",
                     path.display()
-                )
-                .into());
+                ));
             }
-            (Err(error), Ok(())) => return Err(error.into()),
+            (Err(error), Ok(())) => return Err(error),
             (Err(error), Err(cleanup_error)) => {
                 return Err(format!(
                     "{error}; cannot remove temporary file beside {}: {cleanup_error}",
                     path.display()
-                )
-                .into());
+                ));
             }
         }
         let published = self.file_state(path)?.ok_or("Published file disappeared")?;
@@ -482,8 +477,7 @@ impl MutationContext {
             return Err(format!(
                 "Published file contents did not match the staged bytes: {}",
                 path.display()
-            )
-            .into());
+            ));
         }
         Ok(())
     }
@@ -509,8 +503,7 @@ impl MutationContext {
             return Err(format!(
                 "Refusing to remove a changed mutation file: {}",
                 path.display()
-            )
-            .into());
+            ));
         }
         #[cfg(windows)]
         {
@@ -530,7 +523,7 @@ impl MutationContext {
             parent
                 .directory
                 .remove_file(&parent.leaf)
-                .map_err(|error| format!("Cannot remove {}: {error}", path.display()).into())
+                .map_err(|error| format!("Cannot remove {}: {error}", path.display()))
         }
     }
 
@@ -585,7 +578,6 @@ impl MutationContext {
                     from.display(),
                     to.display()
                 )
-                .into()
             })
     }
 
@@ -635,9 +627,8 @@ impl MutationContext {
         }
         #[cfg(not(unix))]
         permissions.set_readonly(expected.readonly);
-        file.set_permissions(permissions).map_err(|error| {
-            format!("Cannot set permissions on {}: {error}", path.display()).into()
-        })
+        file.set_permissions(permissions)
+            .map_err(|error| format!("Cannot set permissions on {}: {error}", path.display()))
     }
 
     pub(super) fn create_parent_dirs(&self, path: &Path) -> super::Result<()> {
@@ -769,7 +760,7 @@ fn create_directory_relative(parent: &Dir, name: &OsStr) -> std::io::Result<Dir>
         MaximumLength: name_length,
         Buffer: wide.as_mut_ptr(),
     };
-    let mut attributes = OBJECT_ATTRIBUTES {
+    let attributes = OBJECT_ATTRIBUTES {
         Length: std::mem::size_of::<OBJECT_ATTRIBUTES>() as u32,
         RootDirectory: parent.as_raw_handle() as _,
         ObjectName: &mut object_name,
@@ -857,7 +848,7 @@ fn cleanup_created_file(
         let _ = file;
         parent
             .remove_file(name)
-            .map_err(|error| format!("Cannot remove newly created file: {error}").into())
+            .map_err(|error| format!("Cannot remove newly created file: {error}"))
     }
 }
 
@@ -1014,7 +1005,10 @@ fn rename_open_file_relative(
 impl AnchoredDir {
     fn open(path: &Path, #[cfg(windows)] policy: &windows_acl::DaclPolicy) -> super::Result<Self> {
         if !path.is_absolute() {
-            return Err(format!("Mutation root must be absolute: {}", path.display()).into());
+            return Err(format!(
+                "Mutation root must be absolute: {}",
+                path.display()
+            ));
         }
         #[cfg(target_os = "linux")]
         let volume_root = PathBuf::from("/");
@@ -1047,8 +1041,7 @@ impl AnchoredDir {
                     return Err(format!(
                         "Mutation root has an unsafe component: {}",
                         path.display()
-                    )
-                    .into());
+                    ));
                 };
                 let parent = ancestors.last().ok_or("Missing filesystem root handle")?;
                 let before = parent.symlink_metadata(name).map_err(|error| {
@@ -1061,8 +1054,7 @@ impl AnchoredDir {
                     return Err(format!(
                         "Refusing symlink or non-directory ancestry component: {}",
                         name.to_string_lossy()
-                    )
-                    .into());
+                    ));
                 }
                 check_transition(
                     parent,
@@ -1163,16 +1155,14 @@ impl AnchoredDir {
                     return Err(format!(
                         "Cannot inspect mutation parent {}: {error}",
                         relative.display()
-                    )
-                    .into());
+                    ));
                 }
             };
             if metadata.file_type().is_symlink() || !metadata.is_dir() {
                 return Err(format!(
                     "Refusing symlink or non-directory mutation parent: {}",
                     relative.display()
-                )
-                .into());
+                ));
             }
             check_transition(
                 &current,
@@ -1224,8 +1214,7 @@ impl AnchoredDir {
                     return Err(format!(
                         "Cannot inspect mutation parent {}: {error}",
                         relative.display()
-                    )
-                    .into());
+                    ));
                 }
             };
             let (child, metadata, created_here) = match before {
@@ -1234,8 +1223,7 @@ impl AnchoredDir {
                         return Err(format!(
                             "Refusing symlink or non-directory mutation parent: {}",
                             relative.display()
-                        )
-                        .into());
+                        ));
                     }
                     let child = current.open_dir_nofollow(name).map_err(|error| {
                         format!(
@@ -1271,8 +1259,7 @@ impl AnchoredDir {
                             return Err(format!(
                                 "Refusing symlink or non-directory mutation parent: {}",
                                 relative.display()
-                            )
-                            .into());
+                            ));
                         }
                         let child = current.open_dir_nofollow(name).map_err(|open_error| {
                             format!(
@@ -1286,14 +1273,14 @@ impl AnchoredDir {
                         return Err(format!(
                             "Cannot create protected mutation parent {}: {error}",
                             relative.display()
-                        )
-                        .into());
+                        ));
                     }
                 },
                 None => {
-                    return Err(
-                        format!("Mutation parent {} does not exist", relative.display()).into(),
-                    );
+                    return Err(format!(
+                        "Mutation parent {} does not exist",
+                        relative.display()
+                    ));
                 }
             };
             let verification = (|| {
@@ -1340,7 +1327,7 @@ impl AnchoredDir {
                         relative.display()
                     ),
                 };
-                return Err(message.into());
+                return Err(message);
             }
             let child = Arc::new(child);
             cache.insert(relative.clone(), Arc::clone(&child));
@@ -1385,7 +1372,7 @@ fn validated_components(relative: &Path) -> super::Result<Vec<OsString>> {
     for component in relative.components() {
         match component {
             Component::Normal(value) => result.push(value.to_os_string()),
-            _ => return Err(format!("Unsafe mutation path: {}", relative.display()).into()),
+            _ => return Err(format!("Unsafe mutation path: {}", relative.display())),
         }
     }
     Ok(result)
@@ -1603,8 +1590,7 @@ fn create_temp(
                         Err(cleanup_error) => format!(
                             "Cannot safely use temporary adoption journal: {error}; cleanup also failed: {cleanup_error}"
                         ),
-                    }
-                    .into());
+                    });
                 }
                 if let Err(error) = file.write_all(contents).and_then(|()| file.sync_all()) {
                     let cleanup = cleanup_created_file(
@@ -1620,15 +1606,14 @@ fn create_temp(
                         Err(cleanup_error) => format!(
                             "Cannot persist temporary adoption journal: {error}; cleanup also failed: {cleanup_error}"
                         ),
-                    }
-                    .into());
+                    });
                 }
                 drop(file);
                 return Ok(name);
             }
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
-                return Err(format!("Cannot create temporary adoption journal: {error}").into());
+                return Err(format!("Cannot create temporary adoption journal: {error}"));
             }
         }
     }
@@ -1653,10 +1638,11 @@ mod windows_acl {
             WinBuiltinAdministratorsSid, WinCreatorOwnerSid, WinLocalSystemSid,
         },
         Storage::FileSystem::{
-            DRIVE_FIXED, FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_APPEND_DATA, FILE_DELETE_CHILD,
-            FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, GetDriveTypeW, READ_CONTROL,
+            FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_APPEND_DATA, FILE_DELETE_CHILD,
+            FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA, GetDriveTypeW,
         },
         System::Threading::{GetCurrentProcess, OpenProcessToken},
+        System::WindowsProgramming::DRIVE_FIXED,
     };
 
     const WRITE_DAC: u32 = 0x0004_0000;
@@ -2005,12 +1991,7 @@ mod linux_tests {
     fn root_is_rejected_before_mutation_paths_are_opened() {
         let result = MutationContext::ensure_supported();
         if rustix::process::geteuid().as_raw() == 0 {
-            assert!(
-                result
-                    .err()
-                    .expect("root must be rejected")
-                    .contains("root")
-            );
+            assert!(result.expect_err("root must be rejected").contains("root"));
         } else {
             assert!(result.is_ok());
         }

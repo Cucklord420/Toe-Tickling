@@ -5,8 +5,9 @@ use toe_tickling::adopt;
 #[test]
 fn public_apply_pauses_before_any_target_write() {
     let scratch = tempfile::tempdir().unwrap();
-    let target = scratch.path().join("target project");
-    let outside = scratch.path().join("outside sentinel.txt");
+    let scratch_path = scratch.path().canonicalize().unwrap();
+    let target = scratch_path.join("target project");
+    let outside = scratch_path.join("outside sentinel.txt");
     fs::create_dir(&target).unwrap();
     fs::write(&outside, b"outside data must remain unchanged").unwrap();
 
@@ -41,8 +42,9 @@ fn public_apply_pauses_before_any_target_write() {
 #[test]
 fn public_recover_pauses_before_reading_or_removing_journal() {
     let scratch = tempfile::tempdir().unwrap();
-    let target = scratch.path().join("target project");
-    let outside = scratch.path().join("outside sentinel.txt");
+    let scratch_path = scratch.path().canonicalize().unwrap();
+    let target = scratch_path.join("target project");
+    let outside = scratch_path.join("outside sentinel.txt");
     fs::create_dir(&target).unwrap();
     fs::write(&outside, b"outside data must remain unchanged").unwrap();
 
