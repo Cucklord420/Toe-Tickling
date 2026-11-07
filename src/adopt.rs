@@ -2421,8 +2421,22 @@ mod tests {
         crate::security::checked_root(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap()
     }
 
+    fn mutation_fixture_tempdir() -> tempfile::TempDir {
+        #[cfg(windows)]
+        {
+            let profile = std::env::var_os("USERPROFILE")
+                .map(PathBuf::from)
+                .expect("Windows test profile is available");
+            tempfile::tempdir_in(profile).unwrap()
+        }
+        #[cfg(not(windows))]
+        {
+            tempfile::tempdir().unwrap()
+        }
+    }
+
     fn target_fixture() -> (tempfile::TempDir, PathBuf) {
-        let scratch = tempfile::tempdir().unwrap();
+        let scratch = mutation_fixture_tempdir();
         let target = scratch.path().join("target");
         fs::create_dir(&target).unwrap();
         isolated_git(&target, &["init", "-q"]);
@@ -2452,7 +2466,7 @@ mod tests {
     }
 
     fn empty_target_fixture() -> (tempfile::TempDir, PathBuf) {
-        let scratch = tempfile::tempdir().unwrap();
+        let scratch = mutation_fixture_tempdir();
         let target = scratch.path().join("empty-target");
         fs::create_dir(&target).unwrap();
         isolated_git(&target, &["init", "-q"]);
