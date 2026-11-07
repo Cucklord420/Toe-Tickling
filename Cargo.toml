@@ -7,6 +7,8 @@ license = "AGPL-3.0-only"
 description = "Living rule book rendering and evidence receipt validation"
 
 [dependencies]
+cap-fs-ext = "=4.0.3"
+cap-std = "=4.0.3"
 chrono = { version = "0.4.42", default-features = false, features = ["std"] }
 chrono-tz = "0.10.4"
 serde = { version = "1", features = ["derive"] }
@@ -17,6 +19,21 @@ tempfile = "3"
 regex = "1"
 serde_yaml_ng = "0.10"
 pulldown-cmark = { version = "=0.13.4", default-features = false }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = {
+    version = "=0.61.2",
+    features = [
+        "Win32_Foundation",
+        "Win32_Security",
+        "Win32_Security_Authorization",
+        "Win32_Storage_FileSystem",
+        "Win32_System_Threading",
+        "Win32_System_IO",
+        "Wdk_Foundation",
+        "Wdk_Storage_FileSystem",
+    ],
+}
 
 [workspace]
 members = ["rust/audit"]

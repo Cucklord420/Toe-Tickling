@@ -36,6 +36,9 @@ fn parse_adopt_args(args: &[String]) -> Result<AdoptArgs> {
 }
 
 fn execute_adopt(root: &Path, args: AdoptArgs) -> Result<String> {
+    if matches!(args.mode, AdoptMode::Apply | AdoptMode::Recover) {
+        toe_tickling::adopt::ensure_mutations_ready()?;
+    }
     if args.mode == AdoptMode::Recover {
         toe_tickling::adopt::recover(root, &args.target)?;
         return serde_json::to_string_pretty(&serde_json::json!({"mode": "recovered"}))
@@ -197,28 +200,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn adopt_recover_dispatches_to_recovery() {
+    fn adopt_recover_pauses_before_inspecting_an_invalid_target() {
         let scratch = tempfile::tempdir().unwrap();
         let target = scratch.path().join("target");
-        fs::create_dir(&target).unwrap();
-        let mut command = std::process::Command::new("git");
-        command.args(["init", "-q"]).current_dir(&target);
-        for (key, _) in env::vars_os() {
-            if key
-                .to_string_lossy()
-                .to_ascii_uppercase()
-                .starts_with("GIT_")
-            {
-                command.env_remove(key);
-            }
-        }
-        let output = command.output().unwrap();
-        assert!(output.status.success());
         let args = vec![target.to_string_lossy().into_owned(), "--recover".into()];
         let parsed = parse_adopt_args(&args).unwrap();
         assert_eq!(parsed.mode, AdoptMode::Recover);
-        let result = execute_adopt(Path::new(env!("CARGO_MANIFEST_DIR")), parsed).unwrap();
-        assert!(result.contains("\"mode\": \"recovered\""));
+        let error = execute_adopt(Path::new(env!("CARGO_MANIFEST_DIR")), parsed).unwrap_err();
+        assert!(error.contains("paused"), "unexpected error: {error}");
+        assert!(!target.exists());
+    }
+
+    #[test]
+    fn adopt_apply_pauses_before_inspecting_an_invalid_target() {
+        let scratch = tempfile::tempdir().unwrap();
+        let target = scratch.path().join("target");
+        let args = vec![target.to_string_lossy().into_owned(), "--apply".into()];
+        let parsed = parse_adopt_args(&args).unwrap();
+        let error = execute_adopt(Path::new(env!("CARGO_MANIFEST_DIR")), parsed).unwrap_err();
+        assert!(error.contains("paused"), "unexpected error: {error}");
+        assert!(!target.exists());
     }
 
     #[test]
@@ -228,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn adopt_recover_pending_journal_before_planning() {
+    fn adopt_apply_pauses_before_inspecting_a_pending_journal() {
         let scratch = tempfile::tempdir().unwrap();
         let target = scratch.path().join("target");
         fs::create_dir(&target).unwrap();
@@ -257,16 +258,19 @@ mod tests {
             b"pending",
         )
         .unwrap();
+        let journal_path = target.join(".git/.toe-tickling-adoption-v1.json");
+        let journal_before = fs::read(&journal_path).unwrap();
 
         let args = vec![target.to_string_lossy().into_owned(), "--apply".into()];
         let parsed = parse_adopt_args(&args).unwrap();
 
         let error = execute_adopt(Path::new(env!("CARGO_MANIFEST_DIR")), parsed).unwrap_err();
 
-        assert!(error.contains("Pending adoption recovery"));
+        assert!(error.contains("paused"), "unexpected error: {error}");
         assert_eq!(
             fs::read(target.join(".ai-guidebook/GUIDEBOOK.md")).unwrap(),
             b"partial install"
         );
+        assert_eq!(fs::read(journal_path).unwrap(), journal_before);
     }
 }

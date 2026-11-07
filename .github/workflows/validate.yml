@@ -54,3 +54,17 @@ jobs:
         run: cargo test --locked -p toe-tickling --lib adopt::tests::apply_rolls_back
       - name: Adoption recovery CLI tests
         run: cargo test --locked -p toe-tickling --bin toe-tickling adopt_recover_
+      - name: Windows pinned-directory race regression
+        run: cargo test --locked -p toe-tickling --lib adopt::mutation::windows_tests
+
+  validate-macos-adoption-pause:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5, inherited inspected pin
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup show
+      - name: Confirm public adoption mutations stay paused
+        run: cargo test --locked -p toe-tickling --test adoption_pause
