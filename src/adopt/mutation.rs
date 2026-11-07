@@ -72,10 +72,16 @@ impl MutationContext {
         let target = AnchoredDir::open(
             target,
             #[cfg(windows)]
+            &[],
+            #[cfg(windows)]
             &dacl,
         )?;
+        #[cfg(windows)]
+        let git_protected_roots = vec![target.path.clone()];
         let git = AnchoredDir::open(
             git_dir,
+            #[cfg(windows)]
+            &git_protected_roots,
             #[cfg(windows)]
             &dacl,
         )?;
@@ -257,6 +263,8 @@ impl MutationContext {
             &metadata,
             #[cfg(windows)]
             &self.dacl,
+            #[cfg(windows)]
+            windows_acl::DaclScope::ProtectedObject,
         )?;
         let child = parent.open_dir_nofollow(&name).map_err(|error| {
             format!(
@@ -269,6 +277,8 @@ impl MutationContext {
             &metadata,
             #[cfg(windows)]
             &self.dacl,
+            #[cfg(windows)]
+            windows_acl::DaclScope::ProtectedObject,
         )?;
         let relative = PathBuf::from_iter(components);
         anchor
@@ -1009,7 +1019,11 @@ fn rename_open_file_relative(
 }
 
 impl AnchoredDir {
-    fn open(path: &Path, #[cfg(windows)] policy: &windows_acl::DaclPolicy) -> super::Result<Self> {
+    fn open(
+        path: &Path,
+        #[cfg(windows)] protected_roots: &[PathBuf],
+        #[cfg(windows)] policy: &windows_acl::DaclPolicy,
+    ) -> super::Result<Self> {
         if !path.is_absolute() {
             return Err(format!(
                 "Mutation root must be absolute: {}",
@@ -1032,11 +1046,15 @@ impl AnchoredDir {
                         volume_root.display()
                     )
                 })?;
+            #[cfg(windows)]
+            let root_scope = dacl_scope_for_path(&volume_root, path, protected_roots);
             verify_directory(
                 &current,
                 &current.dir_metadata().map_err(|error| error.to_string())?,
                 #[cfg(windows)]
                 policy,
+                #[cfg(windows)]
+                root_scope,
             )
             .map_err(|error| {
                 format!(
@@ -1074,6 +1092,8 @@ impl AnchoredDir {
                     &before,
                     #[cfg(windows)]
                     policy,
+                    #[cfg(windows)]
+                    dacl_scope_for_path(&current_path, path, protected_roots),
                 )
                 .map_err(|error| {
                     format!(
@@ -1093,6 +1113,8 @@ impl AnchoredDir {
                     &before,
                     #[cfg(windows)]
                     policy,
+                    #[cfg(windows)]
+                    dacl_scope_for_path(&current_path, path, protected_roots),
                 )
                 .map_err(|error| {
                     format!(
@@ -1195,6 +1217,8 @@ impl AnchoredDir {
                 &metadata,
                 #[cfg(windows)]
                 policy,
+                #[cfg(windows)]
+                windows_acl::DaclScope::ProtectedObject,
             )?;
             let child = current.open_dir_nofollow(name).map_err(|error| {
                 format!(
@@ -1207,6 +1231,8 @@ impl AnchoredDir {
                 &metadata,
                 #[cfg(windows)]
                 policy,
+                #[cfg(windows)]
+                windows_acl::DaclScope::ProtectedObject,
             )?;
             let child = Arc::new(child);
             cache.insert(relative.clone(), Arc::clone(&child));
@@ -1315,12 +1341,16 @@ impl AnchoredDir {
                     &metadata,
                     #[cfg(windows)]
                     policy,
+                    #[cfg(windows)]
+                    windows_acl::DaclScope::ProtectedObject,
                 )?;
                 verify_directory(
                     &child,
                     &metadata,
                     #[cfg(windows)]
                     policy,
+                    #[cfg(windows)]
+                    windows_acl::DaclScope::ProtectedObject,
                 )
             })();
             if let Err(error) = verification {
@@ -1360,6 +1390,23 @@ impl AnchoredDir {
             current = child;
         }
         Ok(current)
+    }
+}
+
+#[cfg(windows)]
+fn dacl_scope_for_path(
+    current_path: &Path,
+    selected_root: &Path,
+    protected_roots: &[PathBuf],
+) -> windows_acl::DaclScope {
+    if current_path.starts_with(selected_root)
+        || protected_roots
+            .iter()
+            .any(|protected_root| current_path.starts_with(protected_root))
+    {
+        windows_acl::DaclScope::ProtectedObject
+    } else {
+        windows_acl::DaclScope::ExistingPathAncestry
     }
 }
 
@@ -1408,6 +1455,7 @@ fn verify_directory(
     dir: &Dir,
     expected: &cap_std::fs::Metadata,
     #[cfg(windows)] policy: &windows_acl::DaclPolicy,
+    #[cfg(windows)] scope: windows_acl::DaclScope,
 ) -> super::Result<()> {
     let opened = dir.dir_metadata().map_err(|error| error.to_string())?;
     if !opened.is_dir() || opened.file_type().is_symlink() {
@@ -1418,6 +1466,8 @@ fn verify_directory(
         &opened,
         #[cfg(windows)]
         policy,
+        #[cfg(windows)]
+        scope,
         dir,
     )
 }
@@ -1426,12 +1476,15 @@ fn check_transition(
     parent: &Dir,
     child: &cap_std::fs::Metadata,
     #[cfg(windows)] policy: &windows_acl::DaclPolicy,
+    #[cfg(windows)] scope: windows_acl::DaclScope,
 ) -> super::Result<()> {
     let parent_metadata = parent.dir_metadata().map_err(|error| error.to_string())?;
     check_directory_metadata(
         &parent_metadata,
         #[cfg(windows)]
         policy,
+        #[cfg(windows)]
+        scope,
         parent,
     )?;
     #[cfg(target_os = "linux")]
@@ -1449,7 +1502,7 @@ fn check_transition(
         }
     }
     #[cfg(windows)]
-    let _ = (child, policy);
+    let _ = (child, policy, scope);
     #[cfg(not(any(target_os = "linux", windows)))]
     let _ = child;
     Ok(())
@@ -1458,6 +1511,7 @@ fn check_transition(
 fn check_directory_metadata(
     dir_metadata: &cap_std::fs::Metadata,
     #[cfg(windows)] policy: &windows_acl::DaclPolicy,
+    #[cfg(windows)] scope: windows_acl::DaclScope,
     dir: &Dir,
 ) -> super::Result<()> {
     #[cfg(not(windows))]
@@ -1478,7 +1532,7 @@ fn check_directory_metadata(
         }
     }
     #[cfg(windows)]
-    policy.check_handle(dir.as_raw_handle())?;
+    policy.check_handle(dir.as_raw_handle(), scope)?;
     Ok(())
 }
 
@@ -1504,7 +1558,10 @@ fn verify_file(
         }
     }
     #[cfg(windows)]
-    policy.check_handle(file.as_raw_handle())?;
+    policy.check_handle(
+        file.as_raw_handle(),
+        windows_acl::DaclScope::ProtectedObject,
+    )?;
     Ok(())
 }
 
@@ -1674,8 +1731,22 @@ mod windows_acl {
     const WRITE_DAC: u32 = 0x0004_0000;
     const WRITE_OWNER: u32 = 0x0008_0000;
     const DELETE: u32 = 0x0001_0000;
+    const ACCESS_SYSTEM_SECURITY: u32 = 0x0100_0000;
+    const MAXIMUM_ALLOWED: u32 = 0x0200_0000;
+    const GENERIC_READ: u32 = 0x8000_0000;
+    const GENERIC_EXECUTE: u32 = 0x2000_0000;
     const GENERIC_WRITE: u32 = 0x4000_0000;
     const GENERIC_ALL: u32 = 0x1000_0000;
+    const GENERIC_RIGHTS: u32 = GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | GENERIC_ALL;
+    const KNOWN_FILE_ACCESS_RIGHTS: u32 =
+        0x000f_01ff | 0x0010_0000 | ACCESS_SYSTEM_SECURITY | MAXIMUM_ALLOWED | GENERIC_RIGHTS;
+    const CHILD_CREATION_RIGHTS: u32 = FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    pub(super) enum DaclScope {
+        ExistingPathAncestry,
+        ProtectedObject,
+    }
 
     pub(super) struct DaclPolicy {
         trusted_sids: Vec<Vec<u8>>,
@@ -1694,7 +1765,11 @@ mod windows_acl {
             })
         }
 
-        pub(super) fn check_handle(&self, raw: RawHandle) -> super::super::super::Result<()> {
+        pub(super) fn check_handle(
+            &self,
+            raw: RawHandle,
+            scope: DaclScope,
+        ) -> super::super::super::Result<()> {
             let handle = raw as HANDLE;
             let mut owner: PSID = std::ptr::null_mut();
             let mut dacl: *mut ACL = std::ptr::null_mut();
@@ -1720,7 +1795,7 @@ mod windows_acl {
                 )
                 .into());
             }
-            let result = unsafe { self.check_descriptor(owner, dacl, descriptor) };
+            let result = unsafe { self.check_descriptor(owner, dacl, descriptor, scope) };
             unsafe {
                 LocalFree(descriptor);
             }
@@ -1732,6 +1807,7 @@ mod windows_acl {
             owner: PSID,
             dacl: *mut ACL,
             descriptor: *mut c_void,
+            scope: DaclScope,
         ) -> super::super::super::Result<()> {
             if owner.is_null() || unsafe { IsValidSid(owner) } == 0 || !self.trusted(owner) {
                 return Err("Mutation object's owner is not trusted".into());
@@ -1796,6 +1872,12 @@ mod windows_acl {
                     return Err("Mutation object's DACL contains a truncated ACE".into());
                 }
                 let mask = unsafe { *((ace_pointer as *const u8).add(4) as *const u32) };
+                if !access_mask_is_supported(mask) {
+                    return Err(
+                        "Mutation object's DACL contains generic, maximum-allowed, or unknown access rights"
+                            .into(),
+                    );
+                }
                 if header.AceType == 1 {
                     // ACCESS_DENIED_ACE_TYPE
                     continue;
@@ -1821,28 +1903,15 @@ mod windows_acl {
                     {
                         return Err("Mutation object's DACL contains an invalid allow SID".into());
                     }
-                    if mask & (GENERIC_WRITE | GENERIC_ALL) != 0 {
-                        return Err(
-                            "Mutation object's DACL contains unresolved generic write rights"
-                                .into(),
-                        );
-                    }
-                    if mask & mutation_rights() != 0 {
-                        if !self.trusted(sid) {
-                            return Err(format!(
-                                "Mutation object's DACL grants another local user mutation rights (mask 0x{:08x})",
-                                mask & mutation_rights()
-                            ));
-                        }
+                    if !self.trusted(sid) && !untrusted_mutation_grant_allowed(mask, scope) {
+                        return Err(format!(
+                            "Mutation object's DACL grants another local user mutation rights (mask 0x{:08x})",
+                            mask & mutation_rights()
+                        ));
                     }
                     continue;
                 }
-                if mask & (mutation_rights() | GENERIC_WRITE | GENERIC_ALL) != 0 {
-                    return Err(
-                        "Mutation object's DACL contains an unsupported ACE with mutation rights"
-                            .into(),
-                    );
-                }
+                return Err("Mutation object's DACL contains an unsupported ACE type".into());
             }
             Ok(())
         }
@@ -1865,6 +1934,18 @@ mod windows_acl {
             | DELETE
             | WRITE_DAC
             | WRITE_OWNER
+            | ACCESS_SYSTEM_SECURITY
+    }
+
+    fn access_mask_is_supported(mask: u32) -> bool {
+        mask & (GENERIC_RIGHTS | MAXIMUM_ALLOWED) == 0 && mask & !KNOWN_FILE_ACCESS_RIGHTS == 0
+    }
+
+    fn untrusted_mutation_grant_allowed(mask: u32, scope: DaclScope) -> bool {
+        let mutation_grant = mask & mutation_rights();
+        mutation_grant == 0
+            || (scope == DaclScope::ExistingPathAncestry
+                && mutation_grant & !CHILD_CREATION_RIGHTS == 0)
     }
 
     fn current_user_sid() -> super::super::super::Result<Vec<u8>> {
@@ -1982,7 +2063,11 @@ mod windows_acl {
 
     #[cfg(test)]
     mod tests {
-        use super::mutation_rights;
+        use super::DELETE;
+        use super::{
+            DaclScope, GENERIC_ALL, GENERIC_EXECUTE, GENERIC_READ, GENERIC_WRITE, MAXIMUM_ALLOWED,
+            access_mask_is_supported, mutation_rights, untrusted_mutation_grant_allowed,
+        };
         use windows_sys::Win32::Storage::FileSystem::{
             FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_DELETE_CHILD, FILE_WRITE_DATA,
         };
@@ -1997,6 +2082,63 @@ mod windows_acl {
             ] {
                 assert_ne!(mutation_rights() & right, 0);
             }
+        }
+
+        #[test]
+        fn child_creation_is_allowed_only_on_existing_path_ancestry() {
+            for creation_right in [FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY] {
+                assert!(untrusted_mutation_grant_allowed(
+                    creation_right,
+                    DaclScope::ExistingPathAncestry
+                ));
+                assert!(!untrusted_mutation_grant_allowed(
+                    creation_right,
+                    DaclScope::ProtectedObject
+                ));
+                for forbidden_right in [FILE_DELETE_CHILD, DELETE, FILE_WRITE_DATA] {
+                    assert!(!untrusted_mutation_grant_allowed(
+                        creation_right | forbidden_right,
+                        DaclScope::ExistingPathAncestry
+                    ));
+                }
+            }
+        }
+
+        #[test]
+        fn generic_maximum_and_unknown_access_masks_are_rejected() {
+            for unsupported in [
+                GENERIC_READ,
+                GENERIC_WRITE,
+                GENERIC_EXECUTE,
+                GENERIC_ALL,
+                MAXIMUM_ALLOWED,
+                0x0080_0000,
+            ] {
+                assert!(!access_mask_is_supported(unsupported));
+            }
+            assert!(access_mask_is_supported(0x0000_0001));
+            assert!(access_mask_is_supported(FILE_ADD_SUBDIRECTORY));
+        }
+
+        #[test]
+        fn git_metadata_keeps_shared_target_root_strict() {
+            let volume = std::path::PathBuf::from(r"C:\");
+            let target = volume.join(r"Users\runner\work\target");
+            let git = target.join(".git");
+            let protected_roots = vec![target.clone()];
+
+            assert_eq!(
+                super::super::dacl_scope_for_path(&volume, &git, &protected_roots),
+                DaclScope::ExistingPathAncestry
+            );
+            assert_eq!(
+                super::super::dacl_scope_for_path(&target, &git, &protected_roots),
+                DaclScope::ProtectedObject
+            );
+            assert_eq!(
+                super::super::dacl_scope_for_path(&git, &git, &protected_roots),
+                DaclScope::ProtectedObject
+            );
         }
     }
 }
@@ -2144,6 +2286,19 @@ mod windows_tests {
         );
     }
 
+    fn grant_everyone_add_subdirectory(path: &Path) {
+        let result = Command::new("icacls.exe")
+            .arg(path)
+            .args(["/grant", "*S-1-1-0:(AD)"])
+            .output()
+            .expect("Windows ACL editor is available on the CI runner");
+        assert!(
+            result.status.success(),
+            "icacls failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
     #[test]
     fn pinned_directory_handle_blocks_renaming_its_path() {
         let work = mutation_fixture_tempdir();
@@ -2208,6 +2363,24 @@ mod windows_tests {
         };
 
         assert!(error.contains("DACL"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn child_creation_on_selected_root_is_rejected_before_mutation() {
+        let work = mutation_fixture_tempdir();
+        let (target, git) = target_and_git(work.path());
+        let sentinel = target.join("sentinel");
+        fs::write(&sentinel, b"unchanged target bytes").unwrap();
+        grant_everyone_add_subdirectory(&target);
+
+        let error = match MutationContext::open(&target, &git) {
+            Ok(_) => panic!("untrusted creation rights on a protected target must be rejected"),
+            Err(error) => error,
+        };
+
+        assert!(error.contains("DACL"), "unexpected error: {error}");
+        assert_eq!(fs::read(sentinel).unwrap(), b"unchanged target bytes");
+        assert!(!target.join(".ai-guidebook").exists());
     }
 
     #[test]
