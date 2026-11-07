@@ -752,15 +752,24 @@ fn validate_snapshot_pair(
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-fn create_journal(
-    context: &mutation::MutationContext,
+fn create_journal(target: &Path, root: &Path, plan: &AdoptionPlan) -> Result<AdoptionJournal> {
+    create_journal_with(None, target, root, plan)
+}
+
+fn create_journal_with(
+    context: Option<&mutation::MutationContext>,
     target: &Path,
     root: &Path,
     plan: &AdoptionPlan,
 ) -> Result<AdoptionJournal> {
     let source = source_repo(root)?;
-    let git_dir = context.git_path();
-    context.validate_git_identity(&plan.git_identity)?;
+    let (git_dir, identity) = if let Some(context) = context {
+        context.validate_git_identity(&plan.git_identity)?;
+        (context.git_path().to_path_buf(), plan.git_identity.clone())
+    } else {
+        let (git_dir, _) = journal_path(target)?;
+        (git_dir, GitIdentity::read(target)?)
+    };
     let target_text = target
         .to_str()
         .ok_or("Canonical adoption target must be UTF-8")?
@@ -772,7 +781,7 @@ fn create_journal(
     let transaction = transaction_id(target, &source);
     let mut entries = Vec::new();
     for (relative, content) in &plan.files {
-        let before = file_state_with(Some(context), target, relative)?;
+        let before = file_state_with(context, target, relative)?;
         if before.bytes != plan.baseline[relative] {
             return Err(format!(
                 "Target changed after planning: {relative}; create a fresh plan"
@@ -785,7 +794,12 @@ fn create_journal(
         let stage = stage_relative(relative, &transaction, false)?;
         let rollback_stage = stage_relative(relative, &transaction, true)?;
         for candidate in [&stage, &rollback_stage] {
-            if context.file_state(&target.join(candidate))?.is_some() {
+            let exists = if let Some(context) = context {
+                context.file_state(&target.join(candidate))?.is_some()
+            } else {
+                metadata(&safe_path(target, candidate)?)?.is_some()
+            };
+            if exists {
                 return Err(format!("Adoption staging path already exists: {candidate}"));
             }
         }
@@ -809,7 +823,7 @@ fn create_journal(
         identity: JournalIdentity {
             target: target_text,
             git_dir: git_dir_text,
-            git_identity: git_identity_fingerprint(&plan.git_identity),
+            git_identity: git_identity_fingerprint(&identity),
             source_repo: source,
         },
         planned_paths,
@@ -1409,7 +1423,10 @@ where
             &stage_path,
             &destination,
             &entry.after,
-            current_destination.as_ref(),
+            current_destination
+                .bytes
+                .as_ref()
+                .map(|_| &current_destination),
         )?;
     } else {
         fs::rename(&stage_path, &destination)
@@ -1473,7 +1490,7 @@ fn make_stage_writable_with(
             }
         }
         #[cfg(not(windows))]
-        let _ = relative;
+        let _ = (context, relative);
         Ok(())
     } else {
         make_stage_writable(path, relative)
@@ -1874,7 +1891,7 @@ fn restore_entry_with_context(
         if journal.entries[entry_index].transition != JournalTransition::AttributesCleared {
             return Err(format!("Preserving concurrent edit at {}", entry.relative));
         }
-        validate_live_identity_with(context, source_root, &journal.identity)?;
+        validate_live_identity_with(context, source_root, target, &journal.identity)?;
         if file_state_with(context, target, &entry.relative)? != before_writable {
             return Err(format!("Preserving concurrent edit at {}", entry.relative));
         }
@@ -1916,7 +1933,7 @@ fn restore_entry_with_context(
     if current != entry.after && current != after_writable {
         return Err(format!("Preserving concurrent edit at {}", entry.relative));
     }
-    validate_live_identity_with(context, source_root, &journal.identity)?;
+    validate_live_identity_with(context, source_root, target, &journal.identity)?;
     if entry.before.bytes.is_none() {
         let live = file_state_with(context, target, &entry.relative)?;
         if live != entry.after && live != after_writable {
@@ -1941,8 +1958,10 @@ fn restore_entry_with_context(
             &entry.after,
         )?;
         if let Some(context) = context {
-            let current = file_state_with(Some(context), target, &entry.relative)?
-                .ok_or("Installed output disappeared before removal")?;
+            let current = file_state_with(Some(context), target, &entry.relative)?;
+            if current.bytes.is_none() {
+                return Err("Installed output disappeared before removal".into());
+            }
             context.remove_file(&destination, &current)?;
         } else {
             fs::remove_file(&destination)
@@ -2051,7 +2070,10 @@ fn restore_entry_with_context(
             &stage_path,
             &destination,
             &entry.before,
-            current_destination.as_ref(),
+            current_destination
+                .bytes
+                .as_ref()
+                .map(|_| &current_destination),
         )?;
     } else {
         fs::rename(&stage_path, &destination)
@@ -2416,7 +2438,7 @@ fn apply_transaction(
     if !changed {
         return Ok(());
     }
-    let mut journal = create_journal(&context, &plan.target, &plan.source_root, plan)?;
+    let mut journal = create_journal_with(Some(&context), &plan.target, &plan.source_root, plan)?;
     if validate_target(&plan.source_root, &plan.target)? != plan.checked_target
         || context.validate_git_identity(&plan.git_identity).is_err()
     {

@@ -5,7 +5,9 @@ use super::{JournalFileState, JournalPermissions};
 #[cfg(unix)]
 use cap_fs_ext::OsMetadataExt;
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
-use cap_std::{ambient_authority, fs::Dir};
+#[cfg(any(target_os = "linux", windows))]
+use cap_std::ambient_authority;
+use cap_std::fs::Dir;
 use std::{
     collections::HashMap,
     ffi::{OsStr, OsString},
@@ -52,8 +54,7 @@ impl MutationContext {
 
         #[cfg(target_os = "linux")]
         {
-            use std::os::unix::process::geteuid;
-            if geteuid() == 0 {
+            if rustix::process::geteuid().as_raw() == 0 {
                 return Err("Guidebook adoption mutations are paused when run as root".into());
             }
             return Ok(());
@@ -1423,9 +1424,11 @@ fn check_transition(
     #[cfg(target_os = "linux")]
     {
         use cap_fs_ext::OsMetadataExt;
-        use std::os::unix::process::geteuid;
         let mode = parent_metadata.mode() & 0o7777;
-        if mode & 0o022 != 0 && mode & 0o1000 != 0 && child.uid() != geteuid() {
+        if mode & 0o022 != 0
+            && mode & 0o1000 != 0
+            && child.uid() != rustix::process::geteuid().as_raw()
+        {
             return Err(
                 "Writable sticky ancestry is safe only when its child belongs to the current user"
                     .into(),
@@ -1452,8 +1455,7 @@ fn check_directory_metadata(
     #[cfg(target_os = "linux")]
     {
         use cap_fs_ext::OsMetadataExt;
-        use std::os::unix::process::geteuid;
-        let uid = geteuid();
+        let uid = rustix::process::geteuid().as_raw();
         let mode = dir_metadata.mode() & 0o7777;
         if dir_metadata.uid() != uid && dir_metadata.uid() != 0 {
             return Err("Mutation ancestry must be owned by the current user or root".into());
@@ -1480,8 +1482,7 @@ fn verify_file(
     #[cfg(target_os = "linux")]
     {
         use cap_fs_ext::OsMetadataExt;
-        use std::os::unix::process::geteuid;
-        let uid = geteuid();
+        let uid = rustix::process::geteuid().as_raw();
         if metadata.uid() != uid && metadata.uid() != 0 {
             return Err("Mutation files must be owned by the current user or root".into());
         }
@@ -1991,11 +1992,7 @@ mod windows_acl {
 #[cfg(all(test, target_os = "linux"))]
 mod linux_tests {
     use super::MutationContext;
-    use std::{
-        fs,
-        os::unix::{fs::PermissionsExt, process::geteuid},
-        path::Path,
-    };
+    use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 
     fn target_and_git(work: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
         let target = work.join("target");
@@ -2007,7 +2004,7 @@ mod linux_tests {
     #[test]
     fn root_is_rejected_before_mutation_paths_are_opened() {
         let result = MutationContext::ensure_supported();
-        if geteuid() == 0 {
+        if rustix::process::geteuid().as_raw() == 0 {
             assert!(
                 result
                     .err()
@@ -2021,7 +2018,7 @@ mod linux_tests {
 
     #[test]
     fn writable_nonsticky_ancestry_is_rejected_without_touching_target() {
-        if geteuid() == 0 {
+        if rustix::process::geteuid().as_raw() == 0 {
             // Root is rejected even earlier by policy; CI's unprivileged job
             // exercises the writable-ancestor check below.
             return;
@@ -2045,7 +2042,7 @@ mod linux_tests {
 
     #[test]
     fn protected_target_allows_handle_anchored_writes() {
-        if geteuid() == 0 {
+        if rustix::process::geteuid().as_raw() == 0 {
             return;
         }
         let work = tempfile::tempdir().unwrap();
@@ -2060,7 +2057,7 @@ mod linux_tests {
 
     #[test]
     fn pinned_directory_write_cannot_follow_a_replacement_symlink() {
-        if geteuid() == 0 {
+        if rustix::process::geteuid().as_raw() == 0 {
             return;
         }
         let work = tempfile::tempdir().unwrap();
