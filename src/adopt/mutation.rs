@@ -142,7 +142,13 @@ impl MutationContext {
             &opened,
             #[cfg(windows)]
             &self.dacl,
-        )?;
+        )
+        .map_err(|error| {
+            format!(
+                "Mutation file {} failed its security check: {error}",
+                path.display()
+            )
+        })?;
         same_file(&before, &opened)?;
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)
@@ -1031,8 +1037,15 @@ impl AnchoredDir {
                 &current.dir_metadata().map_err(|error| error.to_string())?,
                 #[cfg(windows)]
                 policy,
-            )?;
+            )
+            .map_err(|error| {
+                format!(
+                    "Mutation volume root {} is not protected: {error}",
+                    volume_root.display()
+                )
+            })?;
             let mut ancestors = vec![current];
+            let mut current_path = volume_root.clone();
             let relative = path.strip_prefix(&volume_root).map_err(|error| {
                 format!("Mutation path has an unsupported volume prefix: {error}")
             })?;
@@ -1061,19 +1074,32 @@ impl AnchoredDir {
                     &before,
                     #[cfg(windows)]
                     policy,
-                )?;
+                )
+                .map_err(|error| {
+                    format!(
+                        "Mutation ancestry parent {} is not protected: {error}",
+                        current_path.display()
+                    )
+                })?;
                 let child = parent.open_dir_nofollow(name).map_err(|error| {
                     format!(
                         "Cannot open ancestry component {} without following links: {error}",
                         name.to_string_lossy()
                     )
                 })?;
+                current_path.push(name);
                 verify_directory(
                     &child,
                     &before,
                     #[cfg(windows)]
                     policy,
-                )?;
+                )
+                .map_err(|error| {
+                    format!(
+                        "Mutation ancestry {} is not protected: {error}",
+                        current_path.display()
+                    )
+                })?;
                 ancestors.push(child);
             }
             let root = Arc::new(ancestors.pop().ok_or("Missing mutation root handle")?);
