@@ -901,6 +901,16 @@ fn validate_live_identity_with(
     Ok(())
 }
 
+#[cfg(test)]
+fn validate_journal(
+    source_root: &Path,
+    target: &Path,
+    git_dir: &Path,
+    journal: &AdoptionJournal,
+) -> Result<()> {
+    validate_journal_with(None, source_root, target, git_dir, journal)
+}
+
 fn validate_journal_with(
     context: Option<&mutation::MutationContext>,
     source_root: &Path,
