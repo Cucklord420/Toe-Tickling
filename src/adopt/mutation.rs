@@ -2103,6 +2103,13 @@ mod windows_tests {
     use super::MutationContext;
     use std::{fs, path::Path, process::Command};
 
+    fn mutation_fixture_tempdir() -> tempfile::TempDir {
+        let profile = std::env::var_os("USERPROFILE")
+            .map(std::path::PathBuf::from)
+            .expect("Windows test profile is available");
+        tempfile::tempdir_in(profile).unwrap()
+    }
+
     fn target_and_git(work: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
         let target = work.join("target");
         let git = target.join(".git");
@@ -2130,7 +2137,7 @@ mod windows_tests {
 
     #[test]
     fn pinned_directory_handle_blocks_renaming_its_path() {
-        let work = tempfile::tempdir().unwrap();
+        let work = mutation_fixture_tempdir();
         let (target, git) = target_and_git(work.path());
         let pinned = target.join("pinned");
         let renamed = target.join("renamed");
@@ -2153,7 +2160,7 @@ mod windows_tests {
 
     #[test]
     fn handle_relative_rename_and_delete_preserve_verified_file_state() {
-        let work = tempfile::tempdir().unwrap();
+        let work = mutation_fixture_tempdir();
         let (target, git) = target_and_git(work.path());
         let context = MutationContext::open(&target, &git).unwrap();
         let parent = target.join("nested");
@@ -2182,7 +2189,7 @@ mod windows_tests {
 
     #[test]
     fn broad_write_dacl_is_rejected_before_mutation() {
-        let work = tempfile::tempdir().unwrap();
+        let work = mutation_fixture_tempdir();
         let (target, git) = target_and_git(work.path());
         grant_everyone_modify(&target, true);
 
@@ -2196,7 +2203,7 @@ mod windows_tests {
 
     #[test]
     fn unsafe_journal_dacl_is_rejected_without_changing_its_bytes() {
-        let work = tempfile::tempdir().unwrap();
+        let work = mutation_fixture_tempdir();
         let (target, git) = target_and_git(work.path());
         let context = MutationContext::open(&target, &git).unwrap();
         let journal = git.join("journal.json");
@@ -2214,7 +2221,7 @@ mod windows_tests {
 
     #[test]
     fn unsafe_inherited_stage_dacl_is_rejected_before_content_is_written() {
-        let work = tempfile::tempdir().unwrap();
+        let work = mutation_fixture_tempdir();
         let (target, git) = target_and_git(work.path());
         let context = MutationContext::open(&target, &git).unwrap();
         let stage = target.join(".ai-guidebook/stage.tmp");
@@ -2246,7 +2253,7 @@ mod windows_tests {
 
     #[test]
     fn directory_reparse_point_is_rejected_without_touching_outside_sentinel() {
-        let work = tempfile::tempdir().unwrap();
+        let work = mutation_fixture_tempdir();
         let (target, git) = target_and_git(work.path());
         let outside = work.path().join("outside");
         let redirect = target.join("redirect");
