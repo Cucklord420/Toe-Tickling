@@ -574,11 +574,13 @@ impl MutationContext {
         }
         #[cfg(windows)]
         {
+            let same_parent = Arc::ptr_eq(&from_parent.directory, &to_parent.directory);
             return rename_file_relative(
                 &from_parent.directory,
                 &from_parent.leaf,
                 &to_parent.directory,
                 &to_parent.leaf,
+                same_parent,
                 expected_source,
                 expected_destination,
                 &self.dacl,
@@ -916,6 +918,7 @@ fn rename_file_relative(
     source_name: &OsStr,
     destination_parent: &Dir,
     destination_name: &OsStr,
+    same_parent: bool,
     expected_source: &JournalFileState,
     expected_destination: Option<&JournalFileState>,
     policy: &windows_acl::DaclPolicy,
@@ -945,7 +948,7 @@ fn rename_file_relative(
 
     rename_open_file_relative(
         &source,
-        destination_parent,
+        (!same_parent).then_some(destination_parent),
         destination_name,
         expected_destination.is_some(),
     )
@@ -954,7 +957,7 @@ fn rename_file_relative(
 #[cfg(windows)]
 fn rename_open_file_relative(
     file: &cap_std::fs::File,
-    destination_parent: &Dir,
+    destination_parent: Option<&Dir>,
     destination_name: &OsStr,
     replace_if_exists: bool,
 ) -> super::Result<()> {
@@ -979,10 +982,8 @@ fn rename_open_file_relative(
         .len()
         .checked_mul(std::mem::size_of::<u16>())
         .ok_or("Rename filename length overflowed")?;
-    // SetFileInformationByHandle requires the complete structure size plus the
-    // variable filename bytes. `offset_of!(FileName) + filename_bytes` omits
-    // the structure's trailing padding and is rejected by Windows with
-    // ERROR_INVALID_PARAMETER for relative renames.
+    // Windows requires the complete structure size plus the variable filename
+    // bytes, including any trailing padding in the structure.
     let buffer_length = std::mem::size_of::<FILE_RENAME_INFO>()
         .checked_add(filename_bytes)
         .ok_or("Rename information length overflowed")?;
@@ -995,7 +996,9 @@ fn rename_open_file_relative(
         (*information).Anonymous = FILE_RENAME_INFO_0 {
             ReplaceIfExists: replace_if_exists,
         };
-        (*information).RootDirectory = destination_parent.as_raw_handle() as HANDLE;
+        (*information).RootDirectory = destination_parent.map_or(std::ptr::null_mut(), |parent| {
+            parent.as_raw_handle() as HANDLE
+        });
         (*information).FileNameLength = name_length;
         std::ptr::copy_nonoverlapping(
             wide.as_ptr(),
