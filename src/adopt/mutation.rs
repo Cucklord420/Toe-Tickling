@@ -2505,7 +2505,7 @@ mod windows_tests {
             ffi::OsStrExt,
             io::{AsRawHandle, FromRawHandle, OwnedHandle},
         },
-        path::{Path, PathBuf},
+        path::Path,
         process::Command,
     };
 
@@ -2541,7 +2541,8 @@ mod windows_tests {
         if handle == INVALID_HANDLE_VALUE {
             return Err(io::Error::last_os_error());
         }
-        let directory = Dir::from(unsafe { OwnedHandle::from_raw_handle(handle as _) });
+        let directory =
+            cap_std::fs::Dir::from(unsafe { OwnedHandle::from_raw_handle(handle as _) });
         policy
             .check_handle(
                 directory.as_raw_handle(),
