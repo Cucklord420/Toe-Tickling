@@ -1874,7 +1874,7 @@ mod windows_acl {
                 let mask = unsafe { *((ace_pointer as *const u8).add(4) as *const u32) };
                 if !access_mask_is_supported(mask) {
                     return Err(format!(
-                        "Mutation object's DACL contains generic write/all, maximum-allowed, or unknown access rights (mask 0x{mask:08x})"
+                        "Mutation object's DACL contains maximum-allowed or unknown access rights (mask 0x{mask:08x})"
                     ));
                 }
                 if header.AceType == 1 {
@@ -1902,7 +1902,7 @@ mod windows_acl {
                     {
                         return Err("Mutation object's DACL contains an invalid allow SID".into());
                     }
-                    if !self.trusted(sid) && !untrusted_mutation_grant_allowed(mask, scope) {
+                    if !allow_ace_grant_is_permitted(mask, scope, self.trusted(sid)) {
                         return Err(format!(
                             "Mutation object's DACL grants another local user mutation rights (mask 0x{:08x})",
                             mask & mutation_rights()
@@ -1934,11 +1934,16 @@ mod windows_acl {
             | WRITE_DAC
             | WRITE_OWNER
             | ACCESS_SYSTEM_SECURITY
+            | GENERIC_WRITE
+            | GENERIC_ALL
     }
 
     fn access_mask_is_supported(mask: u32) -> bool {
-        mask & (GENERIC_WRITE | GENERIC_ALL | MAXIMUM_ALLOWED) == 0
-            && mask & !KNOWN_FILE_ACCESS_RIGHTS == 0
+        mask & MAXIMUM_ALLOWED == 0 && mask & !KNOWN_FILE_ACCESS_RIGHTS == 0
+    }
+
+    fn allow_ace_grant_is_permitted(mask: u32, scope: DaclScope, trusted: bool) -> bool {
+        trusted || untrusted_mutation_grant_allowed(mask, scope)
     }
 
     fn untrusted_mutation_grant_allowed(mask: u32, scope: DaclScope) -> bool {
@@ -2066,7 +2071,7 @@ mod windows_acl {
         use super::{
             ACCESS_SYSTEM_SECURITY, DELETE, DaclScope, GENERIC_ALL, GENERIC_EXECUTE, GENERIC_READ,
             GENERIC_WRITE, MAXIMUM_ALLOWED, WRITE_DAC, WRITE_OWNER, access_mask_is_supported,
-            mutation_rights, untrusted_mutation_grant_allowed,
+            allow_ace_grant_is_permitted, mutation_rights, untrusted_mutation_grant_allowed,
         };
         use windows_sys::Win32::Storage::FileSystem::{
             FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_APPEND_DATA, FILE_DELETE_CHILD,
@@ -2124,23 +2129,46 @@ mod windows_acl {
         }
 
         #[test]
-        fn generic_read_and_execute_access_masks_are_supported() {
-            assert!(access_mask_is_supported(GENERIC_READ));
-            assert!(access_mask_is_supported(GENERIC_EXECUTE));
+        fn generic_read_and_execute_are_non_mutating() {
+            for read_or_execute in [
+                GENERIC_READ,
+                GENERIC_EXECUTE,
+                GENERIC_READ | GENERIC_EXECUTE,
+            ] {
+                assert!(access_mask_is_supported(read_or_execute));
+                assert!(untrusted_mutation_grant_allowed(
+                    read_or_execute,
+                    DaclScope::ExistingPathAncestry
+                ));
+                assert!(untrusted_mutation_grant_allowed(
+                    read_or_execute,
+                    DaclScope::ProtectedObject
+                ));
+            }
             assert!(access_mask_is_supported(GENERIC_READ | 0x0000_0001));
             assert!(access_mask_is_supported(0x0000_0001));
             assert!(access_mask_is_supported(FILE_ADD_SUBDIRECTORY));
         }
 
         #[test]
-        fn generic_write_all_maximum_and_unknown_access_masks_are_rejected() {
-            for unsupported in [
+        fn generic_write_and_all_are_only_permitted_for_trusted_trustees() {
+            for generic_write in [
                 GENERIC_WRITE,
-                GENERIC_WRITE | GENERIC_READ,
                 GENERIC_ALL,
-                MAXIMUM_ALLOWED,
-                0x0080_0000,
+                GENERIC_READ | GENERIC_WRITE,
+                GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | 0x0010_0000,
             ] {
+                assert!(access_mask_is_supported(generic_write));
+                for scope in [DaclScope::ExistingPathAncestry, DaclScope::ProtectedObject] {
+                    assert!(!allow_ace_grant_is_permitted(generic_write, scope, false));
+                    assert!(allow_ace_grant_is_permitted(generic_write, scope, true));
+                }
+            }
+        }
+
+        #[test]
+        fn maximum_allowed_and_unknown_access_masks_are_rejected() {
+            for unsupported in [MAXIMUM_ALLOWED, 0x0080_0000] {
                 assert!(!access_mask_is_supported(unsupported));
             }
         }
