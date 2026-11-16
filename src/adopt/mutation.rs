@@ -2851,6 +2851,8 @@ mod windows_tests {
 
     #[test]
     fn pinned_directory_handle_blocks_renaming_its_path() {
+        use windows_sys::Win32::Foundation::ERROR_SHARING_VIOLATION;
+
         let work = mutation_fixture_tempdir();
         let (target, git) = target_and_git(work.path());
         let pinned = target.join("pinned");
@@ -2861,12 +2863,15 @@ mod windows_tests {
 
         let error = fs::rename(&pinned, &renamed).unwrap_err();
 
+        let rename_was_blocked = matches!(
+            error.kind(),
+            std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::Other
+        ) || error.raw_os_error() == Some(ERROR_SHARING_VIOLATION as i32);
         assert!(
-            matches!(
-                error.kind(),
-                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::Other
-            ),
-            "unexpected rename error: {error}"
+            rename_was_blocked,
+            "unexpected rename error: {error} (kind {:?}, raw code {:?})",
+            error.kind(),
+            error.raw_os_error()
         );
         assert!(pinned.is_dir());
         assert!(!renamed.exists());
