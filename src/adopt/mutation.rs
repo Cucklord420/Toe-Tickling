@@ -1739,6 +1739,7 @@ mod windows_acl {
     const GENERIC_EXECUTE: u32 = 0x2000_0000;
     const GENERIC_WRITE: u32 = 0x4000_0000;
     const GENERIC_ALL: u32 = 0x1000_0000;
+    const INHERIT_ONLY_ACE_FLAG: u8 = 0x08;
     const GENERIC_RIGHTS: u32 = GENERIC_READ | GENERIC_WRITE | GENERIC_EXECUTE | GENERIC_ALL;
     const KNOWN_FILE_ACCESS_RIGHTS: u32 =
         0x000f_01ff | 0x0010_0000 | ACCESS_SYSTEM_SECURITY | MAXIMUM_ALLOWED | GENERIC_RIGHTS;
@@ -1911,6 +1912,7 @@ mod windows_acl {
                         mask,
                         scope,
                         self.trusted_for_object(sid, owner),
+                        header.AceFlags,
                     ) {
                         return Err(format!(
                             "Mutation object's DACL grants an untrusted trustee mutation rights (mask 0x{:08x}, flags 0x{:02x}, SID {})",
@@ -1959,8 +1961,18 @@ mod windows_acl {
         mask & MAXIMUM_ALLOWED == 0 && mask & !KNOWN_FILE_ACCESS_RIGHTS == 0
     }
 
-    fn allow_ace_grant_is_permitted(mask: u32, scope: DaclScope, trusted: bool) -> bool {
-        trusted || untrusted_mutation_grant_allowed(mask, scope)
+    fn allow_ace_grant_is_permitted(
+        mask: u32,
+        scope: DaclScope,
+        trusted: bool,
+        ace_flags: u8,
+    ) -> bool {
+        // Inherit-only grants do not apply to this object. The handle-anchored
+        // path walk checks each descendant's own DACL, where inherited grants
+        // become effective and must pass this same policy.
+        trusted
+            || (ace_flags & INHERIT_ONLY_ACE_FLAG == 0
+                && untrusted_mutation_grant_allowed(mask, scope))
     }
 
     fn untrusted_mutation_grant_allowed(mask: u32, scope: DaclScope) -> bool {
@@ -2196,10 +2208,33 @@ mod windows_acl {
             ] {
                 assert!(access_mask_is_supported(generic_write));
                 for scope in [DaclScope::ExistingPathAncestry, DaclScope::ProtectedObject] {
-                    assert!(!allow_ace_grant_is_permitted(generic_write, scope, false));
-                    assert!(allow_ace_grant_is_permitted(generic_write, scope, true));
+                    assert!(!allow_ace_grant_is_permitted(
+                        generic_write,
+                        scope,
+                        false,
+                        0
+                    ));
+                    assert!(allow_ace_grant_is_permitted(generic_write, scope, true, 0));
                 }
             }
+        }
+
+        #[test]
+        fn inherit_only_write_grant_is_ignored_only_on_the_attached_object() {
+            let generic_write = GENERIC_WRITE | 0x0010_0000;
+
+            assert!(allow_ace_grant_is_permitted(
+                generic_write,
+                DaclScope::ProtectedObject,
+                false,
+                INHERIT_ONLY_ACE_FLAG | 0x03,
+            ));
+            assert!(!allow_ace_grant_is_permitted(
+                generic_write,
+                DaclScope::ProtectedObject,
+                false,
+                0x03,
+            ));
         }
 
         #[test]
