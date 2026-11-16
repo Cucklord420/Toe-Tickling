@@ -1873,10 +1873,9 @@ mod windows_acl {
                 }
                 let mask = unsafe { *((ace_pointer as *const u8).add(4) as *const u32) };
                 if !access_mask_is_supported(mask) {
-                    return Err(
-                        "Mutation object's DACL contains generic, maximum-allowed, or unknown access rights"
-                            .into(),
-                    );
+                    return Err(format!(
+                        "Mutation object's DACL contains generic write/all, maximum-allowed, or unknown access rights (mask 0x{mask:08x})"
+                    ));
                 }
                 if header.AceType == 1 {
                     // ACCESS_DENIED_ACE_TYPE
@@ -1938,7 +1937,8 @@ mod windows_acl {
     }
 
     fn access_mask_is_supported(mask: u32) -> bool {
-        mask & (GENERIC_RIGHTS | MAXIMUM_ALLOWED) == 0 && mask & !KNOWN_FILE_ACCESS_RIGHTS == 0
+        mask & (GENERIC_WRITE | GENERIC_ALL | MAXIMUM_ALLOWED) == 0
+            && mask & !KNOWN_FILE_ACCESS_RIGHTS == 0
     }
 
     fn untrusted_mutation_grant_allowed(mask: u32, scope: DaclScope) -> bool {
@@ -2105,19 +2105,25 @@ mod windows_acl {
         }
 
         #[test]
-        fn generic_maximum_and_unknown_access_masks_are_rejected() {
+        fn generic_read_and_execute_access_masks_are_supported() {
+            assert!(access_mask_is_supported(GENERIC_READ));
+            assert!(access_mask_is_supported(GENERIC_EXECUTE));
+            assert!(access_mask_is_supported(GENERIC_READ | 0x0000_0001));
+            assert!(access_mask_is_supported(0x0000_0001));
+            assert!(access_mask_is_supported(FILE_ADD_SUBDIRECTORY));
+        }
+
+        #[test]
+        fn generic_write_all_maximum_and_unknown_access_masks_are_rejected() {
             for unsupported in [
-                GENERIC_READ,
                 GENERIC_WRITE,
-                GENERIC_EXECUTE,
+                GENERIC_WRITE | GENERIC_READ,
                 GENERIC_ALL,
                 MAXIMUM_ALLOWED,
                 0x0080_0000,
             ] {
                 assert!(!access_mask_is_supported(unsupported));
             }
-            assert!(access_mask_is_supported(0x0000_0001));
-            assert!(access_mask_is_supported(FILE_ADD_SUBDIRECTORY));
         }
 
         #[test]

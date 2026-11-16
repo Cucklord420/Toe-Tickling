@@ -44,6 +44,8 @@ jobs:
         run: rustup show
       - name: Windows drive-root inspection regression test
         run: cargo test --locked -p toe-tickling --lib security::tests::checked_root_accepts_native_drive_prefix
+      - name: Windows DACL access-mask regression tests
+        run: cargo test --locked -p toe-tickling --lib adopt::mutation::windows_acl::tests
       - name: Transaction regression tests
         run: cargo test --locked -p toe-tickling --lib guide::build_transaction_tests
       - name: Adoption recovery regression tests
