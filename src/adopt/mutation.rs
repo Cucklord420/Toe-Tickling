@@ -1750,6 +1750,7 @@ mod windows_acl {
 
     pub(super) struct DaclPolicy {
         trusted_sids: Vec<Vec<u8>>,
+        owner_rights_sid: Vec<u8>,
     }
 
     impl DaclPolicy {
@@ -1760,8 +1761,10 @@ mod windows_acl {
             let creator_owner = well_known_sid(WinCreatorOwnerSid)?;
             let trusted_installer =
                 string_sid("S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464")?;
+            let owner_rights_sid = string_sid("S-1-3-4")?;
             Ok(Self {
                 trusted_sids: vec![current, system, admins, creator_owner, trusted_installer],
+                owner_rights_sid,
             })
         }
 
@@ -1902,7 +1905,11 @@ mod windows_acl {
                     {
                         return Err("Mutation object's DACL contains an invalid allow SID".into());
                     }
-                    if !allow_ace_grant_is_permitted(mask, scope, self.trusted(sid)) {
+                    if !allow_ace_grant_is_permitted(
+                        mask,
+                        scope,
+                        self.trusted_for_object(sid, owner),
+                    ) {
                         return Err(format!(
                             "Mutation object's DACL grants another local user mutation rights (mask 0x{:08x})",
                             mask & mutation_rights()
@@ -1919,6 +1926,12 @@ mod windows_acl {
             self.trusted_sids
                 .iter()
                 .any(|candidate| unsafe { EqualSid(sid, candidate.as_ptr() as PSID) != 0 })
+        }
+
+        fn trusted_for_object(&self, sid: PSID, owner: PSID) -> bool {
+            self.trusted(sid)
+                || (self.trusted(owner)
+                    && unsafe { EqualSid(sid, self.owner_rights_sid.as_ptr() as PSID) != 0 })
         }
     }
 
@@ -2068,11 +2081,14 @@ mod windows_acl {
 
     #[cfg(test)]
     mod tests {
+        use super::string_sid;
         use super::{
-            ACCESS_SYSTEM_SECURITY, DELETE, DaclScope, GENERIC_ALL, GENERIC_EXECUTE, GENERIC_READ,
-            GENERIC_WRITE, MAXIMUM_ALLOWED, WRITE_DAC, WRITE_OWNER, access_mask_is_supported,
-            allow_ace_grant_is_permitted, mutation_rights, untrusted_mutation_grant_allowed,
+            ACCESS_SYSTEM_SECURITY, DELETE, DaclPolicy, DaclScope, GENERIC_ALL, GENERIC_EXECUTE,
+            GENERIC_READ, GENERIC_WRITE, MAXIMUM_ALLOWED, WRITE_DAC, WRITE_OWNER,
+            access_mask_is_supported, allow_ace_grant_is_permitted, mutation_rights,
+            untrusted_mutation_grant_allowed, well_known_sid,
         };
+        use windows_sys::Win32::Security::{PSID, WinBuiltinUsersSid};
         use windows_sys::Win32::Storage::FileSystem::{
             FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_APPEND_DATA, FILE_DELETE_CHILD,
             FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA,
@@ -2164,6 +2180,18 @@ mod windows_acl {
                     assert!(allow_ace_grant_is_permitted(generic_write, scope, true));
                 }
             }
+        }
+
+        #[test]
+        fn owner_rights_ace_is_trusted_only_when_object_owner_is_trusted() {
+            let policy = DaclPolicy::current().unwrap();
+            let owner_rights = string_sid("S-1-3-4").unwrap();
+            let owner_rights_sid = owner_rights.as_ptr() as PSID;
+            let trusted_owner = policy.trusted_sids[0].as_ptr() as PSID;
+            let local_users = well_known_sid(WinBuiltinUsersSid).unwrap();
+
+            assert!(policy.trusted_for_object(owner_rights_sid, trusted_owner));
+            assert!(!policy.trusted_for_object(owner_rights_sid, local_users.as_ptr() as PSID));
         }
 
         #[test]
