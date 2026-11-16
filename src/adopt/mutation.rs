@@ -424,6 +424,7 @@ impl MutationContext {
                         &temp,
                         &parent.directory,
                         &parent.leaf,
+                        true,
                         &source_state,
                         destination_state.as_ref(),
                         &self.dacl,
