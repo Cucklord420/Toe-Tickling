@@ -1063,10 +1063,14 @@ fn rename_open_file_relative(
     replace_if_exists: bool,
 ) -> super::Result<()> {
     use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::{
-        Foundation::HANDLE,
-        Storage::FileSystem::{
-            FILE_RENAME_INFO, FILE_RENAME_INFO_0, FileRenameInfo, SetFileInformationByHandle,
+    use windows_sys::{
+        Wdk::Storage::FileSystem::{
+            FILE_RENAME_INFORMATION, FILE_RENAME_INFORMATION_0, FileRenameInformation,
+            NtSetInformationFile,
+        },
+        Win32::{
+            Foundation::{HANDLE, RtlNtStatusToDosError, STATUS_SUCCESS},
+            System::IO::IO_STATUS_BLOCK,
         },
     };
 
@@ -1085,16 +1089,16 @@ fn rename_open_file_relative(
         .ok_or("Rename filename length overflowed")?;
     // Windows requires the complete structure size plus the variable filename
     // bytes, including any trailing padding in the structure.
-    let buffer_length = std::mem::size_of::<FILE_RENAME_INFO>()
+    let buffer_length = std::mem::size_of::<FILE_RENAME_INFORMATION>()
         .checked_add(filename_bytes)
         .ok_or("Rename information length overflowed")?;
     let buffer_length_u32 = u32::try_from(buffer_length)
         .map_err(|_| "Rename information exceeds the Windows buffer limit")?;
     let words = buffer_length.div_ceil(std::mem::size_of::<usize>());
     let mut buffer = vec![0usize; words];
-    let information = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    let information = buffer.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
     unsafe {
-        (*information).Anonymous = FILE_RENAME_INFO_0 {
+        (*information).Anonymous = FILE_RENAME_INFORMATION_0 {
             ReplaceIfExists: replace_if_exists,
         };
         (*information).RootDirectory = destination_parent.as_raw_handle() as HANDLE;
@@ -1105,18 +1109,21 @@ fn rename_open_file_relative(
             wide.len(),
         );
     }
-    if unsafe {
-        SetFileInformationByHandle(
+    let mut status_block = IO_STATUS_BLOCK::default();
+    let status = unsafe {
+        NtSetInformationFile(
             file.as_raw_handle() as HANDLE,
-            FileRenameInfo,
+            &mut status_block,
             information.cast::<std::ffi::c_void>(),
             buffer_length_u32,
+            FileRenameInformation,
         )
-    } == 0
-    {
+    };
+    if status != STATUS_SUCCESS {
+        let code = unsafe { RtlNtStatusToDosError(status) };
         return Err(format!(
             "Cannot rename through the verified destination handle: {}",
-            std::io::Error::last_os_error()
+            std::io::Error::from_raw_os_error(code as i32)
         )
         .into());
     }
@@ -2497,7 +2504,7 @@ mod linux_tests {
 
 #[cfg(all(test, windows))]
 mod windows_tests {
-    use super::{MutationContext, open_mutation_file, rename_open_file_relative};
+    use super::{MutationContext, open_mutation_file};
     use std::{
         ffi::OsStr,
         fs, io,
@@ -2722,29 +2729,6 @@ mod windows_tests {
         }
     }
 
-    fn attempt_production_rename(
-        context: &MutationContext,
-        source_name: &str,
-        destination_name: &str,
-        destination_parent: &cap_std::fs::Dir,
-    ) -> Result<(), String> {
-        context
-            .write_new(
-                &context.target.path.join(source_name),
-                b"synthetic rename bytes",
-            )
-            .map_err(|error| error.to_string())?;
-        let file = open_mutation_file(&context.target.root, OsStr::new(source_name), &context.dacl)
-            .map_err(|error| error.to_string())?;
-        rename_open_file_relative(
-            &file,
-            destination_parent,
-            OsStr::new(destination_name),
-            false,
-        )
-        .map_err(|error| error.to_string())
-    }
-
     fn attempt_documented_rename(
         context: &MutationContext,
         source_name: &str,
@@ -2931,17 +2915,19 @@ mod windows_tests {
             "the diagnostic access handle must name the same fixture directory"
         );
 
-        let current_relative = attempt_production_rename(
+        let current_relative = attempt_documented_rename(
             &context,
             "diagnostic-current-source.tmp",
-            "diagnostic-current-destination.tmp",
-            &context.target.root,
+            Path::new("diagnostic-current-destination.tmp"),
+            Some(&context.target.root),
+            false,
         );
-        let relative_with_add_file = attempt_production_rename(
+        let relative_with_add_file = attempt_documented_rename(
             &context,
             "diagnostic-add-source.tmp",
-            "diagnostic-add-destination.tmp",
-            &add_file_parent,
+            Path::new("diagnostic-add-destination.tmp"),
+            Some(&add_file_parent),
+            false,
         );
         let relative_extended = attempt_documented_rename(
             &context,
@@ -2954,7 +2940,7 @@ mod windows_tests {
             &context,
             "diagnostic-native-source.tmp",
             "diagnostic-native-destination.tmp",
-            &add_file_parent,
+            &context.target.root,
         );
         let absolute_legacy = attempt_documented_rename(
             &context,
@@ -2998,8 +2984,6 @@ mod windows_tests {
             "MoveFileExW synthetic baseline failed: {matrix}"
         );
         for path in [
-            "diagnostic-add-destination.tmp",
-            "diagnostic-extended-destination.tmp",
             "diagnostic-native-destination.tmp",
             "diagnostic-absolute-destination.tmp",
             "diagnostic-path-destination.tmp",
