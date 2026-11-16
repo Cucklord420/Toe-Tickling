@@ -266,7 +266,7 @@ impl MutationContext {
             #[cfg(windows)]
             windows_acl::DaclScope::ProtectedObject,
         )?;
-        let child = parent.open_dir_nofollow(&name).map_err(|error| {
+        let child = open_directory_nofollow(&parent, &name).map_err(|error| {
             format!(
                 "Cannot open directory {} without following links: {error}",
                 path.display()
@@ -424,7 +424,6 @@ impl MutationContext {
                         &temp,
                         &parent.directory,
                         &parent.leaf,
-                        true,
                         &source_state,
                         destination_state.as_ref(),
                         &self.dacl,
@@ -575,13 +574,11 @@ impl MutationContext {
         }
         #[cfg(windows)]
         {
-            let same_parent = Arc::ptr_eq(&from_parent.directory, &to_parent.directory);
             return rename_file_relative(
                 &from_parent.directory,
                 &from_parent.leaf,
                 &to_parent.directory,
                 &to_parent.leaf,
-                same_parent,
                 expected_source,
                 expected_destination,
                 &self.dacl,
@@ -750,7 +747,7 @@ fn create_directory_relative(parent: &Dir, name: &OsStr) -> std::io::Result<Dir>
             },
             Storage::FileSystem::{
                 DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
-                FILE_SHARE_READ, FILE_SHARE_WRITE, READ_CONTROL, SYNCHRONIZE,
+                FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, READ_CONTROL, SYNCHRONIZE,
             },
         },
     };
@@ -792,7 +789,12 @@ fn create_directory_relative(parent: &Dir, name: &OsStr) -> std::io::Result<Dir>
     let status = unsafe {
         NtCreateFile(
             &mut handle,
-            FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE | DELETE,
+            FILE_LIST_DIRECTORY
+                | FILE_TRAVERSE
+                | FILE_READ_ATTRIBUTES
+                | READ_CONTROL
+                | SYNCHRONIZE
+                | DELETE,
             &attributes,
             &mut status_block,
             std::ptr::null(),
@@ -821,6 +823,103 @@ fn create_directory_relative(parent: &Dir, name: &OsStr) -> std::io::Result<Dir>
     }
     let owned = unsafe { OwnedHandle::from_raw_handle(handle as _) };
     Ok(Dir::from(owned))
+}
+
+#[cfg(windows)]
+fn open_directory_relative(parent: &Dir, name: &OsStr) -> std::io::Result<Dir> {
+    use std::os::{
+        windows::ffi::OsStrExt,
+        windows::io::{FromRawHandle, OwnedHandle},
+    };
+    use windows_sys::{
+        Wdk::{
+            Foundation::OBJECT_ATTRIBUTES,
+            Storage::FileSystem::{
+                FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT, NtCreateFile,
+            },
+        },
+        Win32::{
+            Foundation::{
+                OBJ_CASE_INSENSITIVE, RtlNtStatusToDosError, STATUS_SUCCESS, UNICODE_STRING,
+            },
+            Storage::FileSystem::{
+                FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE,
+                READ_CONTROL, SYNCHRONIZE,
+            },
+        },
+    };
+
+    let mut wide: Vec<u16> = name.encode_wide().collect();
+    if wide.is_empty() || wide.iter().any(|unit| *unit == 0) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Directory component is empty or contains a NUL",
+        ));
+    }
+    let Some(name_length) = wide.len().checked_mul(std::mem::size_of::<u16>()) else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Directory component length overflowed",
+        ));
+    };
+    let Ok(name_length) = u16::try_from(name_length) else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Directory component exceeds the Windows name limit",
+        ));
+    };
+    let mut object_name = UNICODE_STRING {
+        Length: name_length,
+        MaximumLength: name_length,
+        Buffer: wide.as_mut_ptr(),
+    };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: std::mem::size_of::<OBJECT_ATTRIBUTES>() as u32,
+        RootDirectory: parent.as_raw_handle() as _,
+        ObjectName: &mut object_name,
+        Attributes: OBJ_CASE_INSENSITIVE,
+        SecurityDescriptor: std::ptr::null(),
+        SecurityQualityOfService: std::ptr::null(),
+    };
+    let mut handle = std::ptr::null_mut();
+    let mut status_block = windows_sys::Win32::System::IO::IO_STATUS_BLOCK::default();
+    let status = unsafe {
+        NtCreateFile(
+            &mut handle,
+            FILE_TRAVERSE | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+            &attributes,
+            &mut status_block,
+            std::ptr::null(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            FILE_OPEN,
+            FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+            std::ptr::null(),
+            0,
+        )
+    };
+    if status != STATUS_SUCCESS {
+        let code = unsafe { RtlNtStatusToDosError(status) };
+        return Err(std::io::Error::from_raw_os_error(code as i32));
+    }
+    if handle.is_null() {
+        return Err(std::io::Error::other(
+            "NtCreateFile returned success without a directory handle",
+        ));
+    }
+    let owned = unsafe { OwnedHandle::from_raw_handle(handle as _) };
+    Ok(Dir::from(owned))
+}
+
+fn open_directory_nofollow(parent: &Dir, name: &OsStr) -> std::io::Result<Dir> {
+    #[cfg(windows)]
+    {
+        open_directory_relative(parent, name)
+    }
+    #[cfg(not(windows))]
+    {
+        parent.open_dir_nofollow(name)
+    }
 }
 
 #[cfg(windows)]
@@ -919,7 +1018,6 @@ fn rename_file_relative(
     source_name: &OsStr,
     destination_parent: &Dir,
     destination_name: &OsStr,
-    same_parent: bool,
     expected_source: &JournalFileState,
     expected_destination: Option<&JournalFileState>,
     policy: &windows_acl::DaclPolicy,
@@ -949,7 +1047,7 @@ fn rename_file_relative(
 
     rename_open_file_relative(
         &source,
-        (!same_parent).then_some(destination_parent),
+        destination_parent,
         destination_name,
         expected_destination.is_some(),
     )
@@ -958,7 +1056,7 @@ fn rename_file_relative(
 #[cfg(windows)]
 fn rename_open_file_relative(
     file: &cap_std::fs::File,
-    destination_parent: Option<&Dir>,
+    destination_parent: &Dir,
     destination_name: &OsStr,
     replace_if_exists: bool,
 ) -> super::Result<()> {
@@ -997,9 +1095,7 @@ fn rename_open_file_relative(
         (*information).Anonymous = FILE_RENAME_INFO_0 {
             ReplaceIfExists: replace_if_exists,
         };
-        (*information).RootDirectory = destination_parent.map_or(std::ptr::null_mut(), |parent| {
-            parent.as_raw_handle() as HANDLE
-        });
+        (*information).RootDirectory = destination_parent.as_raw_handle() as HANDLE;
         (*information).FileNameLength = name_length;
         std::ptr::copy_nonoverlapping(
             wide.as_ptr(),
@@ -1108,7 +1204,7 @@ impl AnchoredDir {
                         current_path.display()
                     )
                 })?;
-                let child = parent.open_dir_nofollow(name).map_err(|error| {
+                let child = open_directory_nofollow(parent, name).map_err(|error| {
                     format!(
                         "Cannot open ancestry component {} without following links: {error}",
                         name.to_string_lossy()
@@ -1227,7 +1323,7 @@ impl AnchoredDir {
                 #[cfg(windows)]
                 windows_acl::DaclScope::ProtectedObject,
             )?;
-            let child = current.open_dir_nofollow(name).map_err(|error| {
+            let child = open_directory_nofollow(&current, name).map_err(|error| {
                 format!(
                     "Cannot open mutation parent {} without following links: {error}",
                     relative.display()
@@ -1284,7 +1380,7 @@ impl AnchoredDir {
                             relative.display()
                         ));
                     }
-                    let child = current.open_dir_nofollow(name).map_err(|error| {
+                    let child = open_directory_nofollow(&current, name).map_err(|error| {
                         format!(
                             "Cannot open mutation parent {} without following links: {error}",
                             relative.display()
@@ -1320,7 +1416,7 @@ impl AnchoredDir {
                                 relative.display()
                             ));
                         }
-                        let child = current.open_dir_nofollow(name).map_err(|open_error| {
+                        let child = open_directory_nofollow(&current, name).map_err(|open_error| {
                             format!(
                                 "Cannot open mutation parent {} without following links: {open_error}",
                                 relative.display()
@@ -1432,7 +1528,7 @@ fn create_directory_entry(
         use cap_std::fs::DirBuilderExt;
         builder.mode(0o700);
         parent.create_dir_with(name, &builder)?;
-        parent.open_dir_nofollow(name)
+        open_directory_nofollow(parent, name)
     }
     #[cfg(not(any(unix, windows)))]
     {
@@ -1467,6 +1563,13 @@ fn verify_directory(
     let opened = dir.dir_metadata().map_err(|error| error.to_string())?;
     if !opened.is_dir() || opened.file_type().is_symlink() {
         return Err("Opened mutation component is not a regular directory".into());
+    }
+    #[cfg(windows)]
+    if opened.file_attributes()
+        & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
+        != 0
+    {
+        return Err("Opened mutation component is a reparse point".into());
     }
     same_file(expected, &opened)?;
     check_directory_metadata(
@@ -2601,7 +2704,12 @@ mod windows_tests {
             Err(error) => error,
         };
 
-        assert!(error.contains("symlink") || error.contains("without following"));
+        assert!(
+            error.contains("symlink")
+                || error.contains("reparse point")
+                || error.contains("without following"),
+            "unexpected reparse-point rejection: {error}"
+        );
         assert!(!outside.join("should-not-exist").exists());
         assert_eq!(fs::read(sentinel).unwrap(), b"outside bytes");
     }
