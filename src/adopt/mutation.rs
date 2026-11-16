@@ -2116,9 +2116,9 @@ mod windows_acl {
         use super::string_sid;
         use super::{
             ACCESS_SYSTEM_SECURITY, DELETE, DaclPolicy, DaclScope, GENERIC_ALL, GENERIC_EXECUTE,
-            GENERIC_READ, GENERIC_WRITE, MAXIMUM_ALLOWED, WRITE_DAC, WRITE_OWNER,
-            access_mask_is_supported, allow_ace_grant_is_permitted, mutation_rights, sid_string,
-            untrusted_mutation_grant_allowed, well_known_sid,
+            GENERIC_READ, GENERIC_WRITE, INHERIT_ONLY_ACE_FLAG, MAXIMUM_ALLOWED, WRITE_DAC,
+            WRITE_OWNER, access_mask_is_supported, allow_ace_grant_is_permitted, mutation_rights,
+            sid_string, untrusted_mutation_grant_allowed, well_known_sid,
         };
         use windows_sys::Win32::Security::{PSID, WinBuiltinUsersSid};
         use windows_sys::Win32::Storage::FileSystem::{
