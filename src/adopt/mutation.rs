@@ -2518,7 +2518,8 @@ mod windows_tests {
             Storage::FileSystem::{
                 CreateFileW, FILE_ADD_FILE, FILE_FLAG_BACKUP_SEMANTICS,
                 FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
-                FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, READ_CONTROL, SYNCHRONIZE,
+                FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, OPEN_EXISTING, READ_CONTROL,
+                SYNCHRONIZE,
             },
         };
 
@@ -2530,7 +2531,7 @@ mod windows_tests {
         let handle = unsafe {
             CreateFileW(
                 wide.as_ptr(),
-                FILE_ADD_FILE | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+                FILE_ADD_FILE | FILE_TRAVERSE | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                 std::ptr::null(),
                 OPEN_EXISTING,
@@ -2874,7 +2875,7 @@ mod windows_tests {
             "diagnostic-path-destination.tmp",
         );
         let matrix = format!(
-            "read-only relative={current_relative:?}; relative with FILE_ADD_FILE={relative_with_add_file:?}; FileRenameInfoEx with FILE_ADD_FILE={relative_extended:?}; null-root absolute FileRenameInfo={absolute_legacy:?}; MoveFileExW={path_based:?}"
+            "read-only relative={current_relative:?}; relative with FILE_ADD_FILE and FILE_TRAVERSE={relative_with_add_file:?}; FileRenameInfoEx with FILE_ADD_FILE and FILE_TRAVERSE={relative_extended:?}; null-root absolute FileRenameInfo={absolute_legacy:?}; MoveFileExW={path_based:?}"
         );
 
         assert!(
@@ -2883,11 +2884,11 @@ mod windows_tests {
         );
         assert!(
             relative_with_add_file.is_ok(),
-            "relative legacy rename with a directory handle opened for FILE_ADD_FILE failed: {matrix}"
+            "relative legacy rename with a directory handle opened for FILE_ADD_FILE and FILE_TRAVERSE failed: {matrix}"
         );
         assert!(
             relative_extended.is_ok(),
-            "relative extended rename with a directory handle opened for FILE_ADD_FILE failed: {matrix}"
+            "relative extended rename with a directory handle opened for FILE_ADD_FILE and FILE_TRAVERSE failed: {matrix}"
         );
         assert!(
             absolute_legacy.is_ok(),
