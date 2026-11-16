@@ -2652,6 +2652,76 @@ mod windows_tests {
         }
     }
 
+    fn set_native_file_rename_info(
+        file: &cap_std::fs::File,
+        root_directory: &cap_std::fs::Dir,
+        destination: &OsStr,
+    ) -> io::Result<()> {
+        use windows_sys::{
+            Wdk::Storage::FileSystem::{
+                FILE_RENAME_INFORMATION, FILE_RENAME_INFORMATION_0, FileRenameInformation,
+                NtSetInformationFile,
+            },
+            Win32::{
+                Foundation::{HANDLE, RtlNtStatusToDosError, STATUS_SUCCESS},
+                System::IO::IO_STATUS_BLOCK,
+            },
+        };
+
+        let wide: Vec<u16> = destination.encode_wide().collect();
+        if wide.is_empty() || wide.contains(&0) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "diagnostic destination is empty or contains NUL",
+            ));
+        }
+        let name_length = wide
+            .len()
+            .checked_mul(std::mem::size_of::<u16>())
+            .and_then(|length| u32::try_from(length).ok())
+            .ok_or_else(|| io::Error::other("diagnostic destination length overflowed"))?;
+        let file_name_bytes = wide
+            .len()
+            .checked_mul(std::mem::size_of::<u16>())
+            .ok_or_else(|| io::Error::other("diagnostic filename length overflowed"))?;
+        let buffer_length = std::mem::size_of::<FILE_RENAME_INFORMATION>()
+            .checked_add(file_name_bytes)
+            .ok_or_else(|| io::Error::other("diagnostic rename buffer length overflowed"))?;
+        let buffer_length_u32 = u32::try_from(buffer_length)
+            .map_err(|_| io::Error::other("diagnostic rename buffer exceeds Windows limits"))?;
+        let words = buffer_length.div_ceil(std::mem::size_of::<usize>());
+        let mut buffer = vec![0usize; words];
+        let information = buffer.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
+        unsafe {
+            (*information).Anonymous = FILE_RENAME_INFORMATION_0 {
+                ReplaceIfExists: false,
+            };
+            (*information).RootDirectory = root_directory.as_raw_handle() as HANDLE;
+            (*information).FileNameLength = name_length;
+            std::ptr::copy_nonoverlapping(
+                wide.as_ptr(),
+                (*information).FileName.as_mut_ptr(),
+                wide.len(),
+            );
+        }
+        let mut status_block = IO_STATUS_BLOCK::default();
+        let status = unsafe {
+            NtSetInformationFile(
+                file.as_raw_handle() as HANDLE,
+                &mut status_block,
+                information.cast::<std::ffi::c_void>(),
+                buffer_length_u32,
+                FileRenameInformation,
+            )
+        };
+        if status == STATUS_SUCCESS {
+            Ok(())
+        } else {
+            let code = unsafe { RtlNtStatusToDosError(status) };
+            Err(io::Error::from_raw_os_error(code as i32))
+        }
+    }
+
     fn attempt_production_rename(
         context: &MutationContext,
         source_name: &str,
@@ -2721,6 +2791,24 @@ mod windows_tests {
         } else {
             Ok(())
         }
+    }
+
+    fn attempt_native_relative_rename(
+        context: &MutationContext,
+        source_name: &str,
+        destination_name: &str,
+        destination_parent: &cap_std::fs::Dir,
+    ) -> Result<(), String> {
+        context
+            .write_new(
+                &context.target.path.join(source_name),
+                b"synthetic rename bytes",
+            )
+            .map_err(|error| error.to_string())?;
+        let file = open_mutation_file(&context.target.root, OsStr::new(source_name), &context.dacl)
+            .map_err(|error| error.to_string())?;
+        set_native_file_rename_info(&file, destination_parent, OsStr::new(destination_name))
+            .map_err(|error| error.to_string())
     }
 
     fn mutation_fixture_tempdir() -> tempfile::TempDir {
@@ -2862,6 +2950,12 @@ mod windows_tests {
             Some(&add_file_parent),
             true,
         );
+        let native_relative = attempt_native_relative_rename(
+            &context,
+            "diagnostic-native-source.tmp",
+            "diagnostic-native-destination.tmp",
+            &add_file_parent,
+        );
         let absolute_legacy = attempt_documented_rename(
             &context,
             "diagnostic-absolute-source.tmp",
@@ -2875,20 +2969,25 @@ mod windows_tests {
             "diagnostic-path-destination.tmp",
         );
         let matrix = format!(
-            "read-only relative={current_relative:?}; relative with FILE_ADD_FILE and FILE_TRAVERSE={relative_with_add_file:?}; FileRenameInfoEx with FILE_ADD_FILE and FILE_TRAVERSE={relative_extended:?}; null-root absolute FileRenameInfo={absolute_legacy:?}; MoveFileExW={path_based:?}"
+            "read-only relative={current_relative:?}; relative with FILE_ADD_FILE and FILE_TRAVERSE={relative_with_add_file:?}; FileRenameInfoEx with FILE_ADD_FILE and FILE_TRAVERSE={relative_extended:?}; NtSetInformationFile relative={native_relative:?}; null-root absolute FileRenameInfo={absolute_legacy:?}; MoveFileExW={path_based:?}"
         );
+        eprintln!("Windows rename diagnostic matrix: {matrix}");
 
         assert!(
             current_relative.is_err() && format!("{current_relative:?}").contains("87"),
             "expected the current read-only RootDirectory form to reproduce error 87: {matrix}"
         );
         assert!(
-            relative_with_add_file.is_ok(),
-            "relative legacy rename with a directory handle opened for FILE_ADD_FILE and FILE_TRAVERSE failed: {matrix}"
+            matches!(relative_with_add_file.as_ref(), Err(error) if error.contains("87")),
+            "expected the Win32 relative rename form to reproduce error 87: {matrix}"
         );
         assert!(
-            relative_extended.is_ok(),
-            "relative extended rename with a directory handle opened for FILE_ADD_FILE and FILE_TRAVERSE failed: {matrix}"
+            matches!(relative_extended.as_ref(), Err(error) if error.contains("87")),
+            "expected the Win32 extended relative rename form to reproduce error 87: {matrix}"
+        );
+        assert!(
+            native_relative.is_ok(),
+            "native relative rename through the verified destination handle failed: {matrix}"
         );
         assert!(
             absolute_legacy.is_ok(),
@@ -2901,6 +3000,7 @@ mod windows_tests {
         for path in [
             "diagnostic-add-destination.tmp",
             "diagnostic-extended-destination.tmp",
+            "diagnostic-native-destination.tmp",
             "diagnostic-absolute-destination.tmp",
             "diagnostic-path-destination.tmp",
         ] {
