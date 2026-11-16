@@ -979,10 +979,13 @@ fn rename_open_file_relative(
         .len()
         .checked_mul(std::mem::size_of::<u16>())
         .ok_or("Rename filename length overflowed")?;
-    let buffer_length = std::mem::offset_of!(FILE_RENAME_INFO, FileName)
+    // SetFileInformationByHandle requires the complete structure size plus the
+    // variable filename bytes. `offset_of!(FileName) + filename_bytes` omits
+    // the structure's trailing padding and is rejected by Windows with
+    // ERROR_INVALID_PARAMETER for relative renames.
+    let buffer_length = std::mem::size_of::<FILE_RENAME_INFO>()
         .checked_add(filename_bytes)
         .ok_or("Rename information length overflowed")?;
-    let buffer_length = buffer_length.max(std::mem::size_of::<FILE_RENAME_INFO>());
     let buffer_length_u32 = u32::try_from(buffer_length)
         .map_err(|_| "Rename information exceeds the Windows buffer limit")?;
     let words = buffer_length.div_ceil(std::mem::size_of::<usize>());
