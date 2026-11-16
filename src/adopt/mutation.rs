@@ -1712,7 +1712,9 @@ mod windows_acl {
     };
     use windows_sys::Win32::{
         Foundation::{CloseHandle, HANDLE, LocalFree},
-        Security::Authorization::{ConvertStringSidToSidW, GetSecurityInfo, SE_FILE_OBJECT},
+        Security::Authorization::{
+            ConvertSidToStringSidW, ConvertStringSidToSidW, GetSecurityInfo, SE_FILE_OBJECT,
+        },
         Security::{
             ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation, CreateWellKnownSid,
             DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation, GetLengthSid,
@@ -1911,8 +1913,9 @@ mod windows_acl {
                         self.trusted_for_object(sid, owner),
                     ) {
                         return Err(format!(
-                            "Mutation object's DACL grants another local user mutation rights (mask 0x{:08x})",
-                            mask & mutation_rights()
+                            "Mutation object's DACL grants an untrusted trustee mutation rights (mask 0x{:08x}, SID {})",
+                            mask & mutation_rights(),
+                            sid_string(sid)
                         ));
                     }
                     continue;
@@ -2034,6 +2037,22 @@ mod windows_acl {
         bytes
     }
 
+    fn sid_string(sid: PSID) -> String {
+        let mut wide = std::ptr::null_mut();
+        if unsafe { ConvertSidToStringSidW(sid, &mut wide) } == 0 || wide.is_null() {
+            return "unavailable".into();
+        }
+        let mut length = 0usize;
+        while unsafe { *wide.add(length) } != 0 {
+            length += 1;
+        }
+        let value = unsafe { String::from_utf16_lossy(std::slice::from_raw_parts(wide, length)) };
+        unsafe {
+            LocalFree(wide.cast());
+        }
+        value
+    }
+
     fn copy_sid(sid: PSID) -> super::super::super::Result<Vec<u8>> {
         if sid.is_null() || unsafe { IsValidSid(sid) } == 0 {
             return Err("Windows returned an invalid SID".into());
@@ -2085,7 +2104,7 @@ mod windows_acl {
         use super::{
             ACCESS_SYSTEM_SECURITY, DELETE, DaclPolicy, DaclScope, GENERIC_ALL, GENERIC_EXECUTE,
             GENERIC_READ, GENERIC_WRITE, MAXIMUM_ALLOWED, WRITE_DAC, WRITE_OWNER,
-            access_mask_is_supported, allow_ace_grant_is_permitted, mutation_rights,
+            access_mask_is_supported, allow_ace_grant_is_permitted, mutation_rights, sid_string,
             untrusted_mutation_grant_allowed, well_known_sid,
         };
         use windows_sys::Win32::Security::{PSID, WinBuiltinUsersSid};
@@ -2192,6 +2211,13 @@ mod windows_acl {
 
             assert!(policy.trusted_for_object(owner_rights_sid, trusted_owner));
             assert!(!policy.trusted_for_object(owner_rights_sid, local_users.as_ptr() as PSID));
+        }
+
+        #[test]
+        fn sid_diagnostics_use_the_windows_string_representation() {
+            let owner_rights = string_sid("S-1-3-4").unwrap();
+
+            assert_eq!(sid_string(owner_rights.as_ptr() as PSID), "S-1-3-4");
         }
 
         #[test]
