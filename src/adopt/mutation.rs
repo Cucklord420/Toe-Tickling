@@ -1913,8 +1913,9 @@ mod windows_acl {
                         self.trusted_for_object(sid, owner),
                     ) {
                         return Err(format!(
-                            "Mutation object's DACL grants an untrusted trustee mutation rights (mask 0x{:08x}, SID {})",
+                            "Mutation object's DACL grants an untrusted trustee mutation rights (mask 0x{:08x}, flags 0x{:02x}, SID {})",
                             mask & mutation_rights(),
+                            header.AceFlags,
                             sid_string(sid)
                         ));
                     }
