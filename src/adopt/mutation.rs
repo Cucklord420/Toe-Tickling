@@ -2,9 +2,11 @@
 //! Protected, handle-anchored filesystem access for adoption mutations.
 
 use super::{JournalFileState, JournalPermissions};
-#[cfg(unix)]
+#[cfg(not(windows))]
+use cap_fs_ext::DirExt;
+#[cfg(any(unix, windows))]
 use cap_fs_ext::OsMetadataExt;
-use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
+use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
 #[cfg(any(target_os = "linux", windows))]
 use cap_std::ambient_authority;
 use cap_std::fs::Dir;
