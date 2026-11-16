@@ -2529,6 +2529,20 @@ mod tests {
         fs::set_permissions(path, permissions).unwrap();
     }
 
+    #[cfg(windows)]
+    fn grant_everyone_inherit_only_file_write(path: &Path) {
+        let output = std::process::Command::new("icacls.exe")
+            .arg(path)
+            .args(["/grant", "*S-1-1-0:(OI)(IO)(WD)"])
+            .output()
+            .expect("Windows ACL editor is available on the CI runner");
+        assert!(
+            output.status.success(),
+            "icacls could not configure the synthetic fixture: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     #[test]
     fn staging_paths_use_forward_slashes_on_every_platform() {
         let transaction = "a".repeat(64);
@@ -2761,6 +2775,61 @@ mod tests {
         }
         assert!(!journal_path(&target).unwrap().1.exists());
         assert_no_stage_files(&target);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn recovery_rejects_unsafe_inherited_journal_acl_before_clearing_readonly() {
+        let (_scratch, target) = target_fixture();
+        set_readonly(&target, GUIDE, true);
+        let plan = fixture_plan(&target);
+        let (journal_file, mut journal) = prepared_journal(&target, &plan);
+        let entry_index = journal
+            .entries
+            .iter()
+            .position(|entry| entry.relative == GUIDE)
+            .unwrap();
+        let expected = journal.entries[entry_index].after.clone();
+        assert!(
+            expected.permissions.as_ref().unwrap().readonly,
+            "fixture postimage must be read-only"
+        );
+        assert_eq!(file_state(&target, GUIDE).unwrap(), expected);
+
+        let git_dir = journal_file.parent().unwrap().to_path_buf();
+        let context = mutation::MutationContext::open(&target, &git_dir).unwrap();
+        let journal_before = fs::read(&journal_file).unwrap();
+        grant_everyone_inherit_only_file_write(&git_dir);
+
+        let probe = git_dir.join("unsafe-inherited-journal-probe.json");
+        let probe_error = context
+            .write_atomic(&probe, b"must not be written", true)
+            .unwrap_err();
+        assert!(
+            probe_error.contains("DACL"),
+            "unexpected error: {probe_error}"
+        );
+        assert!(!probe.exists());
+
+        let destination_before = file_state(&target, GUIDE).unwrap();
+        let error = prepare_destination_for_replacement_with(
+            Some(&context),
+            &plan.source_root,
+            &target,
+            &journal_file,
+            &mut journal,
+            entry_index,
+            &expected,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("DACL"), "unexpected error: {error}");
+        assert_eq!(file_state(&target, GUIDE).unwrap(), destination_before);
+        assert_eq!(fs::read(&journal_file).unwrap(), journal_before);
+        assert_eq!(
+            read_journal(&journal_file).unwrap().entries[entry_index].transition,
+            JournalTransition::Stable
+        );
     }
 
     #[cfg(windows)]
