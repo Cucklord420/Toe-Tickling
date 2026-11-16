@@ -1971,8 +1971,8 @@ mod windows_acl {
         // path walk checks each descendant's own DACL, where inherited grants
         // become effective and must pass this same policy.
         trusted
-            || (ace_flags & INHERIT_ONLY_ACE_FLAG == 0
-                && untrusted_mutation_grant_allowed(mask, scope))
+            || ace_flags & INHERIT_ONLY_ACE_FLAG != 0
+            || untrusted_mutation_grant_allowed(mask, scope)
     }
 
     fn untrusted_mutation_grant_allowed(mask: u32, scope: DaclScope) -> bool {
