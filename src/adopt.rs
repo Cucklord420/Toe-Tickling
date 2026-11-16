@@ -1573,7 +1573,8 @@ fn prepare_destination_for_replacement_with(
 
     // Persist intent before changing the read-only bit. If recovery sees a
     // writable variant while this entry is still pending, it must fail closed.
-    set_entry_transition(
+    set_entry_transition_with(
+        context,
         source_root,
         target,
         journal_path,
