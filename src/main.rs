@@ -200,25 +200,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn adopt_recover_pauses_before_inspecting_an_invalid_target() {
+    fn adopt_recover_rejects_an_invalid_target_without_creating_it() {
         let scratch = tempfile::tempdir().unwrap();
         let target = scratch.path().join("target");
         let args = vec![target.to_string_lossy().into_owned(), "--recover".into()];
         let parsed = parse_adopt_args(&args).unwrap();
         assert_eq!(parsed.mode, AdoptMode::Recover);
         let error = execute_adopt(Path::new(env!("CARGO_MANIFEST_DIR")), parsed).unwrap_err();
-        assert!(error.contains("paused"), "unexpected error: {error}");
+        if let Err(paused) = toe_tickling::adopt::ensure_mutations_ready() {
+            assert_eq!(error, paused);
+        } else {
+            assert!(!error.contains("paused"), "unexpected error: {error}");
+        }
         assert!(!target.exists());
     }
 
     #[test]
-    fn adopt_apply_pauses_before_inspecting_an_invalid_target() {
+    fn adopt_apply_rejects_an_invalid_target_without_creating_it() {
         let scratch = tempfile::tempdir().unwrap();
         let target = scratch.path().join("target");
         let args = vec![target.to_string_lossy().into_owned(), "--apply".into()];
         let parsed = parse_adopt_args(&args).unwrap();
         let error = execute_adopt(Path::new(env!("CARGO_MANIFEST_DIR")), parsed).unwrap_err();
-        assert!(error.contains("paused"), "unexpected error: {error}");
+        if let Err(paused) = toe_tickling::adopt::ensure_mutations_ready() {
+            assert_eq!(error, paused);
+        } else {
+            assert!(!error.contains("paused"), "unexpected error: {error}");
+        }
         assert!(!target.exists());
     }
 
@@ -229,7 +237,7 @@ mod tests {
     }
 
     #[test]
-    fn adopt_apply_pauses_before_inspecting_a_pending_journal() {
+    fn adopt_apply_rejects_a_pending_journal_without_changing_it() {
         let scratch = tempfile::tempdir().unwrap();
         let target = scratch.path().join("target");
         fs::create_dir(&target).unwrap();
@@ -266,7 +274,14 @@ mod tests {
 
         let error = execute_adopt(Path::new(env!("CARGO_MANIFEST_DIR")), parsed).unwrap_err();
 
-        assert!(error.contains("paused"), "unexpected error: {error}");
+        if let Err(paused) = toe_tickling::adopt::ensure_mutations_ready() {
+            assert_eq!(error, paused);
+        } else {
+            assert!(
+                error.contains("Pending adoption recovery"),
+                "unexpected error: {error}"
+            );
+        }
         assert_eq!(
             fs::read(target.join(".ai-guidebook/GUIDEBOOK.md")).unwrap(),
             b"partial install"

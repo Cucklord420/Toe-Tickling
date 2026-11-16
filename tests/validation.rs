@@ -1381,14 +1381,15 @@ fn a_bold_prose_reference_cannot_replace_a_rule_declaration() {
 fn adoption_cli_runs_from_an_unrelated_directory_and_path_with_spaces() {
     let source = fixture();
     let unrelated = tempfile::tempdir().unwrap();
-    let target = tempfile::Builder::new()
-        .prefix("project with spaces ")
-        .tempdir()
-        .unwrap();
+    let target_root = tempfile::tempdir().unwrap();
+    let target = target_root.path().join("project with spaces");
+    fs::create_dir(&target).unwrap();
+    let outside = target_root.path().join("outside sentinel.txt");
+    fs::write(&outside, b"outside data must remain unchanged").unwrap();
     assert!(
         Command::new("git")
             .args(["init", "-q"])
-            .current_dir(target.path())
+            .current_dir(&target)
             .status()
             .unwrap()
             .success()
@@ -1400,30 +1401,85 @@ fn adoption_cli_runs_from_an_unrelated_directory_and_path_with_spaces() {
             .arg("--root")
             .arg(source.path())
             .arg("adopt")
-            .arg(target.path());
+            .arg(&target);
         if apply {
             command.arg("--apply");
         }
         command.output().unwrap()
     };
     assert!(run(false).status.success());
-    assert!(!target.path().join("AGENTS.md").exists());
+    assert!(!target.join("AGENTS.md").exists());
+    let readiness = adopt::ensure_mutations_ready();
     let applied = run(true);
-    assert!(
-        !applied.status.success(),
-        "adoption unexpectedly succeeded: {}",
-        String::from_utf8_lossy(&applied.stdout)
-    );
-    assert!(String::from_utf8_lossy(&applied.stderr).contains("paused"));
-    for path in [".ai-guidebook", "AGENTS.md", ".gitignore", "CLAUDE.md"] {
+    if readiness.is_ok() {
         assert!(
-            !target.path().join(path).exists(),
-            "paused adoption created {path}"
+            applied.status.success(),
+            "adoption failed on a supported path: {}\n{}",
+            String::from_utf8_lossy(&applied.stdout),
+            String::from_utf8_lossy(&applied.stderr)
         );
+        for path in [
+            ".ai-guidebook/GUIDEBOOK.md",
+            ".ai-guidebook/policy-lock.json",
+            "AGENTS.md",
+            ".gitignore",
+            "CLAUDE.md",
+        ] {
+            assert!(
+                target.join(path).is_file(),
+                "adoption did not create {path}"
+            );
+        }
+        assert!(!target.join(".git/.toe-tickling-adoption-v1.json").exists());
+
+        let recovered = Command::new(env!("CARGO_BIN_EXE_toe-tickling"))
+            .current_dir(unrelated.path())
+            .arg("--root")
+            .arg(source.path())
+            .arg("adopt")
+            .arg(&target)
+            .arg("--recover")
+            .output()
+            .unwrap();
+        assert!(
+            recovered.status.success(),
+            "recovery CLI failed without a pending journal: {}\n{}",
+            String::from_utf8_lossy(&recovered.stdout),
+            String::from_utf8_lossy(&recovered.stderr)
+        );
+        assert!(target.join(".ai-guidebook/GUIDEBOOK.md").is_file());
+    } else {
+        assert!(
+            !applied.status.success(),
+            "adoption unexpectedly succeeded while mutation was paused: {}",
+            String::from_utf8_lossy(&applied.stdout)
+        );
+        assert!(String::from_utf8_lossy(&applied.stderr).contains("paused"));
+        for path in [".ai-guidebook", "AGENTS.md", ".gitignore", "CLAUDE.md"] {
+            assert!(
+                !target.join(path).exists(),
+                "paused adoption created {path}"
+            );
+        }
+        let recovered = Command::new(env!("CARGO_BIN_EXE_toe-tickling"))
+            .current_dir(unrelated.path())
+            .arg("--root")
+            .arg(source.path())
+            .arg("adopt")
+            .arg(&target)
+            .arg("--recover")
+            .output()
+            .unwrap();
+        assert!(!recovered.status.success());
+        assert!(String::from_utf8_lossy(&recovered.stderr).contains("paused"));
     }
+    assert_eq!(
+        fs::read(&outside).unwrap(),
+        b"outside data must remain unchanged"
+    );
     let head = Command::new("git")
         .args(["rev-parse", "--verify", "HEAD"])
-        .current_dir(target.path())
+        .current_dir(&target)
         .output()
         .unwrap();
     assert!(!head.status.success(), "Adoption must not create commits");

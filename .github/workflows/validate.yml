@@ -58,6 +58,8 @@ jobs:
         run: cargo test --locked -p toe-tickling --lib adopt::tests::apply_rolls_back
       - name: Adoption recovery CLI tests
         run: cargo test --locked -p toe-tickling --bin toe-tickling adopt_recover_
+      - name: Windows adoption apply CLI regression
+        run: cargo test --locked -p toe-tickling --test validation adoption_cli_runs_from_an_unrelated_directory_and_path_with_spaces
       - name: Windows pinned-directory race regression
         run: cargo test --locked -p toe-tickling --lib adopt::mutation::windows_tests
 

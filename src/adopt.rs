@@ -22,9 +22,9 @@ use std::{
 #[path = "adopt/mutation.rs"]
 mod mutation;
 
-// Keep public mutation routes unavailable until exact-head cross-platform race
-// regressions pass. This is deliberately a separate gate from platform policy.
-const MUTATION_REGRESSIONS_VERIFIED: bool = false;
+// The Issue #39 mutation regressions passed on the Windows/Linux CI matrix.
+// Platform policy remains a separate guard: Linux root and macOS stay paused.
+const MUTATION_REGRESSIONS_VERIFIED: bool = true;
 
 const BEGIN: &str = "<!-- JUSTIN-GUIDEBOOK:BEGIN -->";
 const END: &str = "<!-- JUSTIN-GUIDEBOOK:END -->";
@@ -2141,8 +2141,7 @@ pub fn ensure_no_pending_recovery(target: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Reject public install/recovery commands until the race regressions have
-/// passed on the exact release branch and supported platform matrix.
+/// Enforce the mutation regression gate and platform policy for public writes.
 pub fn ensure_mutations_ready() -> Result<()> {
     mutation::MutationContext::ensure_supported()?;
     if !MUTATION_REGRESSIONS_VERIFIED {
