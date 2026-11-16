@@ -2063,13 +2063,14 @@ mod windows_acl {
 
     #[cfg(test)]
     mod tests {
-        use super::DELETE;
         use super::{
-            DaclScope, GENERIC_ALL, GENERIC_EXECUTE, GENERIC_READ, GENERIC_WRITE, MAXIMUM_ALLOWED,
-            access_mask_is_supported, mutation_rights, untrusted_mutation_grant_allowed,
+            ACCESS_SYSTEM_SECURITY, DELETE, DaclScope, GENERIC_ALL, GENERIC_EXECUTE, GENERIC_READ,
+            GENERIC_WRITE, MAXIMUM_ALLOWED, WRITE_DAC, WRITE_OWNER, access_mask_is_supported,
+            mutation_rights, untrusted_mutation_grant_allowed,
         };
         use windows_sys::Win32::Storage::FileSystem::{
-            FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_DELETE_CHILD, FILE_WRITE_DATA,
+            FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY, FILE_APPEND_DATA, FILE_DELETE_CHILD,
+            FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA, FILE_WRITE_EA,
         };
 
         #[test]
@@ -2086,6 +2087,10 @@ mod windows_acl {
 
         #[test]
         fn child_creation_is_allowed_only_on_existing_path_ancestry() {
+            // Windows reuses these access-mask bits by object type: on an
+            // ancestry directory they mean child creation, not file writes.
+            assert_eq!(FILE_ADD_FILE, FILE_WRITE_DATA);
+            assert_eq!(FILE_ADD_SUBDIRECTORY, FILE_APPEND_DATA);
             for creation_right in [FILE_ADD_FILE, FILE_ADD_SUBDIRECTORY] {
                 assert!(untrusted_mutation_grant_allowed(
                     creation_right,
@@ -2095,12 +2100,26 @@ mod windows_acl {
                     creation_right,
                     DaclScope::ProtectedObject
                 ));
-                for forbidden_right in [FILE_DELETE_CHILD, DELETE, FILE_WRITE_DATA] {
+                for forbidden_right in [
+                    FILE_DELETE_CHILD,
+                    DELETE,
+                    FILE_WRITE_EA,
+                    FILE_WRITE_ATTRIBUTES,
+                    WRITE_DAC,
+                    WRITE_OWNER,
+                    ACCESS_SYSTEM_SECURITY,
+                ] {
                     assert!(!untrusted_mutation_grant_allowed(
                         creation_right | forbidden_right,
                         DaclScope::ExistingPathAncestry
                     ));
                 }
+            }
+            for file_write_right in [FILE_WRITE_DATA, FILE_APPEND_DATA] {
+                assert!(!untrusted_mutation_grant_allowed(
+                    file_write_right,
+                    DaclScope::ProtectedObject
+                ));
             }
         }
 
