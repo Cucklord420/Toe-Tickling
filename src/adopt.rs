@@ -1455,26 +1455,6 @@ fn writable_variant(state: &JournalFileState) -> JournalFileState {
     }
 }
 
-#[cfg(test)]
-fn set_entry_transition(
-    source_root: &Path,
-    target: &Path,
-    journal_path: &Path,
-    journal: &mut AdoptionJournal,
-    entry_index: usize,
-    transition: JournalTransition,
-) -> Result<()> {
-    set_entry_transition_with(
-        None,
-        source_root,
-        target,
-        journal_path,
-        journal,
-        entry_index,
-        transition,
-    )
-}
-
 fn set_entry_transition_with(
     context: Option<&mutation::MutationContext>,
     source_root: &Path,
@@ -3047,7 +3027,8 @@ mod tests {
         let (git_dir, journal_file) = journal_path(&target).unwrap();
         validate_journal(&plan.source_root, &target, &git_dir, &journal).unwrap();
         write_journal_exclusive(&journal_file, &journal).unwrap();
-        set_entry_transition(
+        set_entry_transition_with(
+            None,
             &plan.source_root,
             &target,
             &journal_file,
