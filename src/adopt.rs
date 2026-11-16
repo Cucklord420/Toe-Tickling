@@ -1455,6 +1455,7 @@ fn writable_variant(state: &JournalFileState) -> JournalFileState {
     }
 }
 
+#[cfg(test)]
 fn set_entry_transition(
     source_root: &Path,
     target: &Path,
