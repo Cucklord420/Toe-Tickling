@@ -46,6 +46,8 @@ jobs:
         run: cargo test --locked -p toe-tickling --lib security::tests::checked_root_accepts_native_drive_prefix
       - name: Windows DACL access-mask regression tests
         run: cargo test --locked -p toe-tickling --lib adopt::mutation::windows_acl::tests
+      - name: Windows documented rename-form diagnostic
+        run: cargo test --locked -p toe-tickling --lib adopt::mutation::windows_tests::diagnose_documented_rename_forms_on_disposable_files
       - name: Transaction regression tests
         run: cargo test --locked -p toe-tickling --lib guide::build_transaction_tests
       - name: Adoption recovery regression tests

@@ -2497,8 +2497,229 @@ mod linux_tests {
 
 #[cfg(all(test, windows))]
 mod windows_tests {
-    use super::MutationContext;
-    use std::{fs, path::Path, process::Command};
+    use super::{MutationContext, open_mutation_file, rename_open_file_relative};
+    use std::{
+        ffi::OsStr,
+        fs, io,
+        os::windows::{
+            ffi::OsStrExt,
+            io::{AsRawHandle, FromRawHandle, OwnedHandle},
+        },
+        path::{Path, PathBuf},
+        process::Command,
+    };
+
+    fn open_directory_with_add_file(
+        path: &Path,
+        policy: &super::windows_acl::DaclPolicy,
+    ) -> io::Result<cap_std::fs::Dir> {
+        use windows_sys::Win32::{
+            Foundation::INVALID_HANDLE_VALUE,
+            Storage::FileSystem::{
+                CreateFileW, FILE_ADD_FILE, FILE_FLAG_BACKUP_SEMANTICS,
+                FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
+                FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING, READ_CONTROL, SYNCHRONIZE,
+            },
+        };
+
+        let wide: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                FILE_ADD_FILE | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                std::ptr::null_mut(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+        let directory = Dir::from(unsafe { OwnedHandle::from_raw_handle(handle as _) });
+        policy
+            .check_handle(
+                directory.as_raw_handle(),
+                super::windows_acl::DaclScope::ProtectedObject,
+            )
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        Ok(directory)
+    }
+
+    fn directory_id(directory: &cap_std::fs::Dir) -> (u64, [u8; 16]) {
+        use windows_sys::Win32::{
+            Foundation::HANDLE,
+            Storage::FileSystem::{FILE_ID_INFO, FileIdInfo, GetFileInformationByHandleEx},
+        };
+
+        let mut info = FILE_ID_INFO::default();
+        let succeeded = unsafe {
+            GetFileInformationByHandleEx(
+                directory.as_raw_handle() as HANDLE,
+                FileIdInfo,
+                (&mut info as *mut FILE_ID_INFO).cast(),
+                std::mem::size_of::<FILE_ID_INFO>() as u32,
+            )
+        };
+        assert_ne!(
+            succeeded, 0,
+            "could not identify diagnostic directory handle"
+        );
+        (info.VolumeSerialNumber, info.FileId.Identifier)
+    }
+
+    fn set_file_rename_info(
+        file: &cap_std::fs::File,
+        root_directory: Option<&cap_std::fs::Dir>,
+        destination: &OsStr,
+        extended: bool,
+    ) -> io::Result<()> {
+        use windows_sys::Win32::{
+            Foundation::HANDLE,
+            Storage::FileSystem::{
+                FILE_RENAME_INFO, FILE_RENAME_INFO_0, FileRenameInfo, FileRenameInfoEx,
+                SetFileInformationByHandle,
+            },
+        };
+
+        let wide: Vec<u16> = destination.encode_wide().collect();
+        if wide.is_empty() || wide.contains(&0) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "diagnostic destination is empty or contains NUL",
+            ));
+        }
+        let name_length = wide
+            .len()
+            .checked_mul(std::mem::size_of::<u16>())
+            .and_then(|length| u32::try_from(length).ok())
+            .ok_or_else(|| io::Error::other("diagnostic destination length overflowed"))?;
+        let file_name_bytes = wide
+            .len()
+            .checked_mul(std::mem::size_of::<u16>())
+            .ok_or_else(|| io::Error::other("diagnostic filename length overflowed"))?;
+        let buffer_length = std::mem::size_of::<FILE_RENAME_INFO>()
+            .checked_add(file_name_bytes)
+            .ok_or_else(|| io::Error::other("diagnostic rename buffer length overflowed"))?;
+        let buffer_length_u32 = u32::try_from(buffer_length)
+            .map_err(|_| io::Error::other("diagnostic rename buffer exceeds Windows limits"))?;
+        let words = buffer_length.div_ceil(std::mem::size_of::<usize>());
+        let mut buffer = vec![0usize; words];
+        let information = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+        let root_directory = root_directory.map_or(std::ptr::null_mut(), |directory| {
+            directory.as_raw_handle() as HANDLE
+        });
+        unsafe {
+            (*information).Anonymous = if extended {
+                FILE_RENAME_INFO_0 { Flags: 0 }
+            } else {
+                FILE_RENAME_INFO_0 {
+                    ReplaceIfExists: false,
+                }
+            };
+            (*information).RootDirectory = root_directory;
+            (*information).FileNameLength = name_length;
+            std::ptr::copy_nonoverlapping(
+                wide.as_ptr(),
+                (*information).FileName.as_mut_ptr(),
+                wide.len(),
+            );
+        }
+        let information_class = if extended {
+            FileRenameInfoEx
+        } else {
+            FileRenameInfo
+        };
+        if unsafe {
+            SetFileInformationByHandle(
+                file.as_raw_handle() as HANDLE,
+                information_class,
+                information.cast::<std::ffi::c_void>(),
+                buffer_length_u32,
+            )
+        } == 0
+        {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn attempt_production_rename(
+        context: &MutationContext,
+        source_name: &str,
+        destination_name: &str,
+        destination_parent: &cap_std::fs::Dir,
+    ) -> Result<(), String> {
+        context
+            .write_new(
+                &context.target.path.join(source_name),
+                b"synthetic rename bytes",
+            )
+            .map_err(|error| error.to_string())?;
+        let file = open_mutation_file(&context.target.root, OsStr::new(source_name), &context.dacl)
+            .map_err(|error| error.to_string())?;
+        rename_open_file_relative(
+            &file,
+            destination_parent,
+            OsStr::new(destination_name),
+            false,
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    fn attempt_documented_rename(
+        context: &MutationContext,
+        source_name: &str,
+        destination: &Path,
+        root_directory: Option<&cap_std::fs::Dir>,
+        extended: bool,
+    ) -> Result<(), String> {
+        context
+            .write_new(
+                &context.target.path.join(source_name),
+                b"synthetic rename bytes",
+            )
+            .map_err(|error| error.to_string())?;
+        let file = open_mutation_file(&context.target.root, OsStr::new(source_name), &context.dacl)
+            .map_err(|error| error.to_string())?;
+        set_file_rename_info(&file, root_directory, destination.as_os_str(), extended)
+            .map_err(|error| error.to_string())
+    }
+
+    fn attempt_move_file_ex(
+        context: &MutationContext,
+        source_name: &str,
+        destination_name: &str,
+    ) -> Result<(), String> {
+        use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
+
+        let source = context.target.path.join(source_name);
+        let destination = context.target.path.join(destination_name);
+        context
+            .write_new(&source, b"synthetic rename bytes")
+            .map_err(|error| error.to_string())?;
+        let source_wide: Vec<u16> = source
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let destination_wide: Vec<u16> = destination
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        if unsafe { MoveFileExW(source_wide.as_ptr(), destination_wide.as_ptr(), 0) } == 0 {
+            Err(io::Error::last_os_error().to_string())
+        } else {
+            Ok(())
+        }
+    }
 
     fn mutation_fixture_tempdir() -> tempfile::TempDir {
         let profile = std::env::var_os("USERPROFILE")
@@ -2604,6 +2825,92 @@ mod windows_tests {
         let published_state = context.file_state(&destination).unwrap().unwrap();
         context.remove_file(&destination, &published_state).unwrap();
         assert!(context.file_state(&destination).unwrap().is_none());
+    }
+
+    #[test]
+    fn diagnose_documented_rename_forms_on_disposable_files() {
+        let work = mutation_fixture_tempdir();
+        let (target, git) = target_and_git(work.path());
+        let context = MutationContext::open(&target, &git).unwrap();
+        let outside_sentinel = work.path().join("outside-sentinel.txt");
+        fs::write(&outside_sentinel, b"unchanged outside fixture").unwrap();
+        let add_file_parent = open_directory_with_add_file(&target, &context.dacl).unwrap();
+        assert_eq!(
+            directory_id(&context.target.root),
+            directory_id(&add_file_parent),
+            "the diagnostic access handle must name the same fixture directory"
+        );
+
+        let current_relative = attempt_production_rename(
+            &context,
+            "diagnostic-current-source.tmp",
+            "diagnostic-current-destination.tmp",
+            &context.target.root,
+        );
+        let relative_with_add_file = attempt_production_rename(
+            &context,
+            "diagnostic-add-source.tmp",
+            "diagnostic-add-destination.tmp",
+            &add_file_parent,
+        );
+        let relative_extended = attempt_documented_rename(
+            &context,
+            "diagnostic-extended-source.tmp",
+            Path::new("diagnostic-extended-destination.tmp"),
+            Some(&add_file_parent),
+            true,
+        );
+        let absolute_legacy = attempt_documented_rename(
+            &context,
+            "diagnostic-absolute-source.tmp",
+            &target.join("diagnostic-absolute-destination.tmp"),
+            None,
+            false,
+        );
+        let path_based = attempt_move_file_ex(
+            &context,
+            "diagnostic-path-source.tmp",
+            "diagnostic-path-destination.tmp",
+        );
+        let matrix = format!(
+            "read-only relative={current_relative:?}; relative with FILE_ADD_FILE={relative_with_add_file:?}; FileRenameInfoEx with FILE_ADD_FILE={relative_extended:?}; null-root absolute FileRenameInfo={absolute_legacy:?}; MoveFileExW={path_based:?}"
+        );
+
+        assert!(
+            current_relative.is_err() && format!("{current_relative:?}").contains("87"),
+            "expected the current read-only RootDirectory form to reproduce error 87: {matrix}"
+        );
+        assert!(
+            relative_with_add_file.is_ok(),
+            "relative legacy rename with a directory handle opened for FILE_ADD_FILE failed: {matrix}"
+        );
+        assert!(
+            relative_extended.is_ok(),
+            "relative extended rename with a directory handle opened for FILE_ADD_FILE failed: {matrix}"
+        );
+        assert!(
+            absolute_legacy.is_ok(),
+            "absolute legacy rename with null RootDirectory failed: {matrix}"
+        );
+        assert!(
+            path_based.is_ok(),
+            "MoveFileExW synthetic baseline failed: {matrix}"
+        );
+        for path in [
+            "diagnostic-add-destination.tmp",
+            "diagnostic-extended-destination.tmp",
+            "diagnostic-absolute-destination.tmp",
+            "diagnostic-path-destination.tmp",
+        ] {
+            assert_eq!(
+                fs::read(target.join(path)).unwrap(),
+                b"synthetic rename bytes"
+            );
+        }
+        assert_eq!(
+            fs::read(outside_sentinel).unwrap(),
+            b"unchanged outside fixture"
+        );
     }
 
     #[test]
