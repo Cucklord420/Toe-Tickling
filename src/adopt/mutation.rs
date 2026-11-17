@@ -360,6 +360,33 @@ impl MutationContext {
         contents: &[u8],
         create_only: bool,
     ) -> super::Result<()> {
+        self.write_atomic_with_hook(path, contents, create_only, || Ok(()))
+    }
+
+    #[cfg(all(test, windows))]
+    fn write_atomic_with_pre_rename_hook<F>(
+        &self,
+        path: &Path,
+        contents: &[u8],
+        create_only: bool,
+        before_rename: F,
+    ) -> super::Result<()>
+    where
+        F: FnOnce() -> super::Result<()>,
+    {
+        self.write_atomic_with_hook(path, contents, create_only, before_rename)
+    }
+
+    fn write_atomic_with_hook<F>(
+        &self,
+        path: &Path,
+        contents: &[u8],
+        create_only: bool,
+        before_rename: F,
+    ) -> super::Result<()>
+    where
+        F: FnOnce() -> super::Result<()>,
+    {
         let (anchor, relative) = self.anchor(path)?;
         let parent = anchor.parent(
             &relative,
@@ -394,7 +421,7 @@ impl MutationContext {
                         path.display()
                     ))
                 } else {
-                    rename_file_relative(
+                    rename_file_relative_with_hook(
                         &parent.directory,
                         &temp,
                         &parent.directory,
@@ -402,6 +429,7 @@ impl MutationContext {
                         &source_state,
                         destination_state.as_ref(),
                         &self.dacl,
+                        before_rename,
                     )
                     .map_err(|error| {
                         format!("Cannot atomically publish {}: {error}", path.display())
@@ -409,25 +437,28 @@ impl MutationContext {
                 }
             }
             #[cfg(not(windows))]
-            if create_only {
-                // A hard-link publishes the fully synced inode atomically without
-                // replacing an existing recovery journal.
-                parent
-                    .directory
-                    .hard_link(&temp, &parent.directory, &parent.leaf)
-                    .map_err(|error| {
-                        format!(
-                            "Cannot publish {} without replacement: {error}",
-                            path.display()
-                        )
-                    })
-            } else {
-                parent
-                    .directory
-                    .rename(&temp, &parent.directory, &parent.leaf)
-                    .map_err(|error| {
-                        format!("Cannot atomically replace {}: {error}", path.display())
-                    })
+            {
+                before_rename()?;
+                if create_only {
+                    // A hard-link publishes the fully synced inode atomically without
+                    // replacing an existing recovery journal.
+                    parent
+                        .directory
+                        .hard_link(&temp, &parent.directory, &parent.leaf)
+                        .map_err(|error| {
+                            format!(
+                                "Cannot publish {} without replacement: {error}",
+                                path.display()
+                            )
+                        })
+                } else {
+                    parent
+                        .directory
+                        .rename(&temp, &parent.directory, &parent.leaf)
+                        .map_err(|error| {
+                            format!("Cannot atomically replace {}: {error}", path.display())
+                        })
+                }
             }
         };
         let cleanup = {
@@ -478,6 +509,31 @@ impl MutationContext {
         path: &Path,
         expected: &JournalFileState,
     ) -> super::Result<()> {
+        self.remove_file_with_hook(path, expected, || Ok(()))
+    }
+
+    #[cfg(all(test, windows))]
+    fn remove_file_with_pre_delete_hook<F>(
+        &self,
+        path: &Path,
+        expected: &JournalFileState,
+        before_delete: F,
+    ) -> super::Result<()>
+    where
+        F: FnOnce() -> super::Result<()>,
+    {
+        self.remove_file_with_hook(path, expected, before_delete)
+    }
+
+    fn remove_file_with_hook<F>(
+        &self,
+        path: &Path,
+        expected: &JournalFileState,
+        before_delete: F,
+    ) -> super::Result<()>
+    where
+        F: FnOnce() -> super::Result<()>,
+    {
         let (anchor, relative) = self.anchor(path)?;
         let Some(parent) = anchor.try_parent(
             &relative,
@@ -507,10 +563,12 @@ impl MutationContext {
                 )
                 .into());
             }
+            before_delete()?;
             delete_open_handle(file.as_raw_handle())
         }
         #[cfg(not(windows))]
         {
+            before_delete()?;
             parent
                 .directory
                 .remove_file(&parent.leaf)
@@ -525,6 +583,41 @@ impl MutationContext {
         expected_source: &JournalFileState,
         expected_destination: Option<&JournalFileState>,
     ) -> super::Result<()> {
+        self.rename_with_hook(from, to, expected_source, expected_destination, || Ok(()))
+    }
+
+    #[cfg(all(test, windows))]
+    fn rename_with_pre_rename_hook<F>(
+        &self,
+        from: &Path,
+        to: &Path,
+        expected_source: &JournalFileState,
+        expected_destination: Option<&JournalFileState>,
+        before_rename: F,
+    ) -> super::Result<()>
+    where
+        F: FnOnce() -> super::Result<()>,
+    {
+        self.rename_with_hook(
+            from,
+            to,
+            expected_source,
+            expected_destination,
+            before_rename,
+        )
+    }
+
+    fn rename_with_hook<F>(
+        &self,
+        from: &Path,
+        to: &Path,
+        expected_source: &JournalFileState,
+        expected_destination: Option<&JournalFileState>,
+        before_rename: F,
+    ) -> super::Result<()>
+    where
+        F: FnOnce() -> super::Result<()>,
+    {
         let (from_anchor, from_relative) = self.anchor(from)?;
         let (to_anchor, to_relative) = self.anchor(to)?;
         if !std::ptr::eq(from_anchor, to_anchor) {
@@ -549,7 +642,7 @@ impl MutationContext {
         }
         #[cfg(windows)]
         {
-            return rename_file_relative(
+            return rename_file_relative_with_hook(
                 &from_parent.directory,
                 &from_parent.leaf,
                 &to_parent.directory,
@@ -557,19 +650,23 @@ impl MutationContext {
                 expected_source,
                 expected_destination,
                 &self.dacl,
+                before_rename,
             );
         }
         #[cfg(not(windows))]
-        from_parent
-            .directory
-            .rename(&from_parent.leaf, &to_parent.directory, &to_parent.leaf)
-            .map_err(|error| {
-                format!(
-                    "Cannot atomically move {} to {}: {error}",
-                    from.display(),
-                    to.display()
-                )
-            })
+        {
+            before_rename()?;
+            from_parent
+                .directory
+                .rename(&from_parent.leaf, &to_parent.directory, &to_parent.leaf)
+                .map_err(|error| {
+                    format!(
+                        "Cannot atomically move {} to {}: {error}",
+                        from.display(),
+                        to.display()
+                    )
+                })
+        }
     }
 
     pub(super) fn set_permissions(
@@ -1101,7 +1198,7 @@ fn opened_file_state(
 }
 
 #[cfg(windows)]
-fn rename_file_relative(
+fn rename_file_relative_with_hook<F>(
     source_parent: &Dir,
     source_name: &OsStr,
     destination_parent: &Dir,
@@ -1109,7 +1206,11 @@ fn rename_file_relative(
     expected_source: &JournalFileState,
     expected_destination: Option<&JournalFileState>,
     policy: &windows_acl::DaclPolicy,
-) -> super::Result<()> {
+    before_rename: F,
+) -> super::Result<()>
+where
+    F: FnOnce() -> super::Result<()>,
+{
     let mut source = open_mutation_file(source_parent, source_name, policy)?;
     if opened_file_state(&mut source, policy)? != *expected_source {
         return Err("Mutation source changed before handle-relative rename".into());
@@ -1133,6 +1234,7 @@ fn rename_file_relative(
         },
     }
 
+    before_rename()?;
     rename_open_file_relative(
         &source,
         destination_parent,
@@ -2756,6 +2858,9 @@ mod windows_tests {
         },
         path::Path,
         process::Command,
+        sync::mpsc::{self, Receiver, SyncSender},
+        thread::{self, JoinHandle},
+        time::Duration,
     };
 
     fn open_directory_with_add_file(
@@ -3078,6 +3183,99 @@ mod windows_tests {
         );
     }
 
+    fn race_fixture() -> (
+        tempfile::TempDir,
+        MutationContext,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    ) {
+        let work = mutation_fixture_tempdir();
+        let (target, git) = target_and_git(work.path());
+        let attacker = work.path().join("attacker-controlled");
+        fs::create_dir(&attacker).unwrap();
+        grant_everyone_modify(&attacker, true);
+        let sentinel = work.path().join("outside-sentinel.txt");
+        fs::write(&sentinel, b"outside bytes").unwrap();
+        let context = MutationContext::open(&target, &git).unwrap();
+        (
+            work,
+            context,
+            target,
+            attacker.canonicalize().unwrap(),
+            sentinel,
+        )
+    }
+
+    fn move_path(source: &Path, destination: &Path, flags: u32) -> Result<(), u32> {
+        use windows_sys::Win32::{Foundation::GetLastError, Storage::FileSystem::MoveFileExW};
+
+        let source_wide: Vec<u16> = source
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        let destination_wide: Vec<u16> = destination
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        if unsafe { MoveFileExW(source_wide.as_ptr(), destination_wide.as_ptr(), flags) } == 0 {
+            Err(unsafe { GetLastError() })
+        } else {
+            Ok(())
+        }
+    }
+
+    fn delete_path(path: &Path) -> Result<(), u32> {
+        use windows_sys::Win32::{Foundation::GetLastError, Storage::FileSystem::DeleteFileW};
+
+        let wide: Vec<u16> = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        if unsafe { DeleteFileW(wide.as_ptr()) } == 0 {
+            Err(unsafe { GetLastError() })
+        } else {
+            Ok(())
+        }
+    }
+
+    fn assert_blocked_by_acl_or_share(result: Result<(), u32>, operation: &str) {
+        use windows_sys::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION};
+
+        match result {
+            Err(code) if code == ERROR_ACCESS_DENIED || code == ERROR_SHARING_VIOLATION => {}
+            other => panic!("restricted token unexpectedly performed {operation}: {other:?}"),
+        }
+    }
+
+    fn control_move_paths(
+        attacker: &Path,
+        suffix: &str,
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
+        let source = attacker.join(format!("control-{suffix}-source.tmp"));
+        let destination = attacker.join(format!("control-{suffix}-destination.tmp"));
+        fs::write(&source, b"controlled source").unwrap();
+        grant_everyone_modify(&source, false);
+        (source, destination)
+    }
+
+    fn release_race_actor<T>(
+        ready: Receiver<()>,
+        release: SyncSender<()>,
+        actor: JoinHandle<T>,
+    ) -> T {
+        ready
+            .recv_timeout(Duration::from_secs(10))
+            .expect("restricted race actor did not reach the synchronized boundary");
+        release
+            .send(())
+            .expect("restricted race actor stopped before the synchronized attempt");
+        actor.join().expect("restricted race actor panicked")
+    }
+
     fn grant_everyone_inherit_only_modify(path: &Path) {
         let result = Command::new("icacls.exe")
             .arg(path)
@@ -3136,117 +3334,135 @@ mod windows_tests {
         );
     }
 
-    fn assert_restricted_identity_cannot_open(path: &Path, desired_access: u32, flags: u32) {
+    fn spawn_restricted_identity<F, T>(operation: F) -> JoinHandle<T>
+    where
+        F: FnOnce() -> T + Send + 'static,
+        T: Send + 'static,
+    {
+        // This test token retains the current user's SID and adds Everyone as a
+        // restricting SID; it models constrained access, not a separate account.
         use windows_sys::Win32::{
-            Foundation::{CloseHandle, GetLastError, HANDLE, INVALID_HANDLE_VALUE},
+            Foundation::HANDLE,
             Security::{
                 CreateRestrictedToken, SID_AND_ATTRIBUTES, TOKEN_DUPLICATE, TOKEN_QUERY,
                 WinWorldSid,
             },
-            Storage::FileSystem::{CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING},
             System::Threading::{GetCurrentProcess, OpenProcessToken},
         };
 
-        let mut everyone = [0u8; 68];
-        let mut everyone_length = everyone.len() as u32;
-        assert_ne!(
-            unsafe {
-                windows_sys::Win32::Security::CreateWellKnownSid(
-                    WinWorldSid,
-                    std::ptr::null_mut(),
-                    everyone.as_mut_ptr().cast(),
-                    &mut everyone_length,
-                )
-            },
-            0,
-            "cannot construct the Everyone SID for the restricted test token"
-        );
-        let restricting_sid = SID_AND_ATTRIBUTES {
-            Sid: everyone.as_mut_ptr().cast(),
-            Attributes: 0,
-        };
-
-        let mut source_token: HANDLE = std::ptr::null_mut();
-        assert_ne!(
-            unsafe {
-                OpenProcessToken(
-                    GetCurrentProcess(),
-                    TOKEN_DUPLICATE | TOKEN_QUERY,
-                    &mut source_token,
-                )
-            },
-            0,
-            "cannot open the process token for the restricted identity test"
-        );
-        let source_token = unsafe { OwnedHandle::from_raw_handle(source_token as _) };
-
-        let mut restricted_token: HANDLE = std::ptr::null_mut();
-        assert_ne!(
-            unsafe {
-                CreateRestrictedToken(
-                    source_token.as_raw_handle() as HANDLE,
-                    0,
-                    0,
-                    std::ptr::null(),
-                    0,
-                    std::ptr::null(),
-                    1,
-                    &restricting_sid,
-                    &mut restricted_token,
-                )
-            },
-            0,
-            "cannot create the restricted identity test token"
-        );
-        let restricted_token = unsafe { OwnedHandle::from_raw_handle(restricted_token as _) };
-
-        assert_ne!(
-            unsafe {
-                windows_sys::Win32::Security::ImpersonateLoggedOnUser(
-                    restricted_token.as_raw_handle() as HANDLE,
-                )
-            },
-            0,
-            "cannot impersonate the restricted identity test token"
-        );
-        struct RevertToSelf;
-        impl Drop for RevertToSelf {
-            fn drop(&mut self) {
-                assert_ne!(
-                    unsafe { windows_sys::Win32::Security::RevertToSelf() },
-                    0,
-                    "cannot leave the restricted identity test token"
-                );
-            }
-        }
-        let _revert = RevertToSelf;
-
-        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-        let handle = unsafe {
-            CreateFileW(
-                wide.as_ptr(),
-                desired_access,
-                FILE_SHARE_READ | FILE_SHARE_WRITE,
-                std::ptr::null(),
-                OPEN_EXISTING,
-                flags,
-                std::ptr::null_mut(),
-            )
-        };
-        let error = if handle == INVALID_HANDLE_VALUE {
-            unsafe { GetLastError() }
-        } else {
-            unsafe { CloseHandle(handle) };
-            panic!(
-                "restricted identity opened {} with access 0x{desired_access:08x}",
-                path.display()
+        thread::spawn(move || {
+            let mut everyone = [0u8; 68];
+            let mut everyone_length = everyone.len() as u32;
+            assert_ne!(
+                unsafe {
+                    windows_sys::Win32::Security::CreateWellKnownSid(
+                        WinWorldSid,
+                        std::ptr::null_mut(),
+                        everyone.as_mut_ptr().cast(),
+                        &mut everyone_length,
+                    )
+                },
+                0,
+                "cannot construct the Everyone SID for the restricted test token"
             );
+            let restricting_sid = SID_AND_ATTRIBUTES {
+                Sid: everyone.as_mut_ptr().cast(),
+                Attributes: 0,
+            };
+
+            let mut source_token: HANDLE = std::ptr::null_mut();
+            assert_ne!(
+                unsafe {
+                    OpenProcessToken(
+                        GetCurrentProcess(),
+                        TOKEN_DUPLICATE | TOKEN_QUERY,
+                        &mut source_token,
+                    )
+                },
+                0,
+                "cannot open the process token for the restricted identity test"
+            );
+            let source_token = unsafe { OwnedHandle::from_raw_handle(source_token as _) };
+
+            let mut restricted_token: HANDLE = std::ptr::null_mut();
+            assert_ne!(
+                unsafe {
+                    CreateRestrictedToken(
+                        source_token.as_raw_handle() as HANDLE,
+                        0,
+                        0,
+                        std::ptr::null(),
+                        0,
+                        std::ptr::null(),
+                        1,
+                        &restricting_sid,
+                        &mut restricted_token,
+                    )
+                },
+                0,
+                "cannot create the restricted identity test token"
+            );
+            let restricted_token = unsafe { OwnedHandle::from_raw_handle(restricted_token as _) };
+
+            assert_ne!(
+                unsafe {
+                    windows_sys::Win32::Security::ImpersonateLoggedOnUser(
+                        restricted_token.as_raw_handle() as HANDLE,
+                    )
+                },
+                0,
+                "cannot impersonate the restricted identity test token"
+            );
+            struct RevertToSelf;
+            impl Drop for RevertToSelf {
+                fn drop(&mut self) {
+                    assert_ne!(
+                        unsafe { windows_sys::Win32::Security::RevertToSelf() },
+                        0,
+                        "cannot leave the restricted identity test token"
+                    );
+                }
+            }
+            let _revert = RevertToSelf;
+            operation()
+        })
+    }
+
+    fn assert_restricted_identity_cannot_open(path: &Path, desired_access: u32, flags: u32) {
+        use windows_sys::Win32::{
+            Foundation::{CloseHandle, GetLastError, HANDLE, INVALID_HANDLE_VALUE},
+            Storage::FileSystem::{CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING},
         };
+
+        let display = path.display().to_string();
+        let path = path.to_path_buf();
+        let result = spawn_restricted_identity(move || {
+            let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+            let handle = unsafe {
+                CreateFileW(
+                    wide.as_ptr(),
+                    desired_access,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    std::ptr::null(),
+                    OPEN_EXISTING,
+                    flags,
+                    std::ptr::null_mut(),
+                )
+            };
+            if handle == INVALID_HANDLE_VALUE {
+                Err(unsafe { GetLastError() })
+            } else {
+                unsafe { CloseHandle(handle) };
+                Ok(())
+            }
+        })
+        .join()
+        .expect("restricted identity test thread panicked");
         assert_eq!(
-            error,
-            windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED,
-            "restricted identity got an unexpected access error for {}",
-            path.display()
+            result,
+            Err(windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED),
+            "restricted identity unexpectedly accessed {}",
+            display
         );
     }
 
@@ -3318,6 +3534,192 @@ mod windows_tests {
         let published_state = context.file_state(&destination).unwrap().unwrap();
         context.remove_file(&destination, &published_state).unwrap();
         assert!(context.file_state(&destination).unwrap().is_none());
+    }
+
+    #[test]
+    fn concurrent_untrusted_replacement_and_removal_are_blocked_before_promotion() {
+        use windows_sys::Win32::Storage::FileSystem::MOVEFILE_REPLACE_EXISTING;
+
+        let (_work, context, target, attacker, sentinel) = race_fixture();
+        let output_dir = target.join(".ai-guidebook");
+        context
+            .create_parent_dirs(&output_dir.join("placeholder"))
+            .unwrap();
+        let stage = output_dir.join("race-stage.tmp");
+        let destination = output_dir.join("race-destination.txt");
+        context.write_new(&stage, b"staged output").unwrap();
+        context
+            .write_new(&destination, b"original destination")
+            .unwrap();
+        let attacker_source = attacker.join("replacement-source.tmp");
+        fs::write(&attacker_source, b"attacker replacement").unwrap();
+        grant_everyone_modify(&attacker_source, false);
+        let actor_attacker_source = attacker_source.clone();
+        let (control_source, control_destination) = control_move_paths(&attacker, "promote");
+
+        let (ready, actor_ready) = mpsc::channel();
+        let (release, actor_release) = mpsc::sync_channel(0);
+        let actor_destination = destination.clone();
+        let actor = spawn_restricted_identity(move || {
+            let control = move_path(&control_source, &control_destination, 0);
+            actor_ready.send(()).unwrap();
+            actor_release
+                .recv_timeout(Duration::from_secs(10))
+                .expect("promotion race hook did not release the restricted actor");
+            let replacement = move_path(
+                &actor_attacker_source,
+                &actor_destination,
+                MOVEFILE_REPLACE_EXISTING,
+            );
+            let removal = delete_path(&actor_destination);
+            (control, replacement, removal)
+        });
+
+        let stage_state = context.file_state(&stage).unwrap().unwrap();
+        let destination_state = context.file_state(&destination).unwrap().unwrap();
+        let callback_destination = destination.clone();
+        let callback_attacker_source = attacker_source.clone();
+        let callback_sentinel = sentinel.clone();
+        context
+            .rename_with_pre_rename_hook(
+                &stage,
+                &destination,
+                &stage_state,
+                Some(&destination_state),
+                move || {
+                    let (control, replacement, removal) = release_race_actor(ready, release, actor);
+                    assert_eq!(control, Ok(()), "restricted control rename failed");
+                    assert_blocked_by_acl_or_share(replacement, "replace the destination");
+                    assert_blocked_by_acl_or_share(removal, "remove the destination");
+                    assert_eq!(
+                        fs::read(&callback_destination).unwrap(),
+                        b"original destination"
+                    );
+                    assert!(callback_attacker_source.exists());
+                    assert_eq!(fs::read(&callback_sentinel).unwrap(), b"outside bytes");
+                    Ok(())
+                },
+            )
+            .unwrap();
+
+        assert_eq!(context.read(&destination).unwrap(), b"staged output");
+        assert!(context.file_state(&stage).unwrap().is_none());
+        assert!(attacker.join("replacement-source.tmp").exists());
+        assert_eq!(fs::read(&sentinel).unwrap(), b"outside bytes");
+    }
+
+    #[test]
+    fn concurrent_untrusted_replacement_and_removal_are_blocked_at_journal_commit() {
+        use windows_sys::Win32::Storage::FileSystem::MOVEFILE_REPLACE_EXISTING;
+
+        let (_work, context, _target, attacker, sentinel) = race_fixture();
+        let journal = context.git_path().join("adoption-journal.json");
+        context.write_new(&journal, b"prepared journal").unwrap();
+        let attacker_source = attacker.join("journal-replacement-source.tmp");
+        fs::write(&attacker_source, b"attacker journal").unwrap();
+        grant_everyone_modify(&attacker_source, false);
+        let actor_attacker_source = attacker_source.clone();
+        let (control_source, control_destination) = control_move_paths(&attacker, "journal");
+
+        let (ready, actor_ready) = mpsc::channel();
+        let (release, actor_release) = mpsc::sync_channel(0);
+        let actor_journal = journal.clone();
+        let actor = spawn_restricted_identity(move || {
+            let control = move_path(&control_source, &control_destination, 0);
+            actor_ready.send(()).unwrap();
+            actor_release
+                .recv_timeout(Duration::from_secs(10))
+                .expect("journal race hook did not release the restricted actor");
+            let replacement = move_path(
+                &actor_attacker_source,
+                &actor_journal,
+                MOVEFILE_REPLACE_EXISTING,
+            );
+            let removal = delete_path(&actor_journal);
+            (control, replacement, removal)
+        });
+
+        let callback_journal = journal.clone();
+        let callback_attacker_source = attacker_source.clone();
+        let callback_sentinel = sentinel.clone();
+        context
+            .write_atomic_with_pre_rename_hook(&journal, b"committed journal", false, move || {
+                let (control, replacement, removal) = release_race_actor(ready, release, actor);
+                assert_eq!(control, Ok(()), "restricted control rename failed");
+                assert_blocked_by_acl_or_share(replacement, "replace the journal");
+                assert_blocked_by_acl_or_share(removal, "remove the journal");
+                assert_eq!(fs::read(&callback_journal).unwrap(), b"prepared journal");
+                assert!(callback_attacker_source.exists());
+                assert_eq!(fs::read(&callback_sentinel).unwrap(), b"outside bytes");
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(context.read(&journal).unwrap(), b"committed journal");
+        assert!(attacker.join("journal-replacement-source.tmp").exists());
+        assert_eq!(fs::read(&sentinel).unwrap(), b"outside bytes");
+    }
+
+    #[test]
+    fn concurrent_untrusted_removal_is_blocked_during_stage_and_journal_cleanup() {
+        let (_work, context, target, attacker, sentinel) = race_fixture();
+        let stage_dir = target.join(".ai-guidebook");
+        context
+            .create_parent_dirs(&stage_dir.join("placeholder"))
+            .unwrap();
+        let cleanup_targets = [
+            (
+                "stage",
+                stage_dir.join("cleanup-stage.tmp"),
+                b"stage cleanup".as_slice(),
+            ),
+            (
+                "journal",
+                context.git_path().join("cleanup-journal.tmp"),
+                b"journal cleanup".as_slice(),
+            ),
+        ];
+
+        for (suffix, path, contents) in cleanup_targets {
+            context.write_new(&path, contents).unwrap();
+            let expected = context.file_state(&path).unwrap().unwrap();
+            let exfiltration = attacker.join(format!("exfiltrated-{suffix}.tmp"));
+            let (control_source, control_destination) = control_move_paths(&attacker, suffix);
+            let (ready, actor_ready) = mpsc::channel();
+            let (release, actor_release) = mpsc::sync_channel(0);
+            let actor_path = path.clone();
+            let actor_exfiltration = exfiltration.clone();
+            let actor = spawn_restricted_identity(move || {
+                let control = move_path(&control_source, &control_destination, 0);
+                actor_ready.send(()).unwrap();
+                actor_release
+                    .recv_timeout(Duration::from_secs(10))
+                    .expect("cleanup race hook did not release the restricted actor");
+                let move_out = move_path(&actor_path, &actor_exfiltration, 0);
+                let remove = delete_path(&actor_path);
+                (control, move_out, remove)
+            });
+
+            let callback_path = path.clone();
+            let callback_exfiltration = exfiltration.clone();
+            let callback_sentinel = sentinel.clone();
+            context
+                .remove_file_with_pre_delete_hook(&path, &expected, move || {
+                    let (control, move_out, remove) = release_race_actor(ready, release, actor);
+                    assert_eq!(control, Ok(()), "restricted control rename failed");
+                    assert_blocked_by_acl_or_share(move_out, "move a cleanup target outside");
+                    assert_blocked_by_acl_or_share(remove, "remove a cleanup target");
+                    assert_eq!(fs::read(&callback_path).unwrap(), contents);
+                    assert!(!callback_exfiltration.exists());
+                    assert_eq!(fs::read(&callback_sentinel).unwrap(), b"outside bytes");
+                    Ok(())
+                })
+                .unwrap();
+
+            assert!(context.file_state(&path).unwrap().is_none());
+            assert!(!exfiltration.exists());
+            assert_eq!(fs::read(&sentinel).unwrap(), b"outside bytes");
+        }
     }
 
     #[test]
