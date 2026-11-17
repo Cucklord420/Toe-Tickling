@@ -2886,6 +2886,178 @@ mod windows_tests {
         );
     }
 
+    fn grant_everyone_inherit_only_modify(path: &Path) {
+        let result = Command::new("icacls.exe")
+            .arg(path)
+            .args(["/grant", "*S-1-1-0:(OI)(CI)(IO)M"])
+            .output()
+            .expect("Windows ACL editor is available on the CI runner");
+        assert!(
+            result.status.success(),
+            "icacls failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
+    fn assert_dacl_is_protected(handle: std::os::windows::io::RawHandle) {
+        use windows_sys::Win32::{
+            Foundation::{HANDLE, LocalFree},
+            Security::Authorization::{GetSecurityInfo, SE_FILE_OBJECT},
+            Security::DACL_SECURITY_INFORMATION,
+            Security::{GetSecurityDescriptorControl, SE_DACL_PROTECTED},
+        };
+
+        let mut descriptor = std::ptr::null_mut();
+        let status = unsafe {
+            GetSecurityInfo(
+                handle as HANDLE,
+                SE_FILE_OBJECT,
+                DACL_SECURITY_INFORMATION,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut descriptor,
+            )
+        };
+        assert_eq!(status, 0, "GetSecurityInfo failed with {status}");
+        assert!(
+            !descriptor.is_null(),
+            "GetSecurityInfo returned no descriptor"
+        );
+
+        let mut control = 0u16;
+        let mut revision = 0u32;
+        let read_control =
+            unsafe { GetSecurityDescriptorControl(descriptor, &mut control, &mut revision) };
+        unsafe {
+            LocalFree(descriptor.cast());
+        }
+        assert_ne!(
+            read_control, 0,
+            "cannot read security descriptor control flags"
+        );
+        assert_ne!(
+            control & SE_DACL_PROTECTED,
+            0,
+            "new object inherited a DACL from its parent"
+        );
+    }
+
+    fn assert_restricted_identity_cannot_open(path: &Path, desired_access: u32, flags: u32) {
+        use windows_sys::Win32::{
+            Foundation::{CloseHandle, GetLastError, HANDLE, INVALID_HANDLE_VALUE},
+            Security::{
+                CreateRestrictedToken, SID_AND_ATTRIBUTES, TOKEN_DUPLICATE, TOKEN_QUERY,
+                WinWorldSid,
+            },
+            Storage::FileSystem::{CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING},
+            System::Threading::{GetCurrentProcess, OpenProcessToken},
+        };
+
+        let mut everyone = [0u8; 68];
+        let mut everyone_length = everyone.len() as u32;
+        assert_ne!(
+            unsafe {
+                windows_sys::Win32::Security::CreateWellKnownSid(
+                    WinWorldSid,
+                    std::ptr::null_mut(),
+                    everyone.as_mut_ptr().cast(),
+                    &mut everyone_length,
+                )
+            },
+            0,
+            "cannot construct the Everyone SID for the restricted test token"
+        );
+        let restricting_sid = SID_AND_ATTRIBUTES {
+            Sid: everyone.as_mut_ptr().cast(),
+            Attributes: 0,
+        };
+
+        let mut source_token: HANDLE = std::ptr::null_mut();
+        assert_ne!(
+            unsafe {
+                OpenProcessToken(
+                    GetCurrentProcess(),
+                    TOKEN_DUPLICATE | TOKEN_QUERY,
+                    &mut source_token,
+                )
+            },
+            0,
+            "cannot open the process token for the restricted identity test"
+        );
+        let source_token = unsafe { OwnedHandle::from_raw_handle(source_token as _) };
+
+        let mut restricted_token: HANDLE = std::ptr::null_mut();
+        assert_ne!(
+            unsafe {
+                CreateRestrictedToken(
+                    source_token.as_raw_handle() as HANDLE,
+                    0,
+                    0,
+                    std::ptr::null(),
+                    0,
+                    std::ptr::null(),
+                    1,
+                    &restricting_sid,
+                    &mut restricted_token,
+                )
+            },
+            0,
+            "cannot create the restricted identity test token"
+        );
+        let restricted_token = unsafe { OwnedHandle::from_raw_handle(restricted_token as _) };
+
+        assert_ne!(
+            unsafe {
+                windows_sys::Win32::Security::ImpersonateLoggedOnUser(
+                    restricted_token.as_raw_handle() as HANDLE,
+                )
+            },
+            0,
+            "cannot impersonate the restricted identity test token"
+        );
+        struct RevertToSelf;
+        impl Drop for RevertToSelf {
+            fn drop(&mut self) {
+                assert_ne!(
+                    unsafe { windows_sys::Win32::Security::RevertToSelf() },
+                    0,
+                    "cannot leave the restricted identity test token"
+                );
+            }
+        }
+        let _revert = RevertToSelf;
+
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let handle = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                desired_access,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                flags,
+                std::ptr::null_mut(),
+            )
+        };
+        let error = if handle == INVALID_HANDLE_VALUE {
+            unsafe { GetLastError() }
+        } else {
+            unsafe { CloseHandle(handle) };
+            panic!(
+                "restricted identity opened {} with access 0x{desired_access:08x}",
+                path.display()
+            );
+        };
+        assert_eq!(
+            error,
+            windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED,
+            "restricted identity got an unexpected access error for {}",
+            path.display()
+        );
+    }
+
     fn grant_everyone_add_subdirectory(path: &Path) {
         let result = Command::new("icacls.exe")
             .arg(path)
@@ -3105,35 +3277,77 @@ mod windows_tests {
     }
 
     #[test]
-    fn unsafe_inherited_stage_dacl_is_rejected_before_content_is_written() {
+    fn new_stage_file_does_not_inherit_untrusted_write_access() {
         let work = mutation_fixture_tempdir();
         let (target, git) = target_and_git(work.path());
         let context = MutationContext::open(&target, &git).unwrap();
         let stage = target.join(".ai-guidebook/stage.tmp");
         let unsafe_parent = stage.parent().unwrap();
-        let outside = work.path().join("outside");
-        fs::create_dir(&outside).unwrap();
-        let sentinel = outside.join("sentinel");
-        fs::write(&sentinel, b"outside bytes").unwrap();
         context.create_parent_dirs(&stage).unwrap();
-        grant_everyone_modify(unsafe_parent, true);
+        grant_everyone_inherit_only_modify(unsafe_parent);
 
-        let error = match context.write_new(&stage, b"must not be written") {
-            Ok(()) => panic!("unsafe inherited stage DACL must be rejected"),
-            Err(error) => error,
-        };
+        context
+            .write_new(&stage, b"protected staged bytes")
+            .unwrap_or_else(|error| panic!("safe stage creation failed: {error}"));
 
-        assert!(error.contains("DACL"), "unexpected error: {error}");
-        assert!(!stage.exists());
-        let journal = unsafe_parent.join("journal.json");
-        let error = match context.write_atomic(&journal, b"must not be written", true) {
-            Ok(()) => panic!("unsafe inherited journal DACL must be rejected"),
-            Err(error) => error,
-        };
-        assert!(error.contains("DACL"), "unexpected error: {error}");
-        assert!(!journal.exists());
-        assert!(fs::read_dir(unsafe_parent).unwrap().next().is_none());
-        assert_eq!(fs::read(sentinel).unwrap(), b"outside bytes");
+        let file = fs::File::open(&stage).unwrap();
+        assert_dacl_is_protected(file.as_raw_handle());
+        assert_restricted_identity_cannot_open(
+            &stage,
+            windows_sys::Win32::Storage::FileSystem::FILE_WRITE_DATA,
+            0,
+        );
+        assert_eq!(fs::read(stage).unwrap(), b"protected staged bytes");
+    }
+
+    #[test]
+    fn new_journal_temporary_does_not_inherit_untrusted_write_access() {
+        let work = mutation_fixture_tempdir();
+        let (target, git) = target_and_git(work.path());
+        let context = MutationContext::open(&target, &git).unwrap();
+        let journal = git.join("journal.json");
+        grant_everyone_inherit_only_modify(&git);
+
+        context
+            .write_atomic(&journal, b"protected journal bytes", true)
+            .unwrap_or_else(|error| panic!("safe journal creation failed: {error}"));
+
+        let file = fs::File::open(&journal).unwrap();
+        assert_dacl_is_protected(file.as_raw_handle());
+        assert_restricted_identity_cannot_open(
+            &journal,
+            windows_sys::Win32::Storage::FileSystem::FILE_WRITE_DATA,
+            0,
+        );
+        assert_eq!(fs::read(journal).unwrap(), b"protected journal bytes");
+    }
+
+    #[test]
+    fn new_output_directory_does_not_inherit_untrusted_write_access() {
+        let work = mutation_fixture_tempdir();
+        let (target, git) = target_and_git(work.path());
+        let context = MutationContext::open(&target, &git).unwrap();
+        let parent = target.join(".ai-guidebook");
+        context
+            .create_parent_dirs(&parent.join("placeholder"))
+            .unwrap();
+        grant_everyone_inherit_only_modify(&parent);
+        let nested = parent.join("nested");
+
+        context
+            .create_parent_dirs(&nested.join("stage.tmp"))
+            .unwrap_or_else(|error| panic!("safe output directory creation failed: {error}"));
+
+        let pinned_parent =
+            super::open_directory_nofollow(&context.target.root, OsStr::new(".ai-guidebook"))
+                .unwrap();
+        let created = super::open_directory_nofollow(&pinned_parent, OsStr::new("nested")).unwrap();
+        assert_dacl_is_protected(created.as_raw_handle());
+        assert_restricted_identity_cannot_open(
+            &nested,
+            windows_sys::Win32::Storage::FileSystem::FILE_ADD_FILE,
+            windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS,
+        );
     }
 
     #[test]
