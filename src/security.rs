@@ -170,13 +170,13 @@ fn staged_entries(root: &Path) -> Result<Option<BTreeMap<PathBuf, String>>> {
         if fields.next().is_some() || stage != "0" {
             return Err(fail(
                 "Conflicted Git index entry requires review",
-                Path::new(path),
+                &relative,
             ));
         }
         if !matches!(mode, "100644" | "100755") {
             return Err(fail(
                 "Public staged path must be a regular file, not a symlink or special entry",
-                Path::new(path),
+                &relative,
             ));
         }
         if !matches!(oid.len(), 40 | 64) || !oid.bytes().all(|byte| byte.is_ascii_hexdigit()) {
