@@ -299,45 +299,18 @@ impl MutationContext {
             #[cfg(windows)]
             &self.dacl,
         )?;
-        let mut options = cap_std::fs::OpenOptions::new();
-        options
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .follow(FollowSymlinks::No);
-        #[cfg(unix)]
-        {
-            use cap_std::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        #[cfg(windows)]
-        {
-            use cap_std::fs::OpenOptionsExt;
-            use windows_sys::Win32::Storage::FileSystem::{
-                DELETE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_READ_DATA,
-                FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_DATA, READ_CONTROL, SYNCHRONIZE,
-            };
-            options
-                .access_mode(
-                    DELETE
-                        | FILE_READ_DATA
-                        | FILE_WRITE_DATA
-                        | FILE_READ_ATTRIBUTES
-                        | READ_CONTROL
-                        | SYNCHRONIZE,
-                )
-                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-        }
-        let mut file = parent
-            .directory
-            .open_with(&parent.leaf, &options)
-            .map_err(|error| format!("Cannot create {}: {error}", path.display()))?;
+        let mut file = create_file_entry(
+            &parent.directory,
+            &parent.leaf,
+            #[cfg(windows)]
+            &self.dacl,
+        )
+        .map_err(|error| format!("Cannot create {}: {error}", path.display()))?;
         let verification = file
             .metadata()
             .map_err(|error| format!("Cannot inspect new file {}: {error}", path.display()))
             .and_then(|metadata| {
-                verify_file(
+                verify_created_file(
                     &file,
                     &metadata,
                     #[cfg(windows)]
@@ -730,7 +703,11 @@ pub(super) fn windows_file_identity(
 }
 
 #[cfg(windows)]
-fn create_directory_relative(parent: &Dir, name: &OsStr) -> std::io::Result<Dir> {
+fn create_directory_relative(
+    parent: &Dir,
+    name: &OsStr,
+    policy: &windows_acl::DaclPolicy,
+) -> std::io::Result<Dir> {
     use std::os::{
         windows::ffi::OsStrExt,
         windows::io::{FromRawHandle, OwnedHandle},
@@ -773,6 +750,9 @@ fn create_directory_relative(parent: &Dir, name: &OsStr) -> std::io::Result<Dir>
             "Directory component exceeds the Windows name limit",
         ));
     };
+    let security = policy
+        .creation_security_descriptor()
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
     let mut object_name = UNICODE_STRING {
         Length: name_length,
         MaximumLength: name_length,
@@ -783,7 +763,7 @@ fn create_directory_relative(parent: &Dir, name: &OsStr) -> std::io::Result<Dir>
         RootDirectory: parent.as_raw_handle() as _,
         ObjectName: &mut object_name,
         Attributes: OBJ_CASE_INSENSITIVE,
-        SecurityDescriptor: std::ptr::null(),
+        SecurityDescriptor: security.as_ptr(),
         SecurityQualityOfService: std::ptr::null(),
     };
     let mut handle = std::ptr::null_mut();
@@ -825,6 +805,112 @@ fn create_directory_relative(parent: &Dir, name: &OsStr) -> std::io::Result<Dir>
     }
     let owned = unsafe { OwnedHandle::from_raw_handle(handle as _) };
     Ok(Dir::from(owned))
+}
+
+#[cfg(windows)]
+fn create_file_relative(
+    parent: &Dir,
+    name: &OsStr,
+    policy: &windows_acl::DaclPolicy,
+) -> std::io::Result<cap_std::fs::File> {
+    use std::os::{
+        windows::ffi::OsStrExt,
+        windows::io::{FromRawHandle, OwnedHandle},
+    };
+    use windows_sys::{
+        Wdk::{
+            Foundation::OBJECT_ATTRIBUTES,
+            Storage::FileSystem::{
+                FILE_CREATE, FILE_NON_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT,
+                FILE_SYNCHRONOUS_IO_NONALERT, NtCreateFile,
+            },
+        },
+        Win32::{
+            Foundation::{
+                OBJ_CASE_INSENSITIVE, RtlNtStatusToDosError, STATUS_OBJECT_NAME_COLLISION,
+                STATUS_SUCCESS, UNICODE_STRING,
+            },
+            Storage::FileSystem::{
+                DELETE, FILE_ATTRIBUTE_NORMAL, FILE_READ_ATTRIBUTES, FILE_READ_DATA,
+                FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_DATA, READ_CONTROL, SYNCHRONIZE,
+            },
+        },
+    };
+
+    let mut wide: Vec<u16> = name.encode_wide().collect();
+    if wide.is_empty() || wide.iter().any(|unit| *unit == 0) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "File component is empty or contains a NUL",
+        ));
+    }
+    let Some(name_length) = wide.len().checked_mul(std::mem::size_of::<u16>()) else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "File component length overflowed",
+        ));
+    };
+    let Ok(name_length) = u16::try_from(name_length) else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "File component exceeds the Windows name limit",
+        ));
+    };
+    let security = policy
+        .creation_security_descriptor()
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    let mut object_name = UNICODE_STRING {
+        Length: name_length,
+        MaximumLength: name_length,
+        Buffer: wide.as_mut_ptr(),
+    };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: std::mem::size_of::<OBJECT_ATTRIBUTES>() as u32,
+        RootDirectory: parent.as_raw_handle() as _,
+        ObjectName: &mut object_name,
+        Attributes: OBJ_CASE_INSENSITIVE,
+        SecurityDescriptor: security.as_ptr(),
+        SecurityQualityOfService: std::ptr::null(),
+    };
+    let mut handle = std::ptr::null_mut();
+    let mut status_block = windows_sys::Win32::System::IO::IO_STATUS_BLOCK::default();
+    let status = unsafe {
+        NtCreateFile(
+            &mut handle,
+            DELETE
+                | FILE_READ_DATA
+                | FILE_WRITE_DATA
+                | FILE_READ_ATTRIBUTES
+                | READ_CONTROL
+                | SYNCHRONIZE,
+            &attributes,
+            &mut status_block,
+            std::ptr::null(),
+            FILE_ATTRIBUTE_NORMAL,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            FILE_CREATE,
+            FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+            std::ptr::null(),
+            0,
+        )
+    };
+    if status != STATUS_SUCCESS {
+        if status == STATUS_OBJECT_NAME_COLLISION {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "File component already exists",
+            ));
+        }
+        let code = unsafe { RtlNtStatusToDosError(status) };
+        return Err(std::io::Error::from_raw_os_error(code as i32));
+    }
+    if handle.is_null() {
+        return Err(std::io::Error::other(
+            "NtCreateFile returned success without a file handle",
+        ));
+    }
+    let owned = unsafe { OwnedHandle::from_raw_handle(handle as _) };
+    Ok(cap_std::fs::File::from(owned))
 }
 
 #[cfg(windows)]
@@ -1462,7 +1548,11 @@ impl AnchoredDir {
                     #[cfg(windows)]
                     policy,
                     #[cfg(windows)]
-                    windows_acl::DaclScope::ProtectedObject,
+                    if created_here {
+                        windows_acl::DaclScope::CreatedObject
+                    } else {
+                        windows_acl::DaclScope::ProtectedObject
+                    },
                 )
             })();
             if let Err(error) = verification {
@@ -1525,11 +1615,11 @@ fn dacl_scope_for_path(
 fn create_directory_entry(
     parent: &Dir,
     name: &OsStr,
-    #[cfg(windows)] _policy: &windows_acl::DaclPolicy,
+    #[cfg(windows)] policy: &windows_acl::DaclPolicy,
 ) -> std::io::Result<Dir> {
     #[cfg(windows)]
     {
-        create_directory_relative(parent, name)
+        create_directory_relative(parent, name, policy)
     }
     #[cfg(unix)]
     {
@@ -1545,6 +1635,37 @@ fn create_directory_entry(
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
             "Protected directory creation is unsupported on this platform",
+        ))
+    }
+}
+
+fn create_file_entry(
+    parent: &Dir,
+    name: &OsStr,
+    #[cfg(windows)] policy: &windows_acl::DaclPolicy,
+) -> std::io::Result<cap_std::fs::File> {
+    #[cfg(windows)]
+    {
+        create_file_relative(parent, name, policy)
+    }
+    #[cfg(unix)]
+    {
+        let mut options = cap_std::fs::OpenOptions::new();
+        use cap_std::fs::OpenOptionsExt;
+        options
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .follow(FollowSymlinks::No)
+            .mode(0o600);
+        parent.open_with(name, &options)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (parent, name);
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "Protected file creation is unsupported on this platform",
         ))
     }
 }
@@ -1693,6 +1814,22 @@ fn verify_file(
     Ok(())
 }
 
+fn verify_created_file(
+    file: &cap_std::fs::File,
+    metadata: &cap_std::fs::Metadata,
+    #[cfg(windows)] policy: &windows_acl::DaclPolicy,
+) -> super::Result<()> {
+    verify_file(
+        file,
+        metadata,
+        #[cfg(windows)]
+        policy,
+    )?;
+    #[cfg(windows)]
+    policy.check_handle(file.as_raw_handle(), windows_acl::DaclScope::CreatedObject)?;
+    Ok(())
+}
+
 fn same_file(left: &cap_std::fs::Metadata, right: &cap_std::fs::Metadata) -> super::Result<()> {
     #[cfg(unix)]
     {
@@ -1744,43 +1881,18 @@ fn create_temp(
             ".toe-tickling-adoption-{}-{counter}.tmp",
             std::process::id()
         ));
-        let mut options = cap_std::fs::OpenOptions::new();
-        options
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .follow(FollowSymlinks::No);
-        #[cfg(unix)]
-        {
-            use cap_std::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        #[cfg(windows)]
-        {
-            use cap_std::fs::OpenOptionsExt;
-            use windows_sys::Win32::Storage::FileSystem::{
-                DELETE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_READ_DATA,
-                FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_WRITE_DATA, READ_CONTROL, SYNCHRONIZE,
-            };
-            options
-                .access_mode(
-                    DELETE
-                        | FILE_READ_DATA
-                        | FILE_WRITE_DATA
-                        | FILE_READ_ATTRIBUTES
-                        | READ_CONTROL
-                        | SYNCHRONIZE,
-                )
-                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-                .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
-        }
-        match parent.directory.open_with(&name, &options) {
+        match create_file_entry(
+            &parent.directory,
+            &name,
+            #[cfg(windows)]
+            policy,
+        ) {
             Ok(mut file) => {
                 let verification =
                     file.metadata()
                         .map_err(|error| error.to_string())
                         .and_then(|metadata| {
-                            verify_file(
+                            verify_created_file(
                                 &file,
                                 &metadata,
                                 #[cfg(windows)]
@@ -1839,15 +1951,17 @@ mod windows_acl {
         path::{Component, Path, PathBuf},
     };
     use windows_sys::Win32::{
-        Foundation::{CloseHandle, HANDLE, LocalFree},
+        Foundation::{CloseHandle, GetLastError, HANDLE, LocalFree},
         Security::Authorization::{
-            ConvertSidToStringSidW, ConvertStringSidToSidW, GetSecurityInfo, SE_FILE_OBJECT,
+            ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+            ConvertStringSidToSidW, GetSecurityInfo, SDDL_REVISION_1, SE_FILE_OBJECT,
         },
         Security::{
             ACE_HEADER, ACL, ACL_SIZE_INFORMATION, AclSizeInformation, CreateWellKnownSid,
             DACL_SECURITY_INFORMATION, EqualSid, GetAce, GetAclInformation, GetLengthSid,
-            GetSecurityDescriptorDacl, GetTokenInformation, IsValidSid, OWNER_SECURITY_INFORMATION,
-            PSID, TOKEN_QUERY, TOKEN_USER, TokenUser, WELL_KNOWN_SID_TYPE,
+            GetSecurityDescriptorControl, GetSecurityDescriptorDacl, GetTokenInformation,
+            IsValidSid, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SE_DACL_PROTECTED,
+            SECURITY_DESCRIPTOR, TOKEN_QUERY, TOKEN_USER, TokenUser, WELL_KNOWN_SID_TYPE,
             WinBuiltinAdministratorsSid, WinCreatorOwnerSid, WinLocalSystemSid,
         },
         Storage::FileSystem::{
@@ -1877,11 +1991,31 @@ mod windows_acl {
     pub(super) enum DaclScope {
         ExistingPathAncestry,
         ProtectedObject,
+        CreatedObject,
     }
 
     pub(super) struct DaclPolicy {
         trusted_sids: Vec<Vec<u8>>,
+        current_user_sid: Vec<u8>,
         owner_rights_sid: Vec<u8>,
+    }
+
+    pub(super) struct CreationSecurityDescriptor {
+        raw: PSECURITY_DESCRIPTOR,
+    }
+
+    impl CreationSecurityDescriptor {
+        pub(super) fn as_ptr(&self) -> *const SECURITY_DESCRIPTOR {
+            self.raw
+        }
+    }
+
+    impl Drop for CreationSecurityDescriptor {
+        fn drop(&mut self) {
+            unsafe {
+                LocalFree(self.raw.cast());
+            }
+        }
     }
 
     impl DaclPolicy {
@@ -1894,9 +2028,50 @@ mod windows_acl {
                 string_sid("S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464")?;
             let owner_rights_sid = string_sid("S-1-3-4")?;
             Ok(Self {
-                trusted_sids: vec![current, system, admins, creator_owner, trusted_installer],
+                trusted_sids: vec![
+                    current.clone(),
+                    system,
+                    admins,
+                    creator_owner,
+                    trusted_installer,
+                ],
+                current_user_sid: current,
                 owner_rights_sid,
             })
+        }
+
+        pub(super) fn creation_security_descriptor(
+            &self,
+        ) -> super::super::super::Result<CreationSecurityDescriptor> {
+            let current_sid = sid_string(self.current_user_sid.as_ptr() as PSID);
+            if current_sid == "unavailable" {
+                return Err(
+                    "Cannot format the current Windows user SID for a new object's DACL".into(),
+                );
+            }
+            let sddl = format!("O:{current_sid}D:P(A;;FA;;;{current_sid})(A;;FA;;;SY)(A;;FA;;;BA)");
+            let wide: Vec<u16> = sddl.encode_utf16().chain(Some(0)).collect();
+            let mut raw = std::ptr::null_mut();
+            let mut descriptor_size = 0u32;
+            let converted = unsafe {
+                ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                    wide.as_ptr(),
+                    SDDL_REVISION_1,
+                    &mut raw,
+                    &mut descriptor_size,
+                )
+            };
+            if converted == 0 || raw.is_null() || descriptor_size == 0 {
+                if !raw.is_null() {
+                    unsafe { LocalFree(raw.cast()) };
+                }
+                return Err(format!(
+                    "Cannot build a protected Windows creation DACL (error {})",
+                    unsafe { GetLastError() }
+                )
+                .into());
+            }
+            Ok(CreationSecurityDescriptor { raw })
         }
 
         pub(super) fn check_handle(
@@ -1946,6 +2121,17 @@ mod windows_acl {
             if owner.is_null() || unsafe { IsValidSid(owner) } == 0 || !self.trusted(owner) {
                 return Err("Mutation object's owner is not trusted".into());
             }
+            if scope == DaclScope::CreatedObject {
+                let mut control = 0u16;
+                let mut revision = 0u32;
+                if unsafe {
+                    GetSecurityDescriptorControl(descriptor.cast(), &mut control, &mut revision)
+                } == 0
+                    || control & SE_DACL_PROTECTED == 0
+                {
+                    return Err("New mutation object does not have a protected DACL".into());
+                }
+            }
             let mut present = 0;
             let mut defaulted = 0;
             let mut checked_dacl = std::ptr::null_mut();
@@ -1991,6 +2177,12 @@ mod windows_acl {
                     return Err("Cannot read mutation object's DACL entry".into());
                 }
                 let header = unsafe { &*(ace_pointer as *const ACE_HEADER) };
+                if scope == DaclScope::CreatedObject && header.AceFlags != 0 {
+                    return Err(
+                        "New mutation object's DACL contains an inherited or inheritable ACE"
+                            .into(),
+                    );
+                }
                 let ace_start = ace_pointer as usize;
                 let ace_size = header.AceSize as usize;
                 let ace_end = ace_start
