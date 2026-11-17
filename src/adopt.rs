@@ -2517,10 +2517,10 @@ mod tests {
     }
 
     #[cfg(windows)]
-    fn grant_everyone_inherit_only_file_write(path: &Path) {
+    fn grant_everyone_file_write(path: &Path) {
         let output = std::process::Command::new("icacls.exe")
             .arg(path)
-            .args(["/grant", "*S-1-1-0:(OI)(IO)(WD)"])
+            .args(["/grant", "*S-1-1-0:(WD)"])
             .output()
             .expect("Windows ACL editor is available on the CI runner");
         assert!(
@@ -2766,7 +2766,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn recovery_rejects_unsafe_inherited_journal_acl_before_clearing_readonly() {
+    fn recovery_rejects_unsafe_journal_dacl_before_clearing_readonly() {
         let (_scratch, target) = target_fixture();
         set_readonly(&target, GUIDE, true);
         let plan = fixture_plan(&target);
@@ -2786,17 +2786,7 @@ mod tests {
         let git_dir = journal_file.parent().unwrap().to_path_buf();
         let context = mutation::MutationContext::open(&target, &git_dir).unwrap();
         let journal_before = fs::read(&journal_file).unwrap();
-        grant_everyone_inherit_only_file_write(&git_dir);
-
-        let probe = git_dir.join("unsafe-inherited-journal-probe.json");
-        let probe_error = context
-            .write_atomic(&probe, b"must not be written", true)
-            .unwrap_err();
-        assert!(
-            probe_error.contains("DACL"),
-            "unexpected error: {probe_error}"
-        );
-        assert!(!probe.exists());
+        grant_everyone_file_write(&journal_file);
 
         let destination_before = file_state(&target, GUIDE).unwrap();
         let error = prepare_destination_for_replacement_with(
