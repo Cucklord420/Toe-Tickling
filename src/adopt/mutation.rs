@@ -1894,6 +1894,16 @@ fn verify_file(
 ) -> super::Result<()> {
     #[cfg(not(windows))]
     let _ = file;
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+        validate_windows_regular_file(
+            metadata.is_file(),
+            metadata.file_type().is_symlink(),
+            metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0,
+        )?;
+    }
+    #[cfg(not(windows))]
     if !metadata.is_file() || metadata.file_type().is_symlink() {
         return Err("Mutation target is not a regular file".into());
     }
@@ -1913,6 +1923,18 @@ fn verify_file(
         file.as_raw_handle(),
         windows_acl::DaclScope::ProtectedObject,
     )?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn validate_windows_regular_file(
+    is_file: bool,
+    is_symlink: bool,
+    _is_reparse_point: bool,
+) -> super::Result<()> {
+    if !is_file || is_symlink {
+        return Err("Mutation target is not a regular file".into());
+    }
     Ok(())
 }
 
@@ -2848,7 +2870,8 @@ mod linux_tests {
 
 #[cfg(all(test, windows))]
 mod windows_tests {
-    use super::{MutationContext, open_mutation_file};
+    use super::JournalPermissions;
+    use super::{MutationContext, open_mutation_file, validate_windows_regular_file};
     use std::{
         ffi::OsStr,
         fs, io,
@@ -3974,5 +3997,41 @@ mod windows_tests {
         );
         assert!(!outside.join("should-not-exist").exists());
         assert_eq!(fs::read(sentinel).unwrap(), b"outside bytes");
+    }
+
+    #[test]
+    fn tagged_reparse_file_is_rejected_even_when_windows_reports_regular_file() {
+        let error = validate_windows_regular_file(true, false, true)
+            .expect_err("tagged reparse files are outside the supported regular-file policy");
+        assert!(error.contains("reparse"));
+    }
+
+    #[test]
+    fn hardlinked_readonly_file_is_rejected_before_attribute_change() {
+        let work = mutation_fixture_tempdir();
+        let (target, git) = target_and_git(work.path());
+        let path = target.join("readonly-managed-file");
+        let outside = work.path().join("outside-hard-link");
+        fs::write(&path, b"shared readonly bytes").unwrap();
+        fs::hard_link(&path, &outside).unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&path, permissions).unwrap();
+        let context = MutationContext::open(&target, &git).unwrap();
+
+        let error = context
+            .set_permissions(
+                &path,
+                &JournalPermissions {
+                    readonly: false,
+                    unix_mode: None,
+                },
+            )
+            .expect_err("a hard-linked managed file must not have attributes changed in place");
+
+        assert!(error.contains("hard link"));
+        assert!(fs::metadata(&path).unwrap().permissions().readonly());
+        assert!(fs::metadata(&outside).unwrap().permissions().readonly());
+        assert_eq!(fs::read(&outside).unwrap(), b"shared readonly bytes");
     }
 }

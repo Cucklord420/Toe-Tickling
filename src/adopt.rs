@@ -157,6 +157,8 @@ struct JournalIdentity {
     target: String,
     git_dir: String,
     git_identity: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    git_identity_version: Option<u32>,
     source_repo: String,
 }
 
@@ -826,6 +828,7 @@ fn create_journal_with(
             target: target_text,
             git_dir: git_dir_text,
             git_identity: git_identity_fingerprint(&identity),
+            git_identity_version: Some(1),
             source_repo: source,
         },
         planned_paths,
@@ -1286,6 +1289,7 @@ where
         entry_index,
         relative,
         before_rename,
+        || Ok(()),
     )
 }
 
@@ -1299,6 +1303,7 @@ fn persist_stage_with_hook_with_context<F>(
     entry_index: usize,
     relative: &str,
     before_rename: F,
+    after_validation: impl FnOnce() -> Result<()>,
 ) -> Result<()>
 where
     F: FnOnce() -> Result<()>,
@@ -1362,6 +1367,7 @@ where
             destination: &entry.before,
         },
     )?;
+    after_validation()?;
     if let Some(context) = context {
         let current_destination = file_state_with(Some(context), target, &entry.relative)?;
         context.rename(
@@ -1733,6 +1739,31 @@ fn restore_entry_with_context(
     journal: &mut AdoptionJournal,
     entry_index: usize,
 ) -> Result<bool> {
+    restore_entry_with_hook(
+        context,
+        source_root,
+        target,
+        journal_path,
+        journal,
+        entry_index,
+        || Ok(()),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn restore_entry_with_hook<F>(
+    context: Option<&mutation::MutationContext>,
+    source_root: &Path,
+    target: &Path,
+    journal_path: &Path,
+    journal: &mut AdoptionJournal,
+    entry_index: usize,
+    after_validation: F,
+) -> Result<bool>
+where
+    F: FnOnce() -> Result<()>,
+{
+    let mut after_validation = Some(after_validation);
     let entry = journal
         .entries
         .get(entry_index)
@@ -1823,6 +1854,9 @@ fn restore_entry_with_context(
             entry_index,
             &entry.after,
         )?;
+        after_validation
+            .take()
+            .ok_or("Recovery validation hook was already used")?()?;
         if let Some(context) = context {
             let current = file_state_with(Some(context), target, &entry.relative)?;
             if current.bytes.is_none() {
@@ -1930,6 +1964,9 @@ fn restore_entry_with_context(
             destination: &entry.after,
         },
     )?;
+    after_validation
+        .take()
+        .ok_or("Recovery validation hook was already used")?()?;
     if let Some(context) = context {
         let current_destination = file_state_with(Some(context), target, &entry.relative)?;
         context.rename(
@@ -2331,6 +2368,7 @@ fn apply_transaction(
                 &mut journal,
                 entry_index,
                 &entry.stage,
+                || Ok(()),
                 || Ok(()),
             )?;
             written += 1;
@@ -3278,6 +3316,191 @@ mod tests {
                 permissions: lock.before.permissions.clone(),
             }
         );
+    }
+
+    #[cfg(any(windows, target_os = "linux"))]
+    #[test]
+    fn promotion_preserves_edit_after_journal_revalidation() {
+        let (_scratch, target) = target_fixture();
+        let plan = fixture_plan(&target);
+        let (git_dir, journal_file) = journal_path(&target).unwrap();
+        let context = mutation::MutationContext::open(&target, &git_dir).unwrap();
+        let mut journal =
+            create_journal_with(Some(&context), &target, &plan.source_root, &plan).unwrap();
+        write_journal_exclusive_with(Some(&context), &journal_file, &journal).unwrap();
+        let entry_index = journal
+            .entries
+            .iter()
+            .position(|entry| entry.before != entry.after)
+            .unwrap();
+        let entry = journal.entries[entry_index].clone();
+        create_stage_with(
+            Some(&context),
+            &target,
+            &entry.stage,
+            entry.after.bytes.as_deref().unwrap(),
+        )
+        .unwrap();
+        let edit = b"concurrent edit after journal revalidation\n";
+
+        let error = persist_stage_with_hook_with_context(
+            Some(&context),
+            &plan.source_root,
+            &target,
+            &journal_file,
+            &mut journal,
+            entry_index,
+            &entry.stage,
+            || Ok(()),
+            || {
+                fs::write(target.join(&entry.relative), edit).unwrap();
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.contains("changed") || error.contains("concurrent"));
+        assert_eq!(
+            file_state_with(Some(&context), &target, &entry.relative)
+                .unwrap()
+                .bytes
+                .as_deref(),
+            Some(edit.as_slice())
+        );
+        assert!(journal_file.exists());
+    }
+
+    #[cfg(any(windows, target_os = "linux"))]
+    #[test]
+    fn rollback_preserves_edit_after_journal_revalidation() {
+        let (_scratch, target) = target_fixture();
+        let plan = fixture_plan(&target);
+        let (git_dir, journal_file) = journal_path(&target).unwrap();
+        let context = mutation::MutationContext::open(&target, &git_dir).unwrap();
+        let mut journal =
+            create_journal_with(Some(&context), &target, &plan.source_root, &plan).unwrap();
+        write_journal_exclusive_with(Some(&context), &journal_file, &journal).unwrap();
+        let entry_index = journal
+            .entries
+            .iter()
+            .position(|entry| entry.before != entry.after)
+            .unwrap();
+        let entry = journal.entries[entry_index].clone();
+        write_postimage(&target, &entry);
+        let edit = b"concurrent edit after recovery validation\n";
+
+        let error = restore_entry_with_hook(
+            Some(&context),
+            &plan.source_root,
+            &target,
+            &journal_file,
+            &mut journal,
+            entry_index,
+            || {
+                fs::write(target.join(&entry.relative), edit).unwrap();
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.contains("changed") || error.contains("concurrent"));
+        assert_eq!(
+            file_state_with(Some(&context), &target, &entry.relative)
+                .unwrap()
+                .bytes
+                .as_deref(),
+            Some(edit.as_slice())
+        );
+        assert!(journal_file.exists());
+    }
+
+    #[cfg(any(windows, target_os = "linux"))]
+    #[test]
+    fn recovery_preserves_edit_after_removal_validation() {
+        let (_scratch, target) = empty_target_fixture();
+        let plan = fixture_plan(&target);
+        let (git_dir, journal_file) = journal_path(&target).unwrap();
+        let context = mutation::MutationContext::open(&target, &git_dir).unwrap();
+        let mut journal =
+            create_journal_with(Some(&context), &target, &plan.source_root, &plan).unwrap();
+        write_journal_exclusive_with(Some(&context), &journal_file, &journal).unwrap();
+        let entry_index = journal
+            .entries
+            .iter()
+            .position(|entry| entry.before.bytes.is_none())
+            .unwrap();
+        let entry = journal.entries[entry_index].clone();
+        write_postimage(&target, &entry);
+        let edit = b"concurrent edit after removal validation\n";
+
+        let error = restore_entry_with_hook(
+            Some(&context),
+            &plan.source_root,
+            &target,
+            &journal_file,
+            &mut journal,
+            entry_index,
+            || {
+                fs::write(target.join(&entry.relative), edit).unwrap();
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.contains("changed") || error.contains("concurrent"));
+        assert_eq!(
+            file_state_with(Some(&context), &target, &entry.relative)
+                .unwrap()
+                .bytes
+                .as_deref(),
+            Some(edit.as_slice())
+        );
+        assert!(journal_file.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_git_identity_fingerprint_binds_stable_file_ids() {
+        let (_scratch, target) = target_fixture();
+        let identity = GitIdentity::read(&target).unwrap();
+        assert!(identity.target.has_stable_id());
+        assert!(identity.marker.has_stable_id());
+        let fingerprint = git_identity_fingerprint(&identity);
+
+        let mut changed_target = identity.clone();
+        changed_target.target.file_id.as_mut().unwrap()[0] ^= 1;
+        assert_ne!(git_identity_fingerprint(&changed_target), fingerprint);
+
+        let mut changed_marker = identity;
+        changed_marker.marker.file_id.as_mut().unwrap()[0] ^= 1;
+        assert_ne!(git_identity_fingerprint(&changed_marker), fingerprint);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_recovery_rejects_legacy_identity_without_stable_id_semantics() {
+        let (_scratch, target) = target_fixture();
+        let plan = fixture_plan(&target);
+        let (git_dir, journal_file) = journal_path(&target).unwrap();
+        let context = mutation::MutationContext::open(&target, &git_dir).unwrap();
+        let mut journal =
+            create_journal_with(Some(&context), &target, &plan.source_root, &plan).unwrap();
+        journal.identity.git_identity_version = None;
+        seal_journal(&mut journal).unwrap();
+        let before = target_snapshot(&target);
+
+        let error = validate_journal_with(
+            Some(&context),
+            &plan.source_root,
+            &target,
+            &git_dir,
+            &journal,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("legacy") || error.contains("stable"));
+        assert_eq!(target_snapshot(&target), before);
+        assert!(!journal_file.exists());
     }
 
     #[cfg(unix)]
