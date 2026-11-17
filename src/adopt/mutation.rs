@@ -133,6 +133,16 @@ impl MutationContext {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(format!("Cannot inspect {}: {error}", path.display())),
         };
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+            validate_windows_regular_file(
+                before.is_file(),
+                before.file_type().is_symlink(),
+                before.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0,
+            )?;
+        }
+        #[cfg(not(windows))]
         if before.file_type().is_symlink() || !before.is_file() {
             return Err(format!("Expected a regular file at {}", path.display()));
         }
@@ -1907,6 +1917,8 @@ fn verify_file(
     if !metadata.is_file() || metadata.file_type().is_symlink() {
         return Err("Mutation target is not a regular file".into());
     }
+    #[cfg(windows)]
+    ensure_single_hard_link(file)?;
     #[cfg(target_os = "linux")]
     {
         use cap_fs_ext::OsMetadataExt;
@@ -1930,10 +1942,34 @@ fn verify_file(
 fn validate_windows_regular_file(
     is_file: bool,
     is_symlink: bool,
-    _is_reparse_point: bool,
+    is_reparse_point: bool,
 ) -> super::Result<()> {
-    if !is_file || is_symlink {
-        return Err("Mutation target is not a regular file".into());
+    if !is_file || is_symlink || is_reparse_point {
+        return Err("Mutation target is not a regular file or is a reparse point".into());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn ensure_single_hard_link(file: &cap_std::fs::File) -> super::Result<()> {
+    use windows_sys::Win32::{
+        Foundation::HANDLE,
+        Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle},
+    };
+
+    let mut information = BY_HANDLE_FILE_INFORMATION::default();
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle() as HANDLE, &mut information) } == 0
+    {
+        return Err(format!(
+            "Cannot verify mutation file hard-link count: {}",
+            std::io::Error::last_os_error()
+        )
+        .into());
+    }
+    if information.nNumberOfLinks != 1 {
+        // NTFS stores read-only state on the shared file, so clearing it through
+        // the checkout path would also change every hard link outside the tree.
+        return Err("Mutation files with multiple hard links are not supported".into());
     }
     Ok(())
 }

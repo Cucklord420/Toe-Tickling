@@ -13,7 +13,7 @@
 ## Guardrails
 
 - All new executable code and tests are Rust. Keep dependencies exact-pinned and update `Cargo.lock` using Cargo.
-- Preserve journal versions 1 through 3, checksums, transition markers, conflict preservation, user edits, and retryable recovery behavior.
+- Write journal version 4 and preserve verified migration behavior for versions 1 through 3. Keep version 3 permission-transition markers intact. On Windows, reject legacy journals without the stable-ID fingerprint version; do not guess checkout identity from creation times or marker bytes alone.
 - Preview remains read-only. Keep `apply` and `recover` fail-closed before planning, target inspection, journal inspection, or success JSON whenever the platform guard cannot establish safety.
 - Do not use repeated pathname checks as the race defense. No mutation may fall back to path-based operations after a handle guard fails.
 - POSIX permits only non-root execution when each ancestry component prevents replacement by another UID; evaluate opened-object metadata and sticky-directory child ownership. macOS ACL ambiguity fails closed.
