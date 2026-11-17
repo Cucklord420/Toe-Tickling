@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 use std::{env, fs, path::Path, process::Command};
+use toe_tickling::adopt;
 
 fn init_git(target: &Path) {
     let mut git = Command::new("git");
@@ -64,6 +65,11 @@ fn public_recover_pauses_before_reading_or_removing_journal() {
     assert!(output.stdout.is_empty(), "unexpected recovery success JSON");
     let error = String::from_utf8_lossy(&output.stderr);
     assert!(error.contains("paused"), "unexpected error: {error}");
+    let api_error = adopt::recover(Path::new(env!("CARGO_MANIFEST_DIR")), &target).unwrap_err();
+    assert!(
+        api_error.contains("paused"),
+        "unexpected API error: {api_error}"
+    );
     assert_eq!(fs::read(&journal).unwrap(), journal_before);
     assert_eq!(
         fs::read(&outside).unwrap(),

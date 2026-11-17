@@ -1496,6 +1496,32 @@ fn adoption_cli_runs_from_an_unrelated_directory_and_path_with_spaces() {
 }
 
 #[test]
+fn public_apply_api_remains_paused_before_target_writes() {
+    let source = fixture();
+    let scratch = tempfile::tempdir().unwrap();
+    let target = scratch.path().join("target project");
+    let outside = scratch.path().join("outside sentinel.txt");
+    fs::create_dir(&target).unwrap();
+    fs::write(&outside, b"outside data must remain unchanged").unwrap();
+    assert!(clean_git(&target, &["init", "-q"]).status.success());
+
+    let plan = adopt::plan(source.path(), &target).unwrap();
+    let expected_pause = adopt::ensure_mutations_ready().unwrap_err();
+    let error = adopt::apply(&plan).unwrap_err();
+
+    assert_eq!(error, expected_pause);
+    assert!(error.contains("paused"), "unexpected error: {error}");
+    for path in [".ai-guidebook", "AGENTS.md", ".gitignore", "CLAUDE.md"] {
+        assert!(!target.join(path).exists(), "paused apply created {path}");
+    }
+    assert!(!target.join(".git/.toe-tickling-adoption-v1.json").exists());
+    assert_eq!(
+        fs::read(&outside).unwrap(),
+        b"outside data must remain unchanged"
+    );
+}
+
+#[test]
 fn audit_validation_uses_the_selected_checkout_under_git_redirects() {
     let source = fixture();
     let linked_sandbox = tempfile::tempdir().unwrap();
