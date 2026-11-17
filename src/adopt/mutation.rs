@@ -1649,6 +1649,15 @@ fn check_directory_metadata(
         if mode & 0o022 != 0 && mode & 0o1000 == 0 {
             return Err("Mutation ancestry is writable by other local users".into());
         }
+        if mode & 0o022 != 0 && mode & 0o1000 != 0 && dir_metadata.uid() == uid {
+            // The sticky bit does not restrict the directory owner. Root-owned
+            // sticky ancestors such as /tmp are safe for non-root mutation, but
+            // a current-user-owned shared directory lets this process replace
+            // entries another local user creates after a separate state check.
+            return Err(
+                "Writable sticky mutation directories owned by the current user are unsafe".into(),
+            );
+        }
     }
     #[cfg(windows)]
     policy.check_handle(dir.as_raw_handle(), scope)?;
