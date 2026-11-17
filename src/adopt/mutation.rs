@@ -2408,7 +2408,13 @@ mod windows_acl {
 #[cfg(all(test, target_os = "linux"))]
 mod linux_tests {
     use super::MutationContext;
-    use std::{fs, os::unix::fs::PermissionsExt, path::Path};
+    use std::{
+        fs,
+        os::unix::fs::PermissionsExt,
+        path::Path,
+        sync::{Arc, Barrier},
+        thread,
+    };
 
     fn target_and_git(work: &Path) -> (std::path::PathBuf, std::path::PathBuf) {
         let target = work.join("target");
@@ -2452,25 +2458,37 @@ mod linux_tests {
     }
 
     #[test]
-    fn current_user_owned_writable_sticky_ancestry_is_rejected_without_mutation() {
+    fn current_user_owned_writable_sticky_target_is_rejected_during_competing_create() {
         if rustix::process::geteuid().as_raw() == 0 {
             return;
         }
         let work = tempfile::tempdir().unwrap();
-        let unsafe_parent = work.path().join("current-user-owned-sticky-parent");
-        fs::create_dir(&unsafe_parent).unwrap();
-        fs::set_permissions(&unsafe_parent, fs::Permissions::from_mode(0o1777)).unwrap();
-        let (target, git) = target_and_git(&unsafe_parent);
+        let (target, git) = target_and_git(work.path());
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o1777)).unwrap();
         let sentinel = target.join("sentinel");
         fs::write(&sentinel, b"unchanged").unwrap();
+        let competing_entry = target.join("competing-entry");
+        let start = Arc::new(Barrier::new(2));
+        let competitor_start = Arc::clone(&start);
+        let competitor = thread::spawn(move || {
+            competitor_start.wait();
+            fs::write(competing_entry, b"synthetic competing entry").unwrap();
+        });
 
-        let error = match MutationContext::open(&target, &git) {
-            Ok(_) => panic!("a current-user-owned writable sticky ancestor must be rejected"),
+        start.wait();
+        let result = MutationContext::open(&target, &git);
+        competitor.join().unwrap();
+        let error = match result {
+            Ok(_) => panic!("a current-user-owned writable sticky target must be rejected"),
             Err(error) => error,
         };
 
         assert!(error.contains("sticky"), "unexpected error: {error}");
         assert_eq!(fs::read(sentinel).unwrap(), b"unchanged");
+        assert_eq!(
+            fs::read(target.join("competing-entry")).unwrap(),
+            b"synthetic competing entry"
+        );
         assert!(!target.join(".ai-guidebook").exists());
     }
 
