@@ -44,8 +44,6 @@ jobs:
         run: rustup show
       - name: Windows drive-root inspection regression test
         run: cargo test --locked -p toe-tickling --lib security::tests::checked_root_accepts_native_drive_prefix
-      - name: Non-Git public-tree native-path regression test
-        run: cargo test --locked -p toe-tickling --lib security::tests::non_git_file_list_accepts_native_nested_paths
       - name: Transaction regression tests
         run: cargo test --locked -p toe-tickling --lib guide::build_transaction_tests
       - name: Adoption recovery regression tests
@@ -76,6 +74,8 @@ jobs:
           check-latest: false
       - name: Install the pinned Rust toolchain
         run: rustup show
+      - name: Native public-tree fallback path regression
+        run: cargo test --locked -p toe-tickling --lib security::tests::non_git_file_list_accepts_native_nested_paths
       - name: Historical Python and current Rust differential regressions
         env:
           TOE_PYTHON_REFERENCE: ${{ steps.setup-python.outputs.python-path }}

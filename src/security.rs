@@ -688,11 +688,12 @@ mod tests {
     #[test]
     fn non_git_file_list_accepts_native_nested_paths() {
         let root = tempfile::tempdir().unwrap();
-        let nested = root.path().join("docs/nested");
+        let root_path = fs::canonicalize(root.path()).unwrap();
+        let nested = root_path.join("docs/nested");
         fs::create_dir_all(&nested).unwrap();
         fs::write(nested.join("README.md"), "# Nested file\n").unwrap();
 
-        let files = file_list(root.path()).unwrap();
+        let files = file_list(&root_path).unwrap();
         assert!(files.contains(Path::new("docs/nested/README.md")));
     }
 
