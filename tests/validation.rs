@@ -1409,80 +1409,40 @@ fn adoption_cli_runs_from_an_unrelated_directory_and_path_with_spaces() {
     };
     assert!(run(false).status.success());
     assert!(!target.join("AGENTS.md").exists());
-    let readiness = adopt::ensure_mutations_ready();
-    let readiness_error = readiness.as_ref().unwrap_err();
+    let paused = adopt::ensure_mutations_ready().unwrap_err();
     assert!(
-        readiness_error.contains("paused"),
-        "public apply and recover routes must remain paused until independent review and exact-head verification; got {readiness_error}"
+        paused.contains("paused"),
+        "unexpected pause error: {paused}"
     );
     let applied = run(true);
-    if readiness.is_ok() {
+    assert!(
+        !applied.status.success(),
+        "adoption unexpectedly succeeded while mutation was paused: {}",
+        String::from_utf8_lossy(&applied.stdout)
+    );
+    assert!(applied.stdout.is_empty(), "unexpected apply success JSON");
+    assert!(String::from_utf8_lossy(&applied.stderr).contains(&paused));
+    for path in [".ai-guidebook", "AGENTS.md", ".gitignore", "CLAUDE.md"] {
         assert!(
-            applied.status.success(),
-            "adoption failed on a supported path: {}\n{}",
-            String::from_utf8_lossy(&applied.stdout),
-            String::from_utf8_lossy(&applied.stderr)
+            !target.join(path).exists(),
+            "paused adoption created {path}"
         );
-        for path in [
-            ".ai-guidebook/GUIDEBOOK.md",
-            ".ai-guidebook/policy-lock.json",
-            "AGENTS.md",
-            ".gitignore",
-            "CLAUDE.md",
-        ] {
-            assert!(
-                target.join(path).is_file(),
-                "adoption did not create {path}"
-            );
-        }
-        assert!(!target.join(".git/.toe-tickling-adoption-v1.json").exists());
-
-        let recovered = Command::new(env!("CARGO_BIN_EXE_toe-tickling"))
-            .current_dir(unrelated.path())
-            .arg("--root")
-            .arg(source.path())
-            .arg("adopt")
-            .arg(&target)
-            .arg("--recover")
-            .output()
-            .unwrap();
-        assert!(
-            recovered.status.success(),
-            "recovery CLI failed without a pending journal: {}\n{}",
-            String::from_utf8_lossy(&recovered.stdout),
-            String::from_utf8_lossy(&recovered.stderr)
-        );
-        assert!(target.join(".ai-guidebook/GUIDEBOOK.md").is_file());
-    } else {
-        assert!(
-            !applied.status.success(),
-            "adoption unexpectedly succeeded while mutation was paused: {}",
-            String::from_utf8_lossy(&applied.stdout)
-        );
-        assert!(applied.stdout.is_empty(), "unexpected apply success JSON");
-        assert!(String::from_utf8_lossy(&applied.stderr).contains("paused"));
-        for path in [".ai-guidebook", "AGENTS.md", ".gitignore", "CLAUDE.md"] {
-            assert!(
-                !target.join(path).exists(),
-                "paused adoption created {path}"
-            );
-        }
-        let recovered = Command::new(env!("CARGO_BIN_EXE_toe-tickling"))
-            .current_dir(unrelated.path())
-            .arg("--root")
-            .arg(source.path())
-            .arg("adopt")
-            .arg(&target)
-            .arg("--recover")
-            .output()
-            .unwrap();
-        assert!(!recovered.status.success());
-        assert!(
-            recovered.stdout.is_empty(),
-            "unexpected recovery success JSON"
-        );
-        assert!(String::from_utf8_lossy(&recovered.stderr).contains("paused"));
     }
+    let recovered = Command::new(env!("CARGO_BIN_EXE_toe-tickling"))
+        .current_dir(unrelated.path())
+        .arg("--root")
+        .arg(source.path())
+        .arg("adopt")
+        .arg(&target)
+        .arg("--recover")
+        .output()
+        .unwrap();
+    assert!(!recovered.status.success());
+    assert!(
+        recovered.stdout.is_empty(),
+        "unexpected recovery success JSON"
+    );
+    assert!(String::from_utf8_lossy(&recovered.stderr).contains(&paused));
     assert_eq!(
         fs::read(&outside).unwrap(),
         b"outside data must remain unchanged"
