@@ -2006,7 +2006,7 @@ mod windows_acl {
 
     impl CreationSecurityDescriptor {
         pub(super) fn as_ptr(&self) -> *const SECURITY_DESCRIPTOR {
-            self.raw
+            self.raw.cast()
         }
     }
 
