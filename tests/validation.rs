@@ -1410,6 +1410,11 @@ fn adoption_cli_runs_from_an_unrelated_directory_and_path_with_spaces() {
     assert!(run(false).status.success());
     assert!(!target.join("AGENTS.md").exists());
     let readiness = adopt::ensure_mutations_ready();
+    let readiness_error = readiness.as_ref().unwrap_err();
+    assert!(
+        readiness_error.contains("paused"),
+        "public apply and recover routes must remain paused until independent review and exact-head verification; got {readiness_error}"
+    );
     let applied = run(true);
     if readiness.is_ok() {
         assert!(
@@ -1454,6 +1459,7 @@ fn adoption_cli_runs_from_an_unrelated_directory_and_path_with_spaces() {
             "adoption unexpectedly succeeded while mutation was paused: {}",
             String::from_utf8_lossy(&applied.stdout)
         );
+        assert!(applied.stdout.is_empty(), "unexpected apply success JSON");
         assert!(String::from_utf8_lossy(&applied.stderr).contains("paused"));
         for path in [".ai-guidebook", "AGENTS.md", ".gitignore", "CLAUDE.md"] {
             assert!(
@@ -1471,6 +1477,10 @@ fn adoption_cli_runs_from_an_unrelated_directory_and_path_with_spaces() {
             .output()
             .unwrap();
         assert!(!recovered.status.success());
+        assert!(
+            recovered.stdout.is_empty(),
+            "unexpected recovery success JSON"
+        );
         assert!(String::from_utf8_lossy(&recovered.stderr).contains("paused"));
     }
     assert_eq!(
