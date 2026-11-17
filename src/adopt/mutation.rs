@@ -3530,10 +3530,14 @@ mod windows_tests {
             .create_parent_dirs(&nested.join("stage.tmp"))
             .unwrap_or_else(|error| panic!("safe output directory creation failed: {error}"));
 
-        let pinned_parent =
-            super::open_directory_nofollow(&context.target.root, OsStr::new(".ai-guidebook"))
-                .unwrap();
-        let created = super::open_directory_nofollow(&pinned_parent, OsStr::new("nested")).unwrap();
+        let created = {
+            let pinned = context.target.pinned.lock().unwrap();
+            std::sync::Arc::clone(
+                pinned
+                    .get(Path::new(".ai-guidebook/nested"))
+                    .expect("created output directory is pinned"),
+            )
+        };
         assert_dacl_is_protected(created.as_raw_handle());
         assert_restricted_identity_cannot_open(
             &nested,
