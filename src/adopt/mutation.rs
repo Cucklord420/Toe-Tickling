@@ -3430,7 +3430,7 @@ mod windows_tests {
 
     fn assert_restricted_identity_cannot_open(path: &Path, desired_access: u32, flags: u32) {
         use windows_sys::Win32::{
-            Foundation::{CloseHandle, GetLastError, HANDLE, INVALID_HANDLE_VALUE},
+            Foundation::{CloseHandle, GetLastError, INVALID_HANDLE_VALUE},
             Storage::FileSystem::{CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING},
         };
 
@@ -3557,7 +3557,7 @@ mod windows_tests {
         let actor_attacker_source = attacker_source.clone();
         let (control_source, control_destination) = control_move_paths(&attacker, "promote");
 
-        let (ready, actor_ready) = mpsc::channel();
+        let (actor_ready, ready) = mpsc::channel();
         let (release, actor_release) = mpsc::sync_channel(0);
         let actor_destination = destination.clone();
         let actor = spawn_restricted_identity(move || {
@@ -3621,7 +3621,7 @@ mod windows_tests {
         let actor_attacker_source = attacker_source.clone();
         let (control_source, control_destination) = control_move_paths(&attacker, "journal");
 
-        let (ready, actor_ready) = mpsc::channel();
+        let (actor_ready, ready) = mpsc::channel();
         let (release, actor_release) = mpsc::sync_channel(0);
         let actor_journal = journal.clone();
         let actor = spawn_restricted_identity(move || {
@@ -3685,7 +3685,7 @@ mod windows_tests {
             let expected = context.file_state(&path).unwrap().unwrap();
             let exfiltration = attacker.join(format!("exfiltrated-{suffix}.tmp"));
             let (control_source, control_destination) = control_move_paths(&attacker, suffix);
-            let (ready, actor_ready) = mpsc::channel();
+            let (actor_ready, ready) = mpsc::channel();
             let (release, actor_release) = mpsc::sync_channel(0);
             let actor_path = path.clone();
             let actor_exfiltration = exfiltration.clone();
