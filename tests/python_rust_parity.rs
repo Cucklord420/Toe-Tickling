@@ -1032,8 +1032,7 @@ fn expected_adoption_changes() -> BTreeSet<String> {
 fn expected_adoption_tree_changes() -> BTreeSet<String> {
     let mut expected = expected_adoption_changes();
     expected.extend(
-        [".ai-guidebook/", ".github/", ".cursor/", ".cursor/rules/"]
-            .map(|path| path.to_owned()),
+        [".ai-guidebook/", ".github/", ".cursor/", ".cursor/rules/"].map(|path| path.to_owned()),
     );
     expected
 }

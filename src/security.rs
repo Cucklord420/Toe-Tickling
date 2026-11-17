@@ -51,10 +51,28 @@ pub fn checked_root(root: &Path) -> Result<PathBuf> {
     fs::canonicalize(absolute).map_err(|_| "Cannot resolve public-tree root".into())
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn non_git_file_list_accepts_native_nested_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let nested = root.path().join("docs/nested");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("README.md"), "# Nested file\n").unwrap();
+
+        let files = file_list(root.path()).unwrap();
+        assert!(files.contains(Path::new("docs/nested/README.md")));
+    }
+
+    #[test]
+    fn checked_path_rejects_backslashes_from_git_enumeration() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(checked_path(root.path(), Path::new(r"nested\README.md")).is_err());
+    }
+
+    #[cfg(windows)]
     #[test]
     fn checked_root_accepts_native_drive_prefix() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
