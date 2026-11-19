@@ -543,6 +543,63 @@ fn both_clis_refuse_a_missing_generated_guide_without_writes() {
     assert_empty_directory(&unrelated);
 }
 
+#[cfg(windows)]
+#[test]
+#[ignore = "runs the pinned historical Python CLI; executed in the dedicated Windows CI job"]
+fn atomic_replace_failure_preserves_python_and_rust_artifacts_on_windows() {
+    use std::{fs::OpenOptions, os::windows::fs::OpenOptionsExt};
+
+    let temp = fixture_tempdir();
+    let unrelated = temp.path().join("unrelated working directory");
+    fs::create_dir_all(&unrelated).unwrap();
+
+    let python_root = clone_python_reference(&temp, "python-atomic-replace-failure");
+    let rust_root = copy_current_checkout(&temp, "rust-atomic-replace-failure");
+    let python_before = snapshot_tree(&python_root);
+    let rust_before = snapshot_tree(&rust_root);
+
+    // Permit reads and writes but deny delete sharing, forcing replacement of
+    // the existing GUIDEBOOK.md to fail without injecting Python code.
+    let share_read_write = 0x0000_0001 | 0x0000_0002;
+    let _python_lock = OpenOptions::new()
+        .read(true)
+        .share_mode(share_read_write)
+        .open(python_root.join("GUIDEBOOK.md"))
+        .unwrap();
+    let _rust_lock = OpenOptions::new()
+        .read(true)
+        .share_mode(share_read_write)
+        .open(rust_root.join("GUIDEBOOK.md"))
+        .unwrap();
+
+    let python_result = run_python(&python_root, &unrelated, &["build"]);
+    assert_eq!(
+        exit_code(&python_result),
+        1,
+        "pinned Python CLI unexpectedly replaced a locked guide"
+    );
+    assert!(stderr(&python_result).starts_with("ERROR:"));
+    assert_eq!(
+        snapshot_tree(&python_root),
+        python_before,
+        "Python replacement failure changed an artifact or left a temporary"
+    );
+
+    let rust_result = run_rust(&rust_root, &unrelated, &["build"]);
+    assert_eq!(
+        exit_code(&rust_result),
+        1,
+        "current Rust CLI unexpectedly replaced a locked guide"
+    );
+    assert!(stderr(&rust_result).starts_with("FAIL:"));
+    assert_eq!(
+        snapshot_tree(&rust_root),
+        rust_before,
+        "Rust replacement failure changed an artifact or left a temporary"
+    );
+    assert_empty_directory(&unrelated);
+}
+
 #[test]
 #[ignore = "runs the pinned historical Python CLI; executed in the dedicated cross-platform CI job"]
 fn adoption_preview_is_read_only_and_preserves_existing_project_files() {
