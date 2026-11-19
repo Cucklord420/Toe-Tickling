@@ -136,6 +136,10 @@ enum PolicyFault {
     InvalidDate,
     InvalidVersion,
     SourceTraversal,
+    MissingSource,
+    AuditModuleOmission,
+    DuplicateRuleId,
+    MandatoryAuditRuleOmission,
 }
 
 impl PolicyFault {
@@ -144,6 +148,10 @@ impl PolicyFault {
             Self::InvalidDate => "invalid-date",
             Self::InvalidVersion => "invalid-version",
             Self::SourceTraversal => "source-traversal",
+            Self::MissingSource => "missing-source",
+            Self::AuditModuleOmission => "audit-module-omission",
+            Self::DuplicateRuleId => "duplicate-rule-id",
+            Self::MandatoryAuditRuleOmission => "mandatory-audit-rule-omission",
         }
     }
 }
@@ -424,7 +432,7 @@ fn cli_help_lists_commands_and_options_without_writes() {
 
 #[test]
 #[ignore = "runs the pinned historical Python CLI; executed in the dedicated cross-platform CI job"]
-fn both_clis_refuse_invalid_policy_without_changing_generated_files() {
+fn both_clis_refuse_invalid_policy_or_source_faults_without_changing_generated_files() {
     let temp = fixture_tempdir();
     let unrelated = temp.path().join("unrelated working directory");
     fs::create_dir_all(&unrelated).unwrap();
@@ -433,6 +441,10 @@ fn both_clis_refuse_invalid_policy_without_changing_generated_files() {
         PolicyFault::InvalidDate,
         PolicyFault::InvalidVersion,
         PolicyFault::SourceTraversal,
+        PolicyFault::MissingSource,
+        PolicyFault::AuditModuleOmission,
+        PolicyFault::DuplicateRuleId,
+        PolicyFault::MandatoryAuditRuleOmission,
     ] {
         let python_root = clone_python_reference(&temp, &format!("python-{}", fault.name()));
         let rust_root = copy_current_checkout(&temp, &format!("rust-{}", fault.name()));
@@ -492,6 +504,42 @@ fn both_clis_refuse_invalid_policy_without_changing_generated_files() {
             fault.name()
         );
     }
+    assert_empty_directory(&unrelated);
+}
+
+#[test]
+#[ignore = "runs the pinned historical Python CLI; executed in the dedicated cross-platform CI job"]
+fn both_clis_refuse_a_missing_generated_guide_without_writes() {
+    let temp = fixture_tempdir();
+    let unrelated = temp.path().join("unrelated working directory");
+    fs::create_dir_all(&unrelated).unwrap();
+
+    let python_root = clone_python_reference(&temp, "python-missing-guide");
+    let rust_root = copy_current_checkout(&temp, "rust-missing-guide");
+    fs::remove_file(python_root.join("GUIDEBOOK.md")).unwrap();
+    fs::remove_file(rust_root.join("GUIDEBOOK.md")).unwrap();
+    let python_before = snapshot_tree(&python_root);
+    let rust_before = snapshot_tree(&rust_root);
+
+    let python_result = run_python(&python_root, &unrelated, &["check"]);
+    assert_eq!(
+        exit_code(&python_result),
+        1,
+        "pinned Python CLI accepted a missing generated guide"
+    );
+    assert!(stderr(&python_result).starts_with("ERROR:"));
+    assert!(python_result.stdout.is_empty());
+    assert_eq!(snapshot_tree(&python_root), python_before);
+
+    let rust_result = run_rust(&rust_root, &unrelated, &["check"]);
+    assert_eq!(
+        exit_code(&rust_result),
+        1,
+        "current Rust CLI accepted a missing generated guide"
+    );
+    assert!(stderr(&rust_result).starts_with("FAIL:"));
+    assert!(rust_result.stdout.is_empty());
+    assert_eq!(snapshot_tree(&rust_root), rust_before);
     assert_empty_directory(&unrelated);
 }
 
@@ -1017,6 +1065,31 @@ fn mutate_policy(root: &Path, fault: PolicyFault) {
             .as_array_mut()
             .expect("policy sources are an array")
             .push(Value::String("../outside.md".to_owned())),
+        PolicyFault::MissingSource => policy["sources"]
+            .as_array_mut()
+            .expect("policy sources are an array")
+            .push(Value::String("rules/99-missing-fixture.md".to_owned())),
+        PolicyFault::AuditModuleOmission => policy["sources"]
+            .as_array_mut()
+            .expect("policy sources are an array")
+            .retain(|source| source.as_str() != Some("rules/60-instruction-audits.md")),
+        PolicyFault::DuplicateRuleId => {
+            let path = root.join("rules/00-authority.md");
+            let source = fs::read_to_string(&path).expect("read synthetic authority source");
+            fs::write(
+                path,
+                format!("{source}\n- **AUTH-001** Duplicate synthetic rule ID.\n"),
+            )
+            .expect("write duplicate synthetic rule ID");
+        }
+        PolicyFault::MandatoryAuditRuleOmission => {
+            let path = root.join("rules/60-instruction-audits.md");
+            let source = fs::read_to_string(&path).expect("read synthetic audit rules");
+            let marker = "- **AUD-001**";
+            assert_eq!(source.matches(marker).count(), 1);
+            fs::write(path, source.replacen(marker, "- **AUD-099**", 1))
+                .expect("remove the required audit rule from the synthetic fixture");
+        }
     }
     let text = serde_json::to_vec_pretty(&policy).expect("serialize synthetic policy fault");
     fs::write(path, [text.as_slice(), b"\n"].concat()).expect("write synthetic invalid policy");
