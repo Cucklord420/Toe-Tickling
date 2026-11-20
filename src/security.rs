@@ -51,17 +51,6 @@ pub fn checked_root(root: &Path) -> Result<PathBuf> {
     fs::canonicalize(absolute).map_err(|_| "Cannot resolve public-tree root".into())
 }
 
-#[cfg(all(test, windows))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn checked_root_accepts_native_drive_prefix() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        assert_eq!(checked_root(root).unwrap(), fs::canonicalize(root).unwrap());
-    }
-}
-
 fn skipped(relative: &Path) -> bool {
     relative
         .components()
@@ -87,15 +76,33 @@ fn private_path(relative: &Path) -> bool {
         })
 }
 
-fn checked_path(root: &Path, relative: &Path) -> Result<PathBuf> {
+fn checked_relative(relative: &Path) -> Result<()> {
     if relative.is_absolute()
         || relative
             .components()
             .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
-        || relative.to_string_lossy().contains('\\')
+        || relative.components().any(|part| {
+            matches!(part, Component::Normal(value) if value.to_string_lossy().contains('\\'))
+        })
     {
         return Err("Unsafe path returned by public-tree enumeration".into());
     }
+    Ok(())
+}
+
+/// Parse Git's slash-separated path format before native path conversion can
+/// turn a malicious backslash into an ordinary Windows directory separator.
+fn checked_git_relative(name: &str) -> Result<PathBuf> {
+    if name.contains('\\') {
+        return Err("Unsafe path returned by public-tree enumeration".into());
+    }
+    let relative = PathBuf::from(name);
+    checked_relative(&relative)?;
+    Ok(relative)
+}
+
+fn checked_path(root: &Path, relative: &Path) -> Result<PathBuf> {
+    checked_relative(relative)?;
     let path = root.join(relative);
     no_symlink_ancestors(&path)?;
     Ok(path)
@@ -153,8 +160,9 @@ fn staged_entries(root: &Path) -> Result<Option<BTreeMap<PathBuf, String>>> {
             .ok_or("Malformed staged Git entry")?;
         let header =
             std::str::from_utf8(&record[..separator]).map_err(|_| "Malformed staged Git entry")?;
-        let path = std::str::from_utf8(&record[separator + 1..])
+        let name = std::str::from_utf8(&record[separator + 1..])
             .map_err(|_| "Public file name is not valid UTF-8")?;
+        let relative = checked_git_relative(name)?;
         let mut fields = header.split_ascii_whitespace();
         let mode = fields.next().ok_or("Malformed staged Git entry")?;
         let oid = fields.next().ok_or("Malformed staged Git entry")?;
@@ -162,23 +170,20 @@ fn staged_entries(root: &Path) -> Result<Option<BTreeMap<PathBuf, String>>> {
         if fields.next().is_some() || stage != "0" {
             return Err(fail(
                 "Conflicted Git index entry requires review",
-                Path::new(path),
+                &relative,
             ));
         }
         if !matches!(mode, "100644" | "100755") {
             return Err(fail(
                 "Public staged path must be a regular file, not a symlink or special entry",
-                Path::new(path),
+                &relative,
             ));
         }
         if !matches!(oid.len(), 40 | 64) || !oid.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err("Malformed staged Git object ID".into());
         }
-        if entries
-            .insert(PathBuf::from(path), oid.to_owned())
-            .is_some()
-        {
-            return Err(fail("Duplicate staged Git path", Path::new(path)));
+        if entries.insert(relative.clone(), oid.to_owned()).is_some() {
+            return Err(fail("Duplicate staged Git path", &relative));
         }
     }
     Ok(Some(entries))
@@ -209,9 +214,9 @@ fn staged_deletions(root: &Path) -> Result<BTreeSet<PathBuf>> {
         .split(|byte| *byte == 0)
         .filter(|name| !name.is_empty())
         .map(|name| {
-            std::str::from_utf8(name)
-                .map(PathBuf::from)
-                .map_err(|_| "Public file name is not valid UTF-8".into())
+            let name =
+                std::str::from_utf8(name).map_err(|_| "Public file name is not valid UTF-8")?;
+            checked_git_relative(name)
         })
         .collect()
 }
@@ -284,7 +289,7 @@ fn file_list(root: &Path) -> Result<BTreeSet<PathBuf>> {
         .filter(|name| !name.is_empty())
     {
         let name = std::str::from_utf8(name).map_err(|_| "Public file name is not valid UTF-8")?;
-        let relative = PathBuf::from(name);
+        let relative = checked_git_relative(name)?;
         // Unlike ignored local output, a Git candidate can enter the public tree.
         // Reject it before the ordinary target/ exclusion or any file reads.
         if relative
@@ -674,4 +679,39 @@ fn inspect_text(
         workflows.push((relative.to_owned(), text.to_owned()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn non_git_file_list_accepts_native_nested_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let root_path = fs::canonicalize(root.path()).unwrap();
+        let nested = root_path.join("docs/nested");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("README.md"), "# Nested file\n").unwrap();
+
+        let files = file_list(&root_path).unwrap();
+        assert!(files.contains(Path::new("docs/nested/README.md")));
+    }
+
+    #[test]
+    fn checked_git_relative_rejects_backslashes() {
+        assert!(checked_git_relative(r"nested\README.md").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn checked_relative_rejects_backslash_inside_native_component() {
+        assert!(checked_relative(Path::new(r"nested\README.md")).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn checked_root_accepts_native_drive_prefix() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        assert_eq!(checked_root(root).unwrap(), fs::canonicalize(root).unwrap());
+    }
 }

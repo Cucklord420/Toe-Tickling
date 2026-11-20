@@ -74,3 +74,31 @@ jobs:
         run: rustup show
       - name: Confirm public adoption mutations stay paused
         run: cargo test --locked -p toe-tickling --test adoption_pause
+
+  validate-python-rust-parity:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5, inherited inspected pin
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0, pinned
+        id: setup-python
+        with:
+          python-version: '3.15.2'
+          check-latest: false
+      - name: Install the pinned Rust toolchain
+        run: rustup show
+      - name: Native public-tree fallback path regression
+        run: cargo test --locked -p toe-tickling --lib security::tests::non_git_file_list_accepts_native_nested_paths
+      - name: Raw Git path separator safety regression
+        run: cargo test --locked -p toe-tickling --lib security::tests::checked_git_relative_rejects_backslashes
+      - name: Historical Python and current Rust differential regressions
+        env:
+          TOE_PYTHON_REFERENCE: ${{ steps.setup-python.outputs.python-path }}
+        run: cargo test --locked -p toe-tickling --test python_rust_parity -- --ignored --nocapture
