@@ -44,6 +44,10 @@ jobs:
         run: rustup show
       - name: Windows drive-root inspection regression test
         run: cargo test --locked -p toe-tickling --lib security::tests::checked_root_accepts_native_drive_prefix
+      - name: Windows DACL access-mask regression tests
+        run: cargo test --locked -p toe-tickling --lib adopt::mutation::windows_acl::tests
+      - name: Windows documented rename-form diagnostic
+        run: cargo test --locked -p toe-tickling --lib adopt::mutation::windows_tests::diagnose_documented_rename_forms_on_disposable_files -- --nocapture
       - name: Transaction regression tests
         run: cargo test --locked -p toe-tickling --lib guide::build_transaction_tests
       - name: Adoption recovery regression tests
@@ -54,6 +58,22 @@ jobs:
         run: cargo test --locked -p toe-tickling --lib adopt::tests::apply_rolls_back
       - name: Adoption recovery CLI tests
         run: cargo test --locked -p toe-tickling --bin toe-tickling adopt_recover_
+      - name: Windows adoption apply CLI regression
+        run: cargo test --locked -p toe-tickling --test validation adoption_cli_runs_from_an_unrelated_directory_and_path_with_spaces
+      - name: Windows pinned-directory race regression
+        run: cargo test --locked -p toe-tickling --lib adopt::mutation::windows_tests
+
+  validate-macos-adoption-pause:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5, inherited inspected pin
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup show
+      - name: Confirm public adoption mutations stay paused
+        run: cargo test --locked -p toe-tickling --test adoption_pause
 
   validate-python-rust-parity:
     strategy:

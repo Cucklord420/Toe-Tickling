@@ -1,0 +1,94 @@
+# Issue #39: Race-safe adoption and recovery
+
+**Date:** 11-07-2026 (America/New_York)
+
+**Repository:** `Cucklord420/Toe-Tickling`
+
+**Base reviewed:** `db2146f781e9c088d3694cfb77bd5434ec90839a` (main)
+
+**Canonical tracker:** [Issue #39](https://github.com/Cucklord420/Toe-Tickling/issues/39)
+**Execution:** existing issue-specific work only; no new Issue. Create one canonical Draft PR after the implementation and exact-head validation are ready.
+
+## Intent
+
+Make both installation (`--apply`) and rollback/cleanup (`--recover`) safe against a different local user racing path replacement. Keep read-only preview unchanged. The owner has authorized the complete Rust fix and directed that `--apply` stay paused until its race regressions pass. Treat `--recover` with the same fail-closed gate because it can restore files, change permissions, remove stages, and delete the journal.
+
+## Current behavior and root cause
+
+- On current `main`, public `apply` returns a pause error, but `recover` remains active.
+- The private transaction engine and recovery helpers perform reads and mutations through separately checked pathnames. These include destination staging and rename, journal create/update/remove, permission changes, rollback, and stage cleanup.
+- A no-follow check followed by a later pathname operation leaves a replacement window. An open Unix directory handle is stable when renamed; it does not prevent the directory itself from being moved outside the selected repository. On Windows, the directory handle can prevent rename only if it is opened without `FILE_SHARE_DELETE`.
+- The already-dirty `codex/issue-39-race-safe-adoption` checkout is stale and contains an incomplete handle-based attempt. It remains untouched and is not an implementation base.
+
+## Threat boundary
+
+- Protect against path swaps by other local users. Same-effective-UID processes and root/administrator are outside the claim because they already have authority to change the selected files and directory controls.
+- On POSIX, mutations are allowed only when every target, output-parent, and Git-metadata directory is opened without following links and its ownership/permission chain prevents other UIDs from renaming it. A writable sticky ancestor is accepted only when the next child is owned by the current effective UID. Running as root fails closed. On macOS, an ACL or volume state that cannot be classified conclusively also fails closed.
+- On Windows, mutations are allowed only on a verified local volume. Each path component is opened relative to the already verified parent handle, with reparse-point following disabled; opening a later component by its full absolute path is not sufficient. Every directory handle is held without `FILE_SHARE_DELETE` for the transaction. The DACL from each opened handle is inspected. Existing path ancestry above the selected target and Git metadata roots may grant only child-creation rights (`FILE_ADD_FILE` or `FILE_ADD_SUBDIRECTORY`) to other users; these cannot replace an existing path component. Other ancestry rights that can delete or replace a child, delete the directory, or change its ACL/owner fail closed. The selected target and Git metadata roots, every output parent, and every output/file object use a strict policy that also rejects other-user child-creation and write rights. Known `GENERIC_READ` and `GENERIC_EXECUTE` masks are accepted as non-mutating. Known `GENERIC_WRITE` and `GENERIC_ALL` masks count as mutation rights and are accepted only for principals the policy independently trusts: the current user, SYSTEM, built-in Administrators, Creator Owner, or TrustedInstaller. The Windows Owner Rights SID is accepted only when the object's separately inspected owner is itself trusted, because that ACE represents the object's current owner. All other untrusted grants fail closed on every scope. `MAXIMUM_ALLOWED`, unknown access bits, and ambiguous descriptors fail closed. UNC and remote volumes fail closed. Administrator-level changes are outside the claim.
+- Unsupported filesystems, ambiguous metadata, or failed identity/permission checks leave files, stages, and journals untouched. Do not describe these limits as verified race prevention.
+
+## Goals
+
+- Route all installation and recovery mutations through a Rust capability context holding no-follow handles for the target path and the associated Git metadata directory.
+- Make directory creation, journal reads/writes/removal, staging, promotion, permission updates, rollback, and cleanup relative to the verified handles.
+- Revalidate path identity and exact journal/file state before each consequential operation. Pass the already authorized destination state into the rename or removal primitive; never reread a changed destination and treat it as newly authorized.
+- Write journal version 4, preserve migration behavior for versions 1 through 3, and retain version 3 transition markers. Windows recovery rejects older journals without an identity fingerprint that binds stable volume and file IDs for both the target and Git marker.
+- On Windows, require successful stable file IDs for identity reads and reject `FILE_ATTRIBUTE_REPARSE_POINT` files before reading or mutating them. Reject multiply linked files before changing permissions in place.
+- Keep `--apply` and `--recover` unavailable until the new regression suite passes on supported CI platforms; preview stays available and read-only.
+- Use Rust-only tests with disposable repositories, synthetic bytes, and an outside sentinel. Add platform CI for the race-specific paths.
+
+## Non-goals
+
+- Do not claim protection against a process running as the same effective UID, root/administrator, kernel/filesystem compromise, or a hostile filesystem that violates documented handle and permission behavior.
+- Do not automatically remove unknown stages or journals, make unrelated journal-format changes, change preview output, change unrelated CLI defaults, or create a second canonical tracker.
+- Do not change source checkouts, account settings, Git history, or real user repositories during tests.
+
+## Approaches
+
+1. **Capability handles plus protected-path checks — selected working approach.** Use handle-relative no-follow operations everywhere. POSIX additionally rejects ancestry that another UID could replace; Windows blocks directory rename with no-delete-sharing handles on local volumes. macOS and other environments fail closed if ACL/volume safety cannot be proven. This restores mutation only where the threat boundary is enforced and testable.
+2. **Windows-only mutation, Unix permanently paused.** This has a narrower implementation but unnecessarily removes Linux support even where POSIX permissions prevent other users from changing ancestry. Keep as fallback if the POSIX guard cannot be proven.
+3. **Repeated pathname checks with capability handles but no protection against directory movement.** Rejected because a Unix directory can be moved after the final check and receive writes through its old handle.
+
+## Design
+
+Add one internal mutation context that owns verified target and Git-metadata directory chains. Each chain starts at the filesystem root, opens each component without following symlinks/reparse points, records stable identity, and holds all handles through apply or recovery. Output paths remain validated relative components; no absolute path is used for a mutation after the chains are opened.
+
+For POSIX, verify the effective UID is non-root and inspect ownership, mode, sticky-bit rules, and macOS ACL state through the opened objects. A group/world-writable non-sticky ancestor rejects the operation. A sticky writable ancestor is accepted only when its next child is owned by the effective UID. A named ACL grant or ACL state that cannot be conclusively classified rejects mutation. The same checks apply to the linked-worktree Git metadata directory because it may be outside the target checkout.
+
+For Windows, open the root and then one child component at a time relative to the preceding verified directory handle, with reparse-point processing disabled for that component. Use the documented `RootDirectory`/single-component form; do not fall back to a full multi-component pathname. Open each child with `FILE_OPEN_REPARSE_POINT`, inspect the returned handle for directory/type and reparse status, and reject reparse points. Do not combine `FILE_DIRECTORY_FILE` with `FILE_OPEN_REPARSE_POINT`, because Microsoft documents a closed compatibility list for `FILE_DIRECTORY_FILE` that omits this combination; if the needed open cannot be made and verified, fail closed. Open directories with a share mode that permits read/write sharing but omits `FILE_SHARE_DELETE`; keep every parent handle alive until the transaction ends. This blocks ancestry renames while open. Require a local volume. Read each object's DACL from the opened handle and apply a conservative trustee policy; checking only the current process token cannot prove what other local users can do. Mutation-capable allow ACEs are accepted only for the current user SID, SYSTEM, built-in Administrators, Creator Owner, or TrustedInstaller, except for the narrowly scoped child-creation-only allowance on already existing path ancestry described above. The Windows Owner Rights SID is accepted only when the object's separately inspected owner is itself trusted. For the ancestry scope, allow only `FILE_ADD_FILE` and `FILE_ADD_SUBDIRECTORY` on opened directories and reject `DELETE`, `FILE_DELETE_CHILD`, `FILE_WRITE_EA`, `FILE_WRITE_ATTRIBUTES`, ACL/owner changes, and all unknown access bits. Windows aliases `FILE_WRITE_DATA` with `FILE_ADD_FILE` and `FILE_APPEND_DATA` with `FILE_ADD_SUBDIRECTORY`, depending on whether the object is a file or directory; the create-child allowance applies only to verified ancestry directories. All file objects and protected objects still reject untrusted write masks through the strict policy. Known `GENERIC_READ` and `GENERIC_EXECUTE` masks are accepted as non-mutating. Known `GENERIC_WRITE` and `GENERIC_ALL` masks count as mutations and are accepted only when the trustee passes the policy above. `MAXIMUM_ALLOWED`, unresolved ACEs, owner ambiguity, and unknown access bits fail closed. Keep the selected target and Git metadata roots, output parents, files, and created output directories, stages, rollback stages, and temporary journal files under the strict DACL policy; no other-user mutation right, including child creation, is allowed there. Create new objects with restrictive non-inheriting security attributes where available, then verify the DACL through the opened handle before writing contents or relying on them. Windows access-mask tests must cover data writes, append, directory child creation/deletion, object deletion, ACL changes, owner changes, generic read/execute acceptance, trusted and untrusted generic write/all ACEs, maximum-allowed rejection, unknown-mask rejection, create-only ancestry ACEs, and rejection of ancestry delete rights, plus Owner Rights handling for trusted and untrusted object owners. If any descriptor or right cannot be conclusively classified, leave both installation and recovery paused on that path.
+
+Convert every write path, not only final destination promotion: journal creation/update/removal; target parent creation; stage and rollback-stage creation; exact-byte readback; atomic replacement; Windows read-only transitions; recovery cleanup; and error rollback. Read-only Git identity checks may still use Git, but the opened target and `.git` identities must be revalidated before and after those checks. Write journal v4, preserve migration from v1/v2/v3, retain v3 transition markers, and reject Windows recovery for pre-v4 journals that do not carry the stable-ID fingerprint version.
+
+The public `apply` and `recover` entry points share the protected mutation context. The CLI rejects disabled/unsupported mutation before planning, target inspection, journal inspection, or success JSON. Keep `apply` paused in the implementation branch until the concurrent swap tests, full recovery regressions, formatting, strict Clippy, and exact-head Ubuntu/Windows CI pass. Add a macOS job for ACL classification; if it cannot prove the no-ACL or safe-ACL case, that platform remains fail-closed and the Issue stays open.
+
+## Required regressions
+
+- POSIX: unprotected writable ancestry and root execution reject apply and recovery before touching a sentinel, output, stage, or journal; a protected disposable target can complete and recover.
+- Windows: link/reparse-point ancestors are rejected by handle-relative component opens; local-volume and DACL checks reject paths another user can mutate; held no-delete handles prevent ancestry rename; broad and inherited write grants are rejected; newly created directories, stages, rollback stages, and journal temporaries have restrictive verified DACLs before content writes; concurrent child replacement is blocked or detected before mutation; verify the outside sentinel and outside directory remain unchanged.
+- All tested platforms: swaps before final verification fail closed; conflicting user edits remain intact; journal versions and permission transition states retain their current behavior; incomplete recovery can be retried; no stage/journal is removed when identity validation fails.
+- CLI: unsupported apply/recover fail before inspecting invalid targets/journals and never emit `applied` or `recovered` JSON; preview remains read-only.
+
+## Rollback and completion
+
+Keep both mutations paused until the race and failure regressions pass. If a supported platform fails the safety checks, keep that platform disabled and leave Issue #39 open. Do not merge or close the Issue until independent review, exact-head CI, supported-platform behavior, and default-branch verification are complete. Rollback is a reviewed revert; preserve existing journal and target data.
+
+## Windows DACL scope amendment — 11-07-2026
+
+Workflow run [#365](https://github.com/Cucklord420/Toe-Tickling/actions/runs/42360665193) on commit `f1e78c6d` showed the Windows runner's volume-root DACL grants untrusted users only `FILE_ADD_SUBDIRECTORY` (`0x00000004`). The initial all-mutation-rights rule therefore rejected `C:\` before opening the selected target, even though child creation alone cannot replace an existing component. This amendment scopes the exception to existing ancestry above the target and Git metadata roots; the handles remain held without delete sharing, ancestry delete/replace and ACL/owner rights remain rejected, and the actual mutation roots/parents retain the strict policy including no untrusted creation rights. The Windows DACL unit tests must prove this distinction before the platform guard can be enabled.
+
+## Recovery identity and file-object amendment — 11-17-2026
+
+Independent review of PR #57 found that promotion, rollback, and removal reread a destination after journal validation and passed that fresh state as the expected state. A normal edit in that gap could therefore be overwritten or deleted. The implementation must carry the validated state through to the mutation call and add deterministic regressions at each seam.
+
+The same review found that Windows recovery fingerprints omitted stable target and Git-marker IDs, failed ID reads silently fell back to creation time, file validation accepted tagged reparse objects that Windows may still classify as regular files, and clearing read-only on a multiply linked file changes the shared file attribute outside the checkout. New Windows identity reads must require stable IDs, journal v4 fingerprints must bind both objects, old Windows journals without that fingerprint version must fail closed, and file validation must reject reparse points and multiple hard links before reads or permission changes. Keep public `--apply` and `--recover` paused while these regressions and exact-head CI are outstanding.
+
+## Technical references reviewed
+
+- `cap-std` 4.0.3 `Dir` documentation: directory-relative filesystem operations; Windows callers must supply handles opened without `FILE_SHARE_DELETE` to prevent races.
+- Microsoft `CreateFile` sharing documentation: omitting `FILE_SHARE_DELETE` prevents concurrent delete/rename access while the handle remains open.
+- Apple filesystem security documentation: ACLs supplement traditional mode bits, so macOS mutation must fail closed if the effective ACL boundary cannot be verified.
+- Microsoft `GetSecurityInfo` and file-access-right documentation: inspect security descriptors on opened handles and account for child-creation/deletion, write, delete, ACL, and owner rights.
+- Microsoft `NtCreateFile` documentation: a directory handle can anchor a single-component relative open, the supplied security descriptor applies at creation, and `FILE_OPEN_REPARSE_POINT` bypasses normal reparse processing. Avoid undocumented flag combinations and fail closed when the documented form cannot be verified.
+- Microsoft [File Security and Access Rights](https://learn.microsoft.com/en-us/windows/win32/fileio/file-security-and-access-rights) maps file `GENERIC_READ` and `GENERIC_EXECUTE` to read/traverse rights, while `GENERIC_WRITE` maps to data, attribute, extended-attribute, and append writes. Microsoft [File Access Rights Constants](https://learn.microsoft.com/en-us/windows/win32/fileio/file-access-rights-constants) identifies `FILE_ADD_FILE` and `FILE_ADD_SUBDIRECTORY` as directory child-creation rights.
+- Microsoft documents [Owner Rights as the current object's owner](https://learn.microsoft.com/en-us/windows-server/identity/ad-ds/manage/understand-security-identifiers); this ACE is accepted only after the handle-derived object owner passes the trusted-owner check.
+- Current project rules: guidebook v1.2.5, read from `main` commit `db2146f781e9c088d3694cfb77bd5434ec90839a`, blob `527c3da11c93dfc0e9fba9ac8caa999e805e671f`.

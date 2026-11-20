@@ -1,5 +1,6 @@
+use sha2::Digest;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::Write,
     path::Path,
@@ -1378,17 +1379,19 @@ fn a_bold_prose_reference_cannot_replace_a_rule_declaration() {
 }
 
 #[test]
+#[cfg(any(target_os = "linux", windows))]
 fn adoption_cli_runs_from_an_unrelated_directory_and_path_with_spaces() {
     let source = fixture();
     let unrelated = tempfile::tempdir().unwrap();
-    let target = tempfile::Builder::new()
-        .prefix("project with spaces ")
-        .tempdir()
-        .unwrap();
+    let target_root = tempfile::tempdir().unwrap();
+    let target = target_root.path().join("project with spaces");
+    fs::create_dir(&target).unwrap();
+    let outside = target_root.path().join("outside sentinel.txt");
+    fs::write(&outside, b"outside data must remain unchanged").unwrap();
     assert!(
         Command::new("git")
             .args(["init", "-q"])
-            .current_dir(target.path())
+            .current_dir(&target)
             .status()
             .unwrap()
             .success()
@@ -1400,33 +1403,106 @@ fn adoption_cli_runs_from_an_unrelated_directory_and_path_with_spaces() {
             .arg("--root")
             .arg(source.path())
             .arg("adopt")
-            .arg(target.path());
+            .arg(&target);
         if apply {
             command.arg("--apply");
         }
         command.output().unwrap()
     };
     assert!(run(false).status.success());
-    assert!(!target.path().join("AGENTS.md").exists());
+    assert!(!target.join("AGENTS.md").exists());
+    let plan = adopt::plan(source.path(), &target).unwrap();
+    let expected_changed: BTreeMap<_, _> = plan.files.clone();
     let applied = run(true);
     assert!(
-        !applied.status.success(),
-        "adoption unexpectedly succeeded: {}",
-        String::from_utf8_lossy(&applied.stdout)
+        applied.status.success(),
+        "adoption failed: {}",
+        String::from_utf8_lossy(&applied.stderr)
     );
-    assert!(String::from_utf8_lossy(&applied.stderr).contains("paused"));
-    for path in [".ai-guidebook", "AGENTS.md", ".gitignore", "CLAUDE.md"] {
-        assert!(
-            !target.path().join(path).exists(),
-            "paused adoption created {path}"
-        );
+    let applied_json: serde_json::Value = serde_json::from_slice(&applied.stdout).unwrap();
+    assert_eq!(applied_json["mode"], "applied");
+    let changed: BTreeSet<_> = applied_json["changed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|path| path.as_str().unwrap().to_owned())
+        .collect();
+    let expected_changed_paths: BTreeSet<_> = expected_changed.keys().cloned().collect();
+    assert_eq!(changed, expected_changed_paths);
+    for (path, expected) in &expected_changed {
+        assert_eq!(fs::read(target.join(path)).unwrap(), expected.as_bytes());
     }
+    assert!(
+        fs::read_to_string(target.join("AGENTS.md"))
+            .unwrap()
+            .contains("<!-- JUSTIN-GUIDEBOOK:BEGIN -->"),
+        "Rust adoption did not install its managed instructions"
+    );
+    let installed_guide = fs::read(target.join(".ai-guidebook/GUIDEBOOK.md")).unwrap();
+    let installed_lock: serde_json::Value =
+        serde_json::from_slice(&fs::read(target.join(".ai-guidebook/policy-lock.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        format!("{:x}", sha2::Sha256::digest(&installed_guide)),
+        installed_lock["guidebook_sha256"].as_str().unwrap()
+    );
+    let first_install: BTreeMap<_, _> = expected_changed
+        .keys()
+        .map(|path| (path.clone(), fs::read(target.join(path)).unwrap()))
+        .collect();
+    let repeated = run(true);
+    assert!(
+        repeated.status.success(),
+        "repeat adoption failed: {}",
+        String::from_utf8_lossy(&repeated.stderr)
+    );
+    let repeated_json: serde_json::Value = serde_json::from_slice(&repeated.stdout).unwrap();
+    assert_eq!(repeated_json["mode"], "applied");
+    assert!(repeated_json["changed"].as_array().unwrap().is_empty());
+    for (path, expected) in first_install {
+        assert_eq!(fs::read(target.join(path)).unwrap(), expected);
+    }
+    assert_eq!(
+        fs::read(&outside).unwrap(),
+        b"outside data must remain unchanged"
+    );
     let head = Command::new("git")
         .args(["rev-parse", "--verify", "HEAD"])
-        .current_dir(target.path())
+        .current_dir(&target)
         .output()
         .unwrap();
     assert!(!head.status.success(), "Adoption must not create commits");
+    assert!(
+        fs::read_dir(unrelated.path()).unwrap().next().is_none(),
+        "adoption wrote into its unrelated launch directory"
+    );
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn public_mutations_remain_paused_on_macos() {
+    let source = fixture();
+    let scratch = tempfile::tempdir().unwrap();
+    let target = scratch.path().join("target project");
+    let outside = scratch.path().join("outside sentinel.txt");
+    fs::create_dir(&target).unwrap();
+    fs::write(&outside, b"outside data must remain unchanged").unwrap();
+    assert!(clean_git(&target, &["init", "-q"]).status.success());
+
+    let plan = adopt::plan(source.path(), &target).unwrap();
+    let expected_pause = adopt::ensure_mutations_ready().unwrap_err();
+    let error = adopt::apply(&plan).unwrap_err();
+
+    assert_eq!(error, expected_pause);
+    assert!(error.contains("paused"), "unexpected error: {error}");
+    for path in [".ai-guidebook", "AGENTS.md", ".gitignore", "CLAUDE.md"] {
+        assert!(!target.join(path).exists(), "paused apply created {path}");
+    }
+    assert!(!target.join(".git/.toe-tickling-adoption-v1.json").exists());
+    assert_eq!(
+        fs::read(&outside).unwrap(),
+        b"outside data must remain unchanged"
+    );
 }
 
 #[test]
