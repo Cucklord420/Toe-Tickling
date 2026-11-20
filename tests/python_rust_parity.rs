@@ -866,8 +866,7 @@ fn python_and_rust_apply_respect_platform_policy_and_are_idempotent() {
             );
         }
         assert_eq!(
-            rust_after_apply["CLAUDE.md"],
-            rust_before["CLAUDE.md"],
+            rust_after_apply["CLAUDE.md"], rust_before["CLAUDE.md"],
             "Rust apply changed the existing adapter"
         );
         let rust_guide = fs::read(rust_target.join(".ai-guidebook/GUIDEBOOK.md")).unwrap();

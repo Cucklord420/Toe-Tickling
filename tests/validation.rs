@@ -1439,10 +1439,9 @@ fn adoption_cli_runs_from_an_unrelated_directory_and_path_with_spaces() {
         "Rust adoption did not install its managed instructions"
     );
     let installed_guide = fs::read(target.join(".ai-guidebook/GUIDEBOOK.md")).unwrap();
-    let installed_lock: serde_json::Value = serde_json::from_slice(
-        &fs::read(target.join(".ai-guidebook/policy-lock.json")).unwrap(),
-    )
-    .unwrap();
+    let installed_lock: serde_json::Value =
+        serde_json::from_slice(&fs::read(target.join(".ai-guidebook/policy-lock.json")).unwrap())
+            .unwrap();
     assert_eq!(
         format!("{:x}", sha2::Sha256::digest(&installed_guide)),
         installed_lock["guidebook_sha256"].as_str().unwrap()
