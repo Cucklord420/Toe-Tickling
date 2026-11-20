@@ -25,8 +25,6 @@ mod mutation;
 // The Issue #39 mutation regressions passed on the Windows/Linux CI matrix.
 // Platform policy remains a separate guard: Linux root and macOS stay paused.
 const MUTATION_REGRESSIONS_VERIFIED: bool = true;
-// Keep public writes disabled until the reviewed fix is verified on the default branch.
-const PUBLIC_MUTATIONS_ENABLED: bool = false;
 
 const BEGIN: &str = "<!-- JUSTIN-GUIDEBOOK:BEGIN -->";
 const END: &str = "<!-- JUSTIN-GUIDEBOOK:END -->";
@@ -41,8 +39,7 @@ const LEGACY_JOURNAL_VERSION: u32 = 1;
 const LEGACY_JOURNAL_V2_VERSION: u32 = 2;
 const LEGACY_JOURNAL_V3_VERSION: u32 = 3;
 const JOURNAL_VERSION: u32 = 4;
-// The public write entry remains paused until Issue #39's race is fixed; keep
-// its transaction internals available to the existing regression tests.
+// Keep transaction internals available to the existing regression tests.
 #[cfg_attr(not(test), allow(dead_code))]
 static NEXT_TRANSACTION: AtomicU64 = AtomicU64::new(0);
 #[cfg_attr(not(test), allow(dead_code))]
@@ -2205,16 +2202,12 @@ pub fn ensure_no_pending_recovery(target: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Enforce the public pause, mutation regression gate, and platform safety policy.
+/// Enforce the mutation regression gate and platform safety policy.
 pub fn ensure_mutations_ready() -> Result<()> {
-    if !PUBLIC_MUTATIONS_ENABLED {
-        return Err("Guidebook adoption writes and recovery remain paused until Issue #39 is independently reviewed, merged, and verified on the default branch".into());
-    }
-    mutation::MutationContext::ensure_supported()?;
     if !MUTATION_REGRESSIONS_VERIFIED {
         return Err("Guidebook adoption writes and recovery remain paused until the Issue #39 race regressions pass on the exact branch".into());
     }
-    Ok(())
+    mutation::MutationContext::ensure_supported()
 }
 
 pub fn plan(root: &Path, target: &Path) -> Result<AdoptionPlan> {
