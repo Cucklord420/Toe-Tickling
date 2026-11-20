@@ -76,6 +76,8 @@ jobs:
         run: rustup show
       - name: Native public-tree fallback path regression
         run: cargo test --locked -p toe-tickling --lib security::tests::non_git_file_list_accepts_native_nested_paths
+      - name: Raw Git path separator safety regression
+        run: cargo test --locked -p toe-tickling --lib security::tests::checked_git_relative_rejects_backslashes
       - name: Historical Python and current Rust differential regressions
         env:
           TOE_PYTHON_REFERENCE: ${{ steps.setup-python.outputs.python-path }}
