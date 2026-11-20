@@ -207,9 +207,15 @@ mod tests {
         let parsed = parse_adopt_args(&args).unwrap();
         assert_eq!(parsed.mode, AdoptMode::Recover);
         let error = execute_adopt(Path::new(env!("CARGO_MANIFEST_DIR")), parsed).unwrap_err();
-        let paused = toe_tickling::adopt::ensure_mutations_ready().unwrap_err();
-        assert_eq!(error, paused);
-        assert!(error.contains("paused"), "unexpected error: {error}");
+        if let Err(paused) = toe_tickling::adopt::ensure_mutations_ready() {
+            assert_eq!(error, paused);
+            assert!(error.contains("paused"), "unexpected error: {error}");
+        } else {
+            assert!(
+                !error.contains("paused"),
+                "supported recovery returned a pause error: {error}"
+            );
+        }
         assert!(!target.exists());
     }
 
@@ -220,9 +226,15 @@ mod tests {
         let args = vec![target.to_string_lossy().into_owned(), "--apply".into()];
         let parsed = parse_adopt_args(&args).unwrap();
         let error = execute_adopt(Path::new(env!("CARGO_MANIFEST_DIR")), parsed).unwrap_err();
-        let paused = toe_tickling::adopt::ensure_mutations_ready().unwrap_err();
-        assert_eq!(error, paused);
-        assert!(error.contains("paused"), "unexpected error: {error}");
+        if let Err(paused) = toe_tickling::adopt::ensure_mutations_ready() {
+            assert_eq!(error, paused);
+            assert!(error.contains("paused"), "unexpected error: {error}");
+        } else {
+            assert!(
+                !error.contains("paused"),
+                "supported apply returned a pause error: {error}"
+            );
+        }
         assert!(!target.exists());
     }
 
@@ -270,9 +282,15 @@ mod tests {
 
         let error = execute_adopt(Path::new(env!("CARGO_MANIFEST_DIR")), parsed).unwrap_err();
 
-        let paused = toe_tickling::adopt::ensure_mutations_ready().unwrap_err();
-        assert_eq!(error, paused);
-        assert!(error.contains("paused"), "unexpected error: {error}");
+        if let Err(paused) = toe_tickling::adopt::ensure_mutations_ready() {
+            assert_eq!(error, paused);
+            assert!(error.contains("paused"), "unexpected error: {error}");
+        } else {
+            assert!(
+                error.contains("Pending adoption recovery"),
+                "supported apply did not reject the pending journal: {error}"
+            );
+        }
         assert_eq!(
             fs::read(target.join(".ai-guidebook/GUIDEBOOK.md")).unwrap(),
             b"partial install"

@@ -691,15 +691,17 @@ fn adoption_preview_is_read_only_and_preserves_existing_project_files() {
 
 #[test]
 #[ignore = "runs the pinned historical Python CLI; executed in the dedicated cross-platform CI job"]
-fn python_apply_is_idempotent_while_current_rust_apply_stays_paused() {
+fn python_and_rust_apply_respect_platform_policy_and_are_idempotent() {
     let temp = fixture_tempdir();
     let unrelated = temp.path().join("unrelated working directory");
     fs::create_dir_all(&unrelated).unwrap();
+    let outside = temp.path().join("outside sentinel.txt");
+    fs::write(&outside, b"outside data must remain unchanged").unwrap();
 
     let python_root = clone_python_reference(&temp, "python-adoption-apply");
-    let rust_root = copy_current_checkout(&temp, "rust-adoption-paused");
+    let rust_root = copy_current_checkout(&temp, "rust-adoption-apply");
     let python_target = temp.path().join("Python apply target with spaces");
-    let rust_target = temp.path().join("Rust paused target with spaces");
+    let rust_target = temp.path().join("Rust apply target with spaces");
     prepare_target(&python_target);
     prepare_target(&rust_target);
 
@@ -809,27 +811,107 @@ fn python_apply_is_idempotent_while_current_rust_apply_stays_paused() {
             "--apply".to_owned(),
         ],
     );
+    #[cfg(target_os = "macos")]
+    {
+        assert_eq!(
+            exit_code(&rust_apply),
+            1,
+            "macOS Rust apply unexpectedly succeeded"
+        );
+        assert!(
+            stderr(&rust_apply).starts_with("FAIL:"),
+            "unexpected Rust refusal: {}",
+            stderr(&rust_apply)
+        );
+        assert!(
+            stderr(&rust_apply).to_ascii_lowercase().contains("paused"),
+            "Rust apply refusal was not the documented safety pause: {}",
+            stderr(&rust_apply)
+        );
+        assert_eq!(
+            snapshot_tree(&rust_target),
+            rust_before,
+            "paused Rust apply changed the target"
+        );
+    }
+    #[cfg(any(target_os = "linux", windows))]
+    {
+        assert_eq!(
+            exit_code(&rust_apply),
+            0,
+            "Rust apply failed: {}",
+            stderr(&rust_apply)
+        );
+        assert!(
+            rust_apply.stderr.is_empty(),
+            "unexpected Rust apply warning: {}",
+            stderr(&rust_apply)
+        );
+        let rust_result = json_stdout(&rust_apply);
+        assert_eq!(rust_result["mode"], "applied");
+        assert_eq!(
+            string_set(&rust_result["changed"]),
+            expected_adoption_changes()
+        );
+        let rust_after_apply = snapshot_tree(&rust_target);
+        assert_eq!(
+            changed_snapshot_entries(&rust_before, &rust_after_apply),
+            expected_adoption_tree_changes(),
+            "Rust apply changed an unexpected target file or directory"
+        );
+        for path in ["AGENTS.md", ".gitignore"] {
+            assert!(
+                rust_after_apply[path].starts_with(&rust_before[path]),
+                "Rust apply did not preserve existing bytes in {path}"
+            );
+        }
+        assert_eq!(
+            rust_after_apply["CLAUDE.md"],
+            rust_before["CLAUDE.md"],
+            "Rust apply changed the existing adapter"
+        );
+        let rust_guide = fs::read(rust_target.join(".ai-guidebook/GUIDEBOOK.md")).unwrap();
+        let rust_lock = read_json(&rust_target.join(".ai-guidebook/policy-lock.json"));
+        assert_eq!(
+            sha256_hex(&rust_guide),
+            rust_lock["guidebook_sha256"].as_str().unwrap()
+        );
+        assert_no_git_commit(&rust_target);
+
+        let rust_repeat = run_rust(
+            &rust_root,
+            &unrelated,
+            &[
+                "adopt".to_owned(),
+                rust_target.to_string_lossy().into_owned(),
+                "--apply".to_owned(),
+            ],
+        );
+        assert_eq!(
+            exit_code(&rust_repeat),
+            0,
+            "repeat Rust apply failed: {}",
+            stderr(&rust_repeat)
+        );
+        assert!(
+            rust_repeat.stderr.is_empty(),
+            "unexpected repeated Rust apply warning: {}",
+            stderr(&rust_repeat)
+        );
+        let repeated = json_stdout(&rust_repeat);
+        assert_eq!(repeated["mode"], "applied");
+        assert!(string_set(&repeated["changed"]).is_empty());
+        assert_eq!(
+            snapshot_tree(&rust_target),
+            rust_after_apply,
+            "repeat Rust apply changed target bytes"
+        );
+        assert_no_git_commit(&rust_target);
+    }
     assert_eq!(
-        exit_code(&rust_apply),
-        1,
-        "current Rust apply unexpectedly succeeded"
+        fs::read(&outside).unwrap(),
+        b"outside data must remain unchanged"
     );
-    assert!(
-        stderr(&rust_apply).starts_with("FAIL:"),
-        "unexpected Rust refusal: {}",
-        stderr(&rust_apply)
-    );
-    assert!(
-        stderr(&rust_apply).to_ascii_lowercase().contains("paused"),
-        "Rust apply refusal was not the documented safety pause: {}",
-        stderr(&rust_apply)
-    );
-    assert_eq!(
-        snapshot_tree(&rust_target),
-        rust_before,
-        "paused Rust apply changed the target"
-    );
-    assert_no_git_commit(&rust_target);
     assert_empty_directory(&unrelated);
 }
 
