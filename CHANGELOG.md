@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.6 — 11-24-2026
+
+- Add owner-directed EXEC-013 and AUD-021 and scenarios S32–S33: explicitly authorized additions, proportionate FMEA before consequential actions and at final delivery, and silent-run handling. Preserve all existing standing and scoped verification obligations, security, privacy, authorization, required CI, and branch protection.
+- Reconcile the generated guide, lock and reading manifest. Local Rust checks were unavailable; existing required hosted CI must verify the candidate before integration. No live agent adoption is asserted.
+
 ## 1.2.5 — 10-30-2026
 
 - Add RES-013 and scenarios S30–S31 to seek relevant credible negative experiences and failure modes, distinguish distinct from repeated/stale/resolved reports, report prevalence only when defensible, and reassess recommendations. Preserve RES-001 through RES-012 and the 46 verification rules; do not require an exhaustive review-site sweep or invent failure rates.

@@ -1,5 +1,9 @@
 # Keep the law alive
 
+## 1.2.6 — 11-24-2026
+
+Owner-directed EXEC-013 and AUD-021 require execution of explicitly authorized additions and proportionate FMEA before consequential action and at final delivery. Scenarios S32–S33 preserve security, review, evidence, silent-run and permission boundaries. No existing standing or scoped verification rule is removed. Local Rust execution is not available for this candidate; the existing required CI remains the integration gate. Runtime adoption is not established by document integrity.
+
 ## 1.2.5 — 10-30-2026
 
 Issue #44 identified that repeated complaints can be mistaken for independent failures and that material unresolved reports can be obscured when no defensible denominator exists. RES-013 and scenarios S30–S31 preserve those distinctions without requiring every review site to be searched or allowing unsupported failure-rate estimates. The Rust validator preserves the new stable ID, while generated outputs and hashes remain derived from canonical sources. This is policy and mechanical integrity evidence, not proof of live agent adoption.
