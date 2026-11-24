@@ -85,7 +85,7 @@ const PYTHON_ARTIFACT_GOLDENS: &[(&str, &str)] = &[
 const RUST_ARTIFACT_GOLDENS: &[(&str, &str)] = &[
     (
         "GUIDEBOOK.md",
-        "4123ddabf48b5efaa6f5fc4a138afd841094efe09b84fc74edcd1287a286388c",
+        "094ffdf12575dbebe31e6c47c19e0850a180bd5f1bc7c414a891b04e6466f8b8",
     ),
     (
         "RULEBOOK.md",
@@ -93,7 +93,7 @@ const RUST_ARTIFACT_GOLDENS: &[(&str, &str)] = &[
     ),
     (
         "guidebook-lock.json",
-        "31f2f9142f887f26404a6b370696d9f5856ddb3eaa0984e748fba510f46bf69a",
+        "74a7a4ee944557e2df3095793ca1cfe132bb2ac908b92ba2f104be883b35a976",
     ),
     (
         "prompts/USE_WITH_ANY_MODEL.md",
@@ -271,16 +271,16 @@ fn historical_python_and_current_rust_cli_match_independent_goldens() {
     );
 
     let rust_lock = read_json(&rust_root.join("guidebook-lock.json"));
-    assert_eq!(rust_lock["policy_version"], "1.2.5");
+    assert_eq!(rust_lock["policy_version"], "1.2.6");
     assert_eq!(
         rust_lock["source_sha256"],
-        "397a936a96721588934ee1a28feeb59f5a6cfd979f99f3df726e51700198182e"
+        "ce10f1fbed5e0b993b128582d6462f5497f483c4277566f11589c5a61db7187f"
     );
     assert_eq!(
         rust_lock["guidebook_sha256"],
-        "4123ddabf48b5efaa6f5fc4a138afd841094efe09b84fc74edcd1287a286388c"
+        "094ffdf12575dbebe31e6c47c19e0850a180bd5f1bc7c414a891b04e6466f8b8"
     );
-    assert_eq!(rust_lock["rule_count"], 161);
+    assert_eq!(rust_lock["rule_count"], 163);
     assert_eq!(rust_lock["verification_rule_count"], 46);
     let rust_guide = fs::read(rust_root.join("GUIDEBOOK.md")).unwrap();
     assert_eq!(
@@ -303,7 +303,7 @@ fn historical_python_and_current_rust_cli_match_independent_goldens() {
     );
     assert_eq!(
         stdout(&rust_check),
-        "Repository structural checks passed (161 standing rules + 46 verification rules).\n"
+        "Repository structural checks passed (163 standing rules + 46 verification rules).\n"
     );
     assert_eq!(
         snapshot_tree(&rust_root),
